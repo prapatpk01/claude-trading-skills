@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { avGlobalQuote, fhQuote } from "@/lib/marketData";
+import { getLightQuote } from "@/lib/marketData";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,8 +12,7 @@ export async function GET(req: NextRequest) {
   const quotes: Record<string, { price: number; changePercent: number } | null> = {};
   for (const t of tickers) {
     try {
-      let q = await avGlobalQuote(t).catch(() => null);
-      if (!q) q = await fhQuote(t).catch(() => null);
+      const q = await getLightQuote(t);
       quotes[t] = q ? { price: q.price, changePercent: q.changePercent } : null;
     } catch {
       quotes[t] = null;

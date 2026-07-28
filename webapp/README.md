@@ -2,7 +2,8 @@
 
 A web app that turns a **stock ticker** into an institutional-grade equity research
 workbook, tracks your **portfolio & watchlist**, and runs a **momentum swing scanner** —
-built on Next.js 14 (App Router) + Supabase, with Alpha Vantage & Finnhub as data sources.
+built on Next.js 14 (App Router) + Supabase, with **Yahoo Finance** as the default
+data source (free, no API key — same source as Python's `yfinance`).
 
 ## Features
 
@@ -43,18 +44,23 @@ npm install
 npm run dev                 # http://localhost:3000
 ```
 
+### Data source — Yahoo Finance by default (no key!)
+Out of the box the app uses **Yahoo Finance** via [`yahoo-finance2`](https://github.com/gadicc/yahoo-finance2)
+— the same source as the Python `yfinance` library. **No API key, no signup, generous limits**,
+and it works for any US-listed ticker. Nothing to configure.
+
+Optionally switch to Alpha Vantage with `DATA_PROVIDER=alphavantage` + `ALPHA_VANTAGE_API_KEY`.
+
 ### Environment variables (`.env`)
 | Var | Purpose | Required |
 | --- | --- | --- |
-| `ALPHA_VANTAGE_API_KEY` | Fundamentals, statements, daily prices, earnings | Recommended (falls back to `demo` = IBM only) |
-| `FINNHUB_API_KEY` | Fallback real-time quote | Optional |
-| `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Portfolio/watchlist persistence | Optional (in-memory fallback) |
+| `DATA_PROVIDER` | `yahoo` (default) or `alphavantage` | Optional |
+| `ALPHA_VANTAGE_API_KEY` | Only if `DATA_PROVIDER=alphavantage` | Optional |
+| `FINNHUB_API_KEY` | Fallback quote in the Alpha Vantage path | Optional |
+| `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Portfolio/watchlist persistence | Optional (in-memory fallback) |
 
-- Free Alpha Vantage key: <https://www.alphavantage.co/support/#api-key>
-- Free Finnhub key: <https://finnhub.io/register>
-
-> ⚠️ Alpha Vantage's free tier is rate-limited (~5 req/min, 25/day). The scanner runs
-> sequentially and surfaces rate-limit warnings; use a short custom ticker list for reliability.
+> The Yahoo endpoints are unofficial and can rate-limit under heavy use; the app degrades
+> gracefully and surfaces warnings. For a private single-user app this is rarely an issue.
 
 ### Supabase setup (optional)
 1. Create a project at <https://supabase.com/dashboard>.
@@ -76,11 +82,10 @@ The app lives in the `webapp/` subfolder, so point the service at it:
 3. Nixpacks auto-detects Next.js and uses [`webapp/railway.json`](railway.json)
    (`npm ci && npm run build` → `npm run start`). Railway injects `PORT`, which
    `next start` reads automatically — no extra config needed.
-4. **Variables** tab → add:
+4. **Variables** tab → add (data source needs no key — Yahoo Finance by default):
    ```
    NEXT_PUBLIC_SUPABASE_URL=...
    NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-   ALPHA_VANTAGE_API_KEY=...
    ```
 5. **Settings → Networking → Generate Domain** to get a public URL.
 
@@ -104,7 +109,8 @@ app/
     quote/                 # GET ?tickers → light quotes for portfolio
     portfolio/ watchlist/  # CRUD (Supabase or in-memory)
 lib/
-  marketData.ts            # Alpha Vantage + Finnhub fetchers + aggregator
+  yahoo.ts                 # Yahoo Finance (yahoo-finance2) adapter — default source
+  marketData.ts            # provider dispatch (Yahoo default) + Alpha Vantage/Finnhub
   indicators.ts            # RSI, MACD, EMA/SMA, ATR, RS, volume ratios
   analysis.ts              # technicals, momentum score, DCF, signal
   analyze.ts               # buildAnalysis(): assembles the full research payload

@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     const result = await buildAnalysis(ticker);
     if (!result.data.quote && result.data.candles.length === 0) {
       return NextResponse.json(
-        { error: `No data returned for ${ticker}. Check the symbol or your ALPHA_VANTAGE_API_KEY (the public "demo" key only serves IBM).`, warnings: result.data.warnings },
+        { error: `No data returned for ${ticker}. Check that the symbol is a valid US-listed ticker.`, warnings: result.data.warnings },
         { status: 404 }
       );
     }

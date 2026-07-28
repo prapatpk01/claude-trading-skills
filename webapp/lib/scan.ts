@@ -1,4 +1,4 @@
-import { avDaily } from "./marketData";
+import { dailyCandles } from "./marketData";
 import { computeTechnicals, computeMomentumScore, buildSwingSetup } from "./analysis";
 import { ema, pctReturn, sma } from "./indicators";
 import type { MarketData, SwingSetup, Candle } from "./types";
@@ -83,7 +83,7 @@ function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): Mark
     earnings: [],
     candles,
     benchmarkCandles: spy,
-    sources: ["Alpha Vantage (TIME_SERIES_DAILY)"],
+    sources: ["Daily price history"],
     warnings: [],
   };
 }
@@ -91,7 +91,7 @@ function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): Mark
 /** Run the momentum scan over a universe; returns the top N setups. */
 export async function runScan(universe: string[], topN = 5): Promise<ScanResult> {
   const warnings: string[] = [];
-  const spy = await avDaily("SPY", "compact").catch((e) => {
+  const spy = await dailyCandles("SPY", 150).catch((e) => {
     warnings.push(`SPY benchmark: ${e?.message ?? "failed"}`);
     return [] as Candle[];
   });
@@ -99,10 +99,10 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
 
   const candidates: SwingSetup[] = [];
   let scanned = 0;
-  // sequential to respect Alpha Vantage rate limits
+  // sequential to stay polite to the data provider
   for (const ticker of universe) {
     try {
-      const candles = await avDaily(ticker, "compact");
+      const candles = await dailyCandles(ticker, 150);
       if (candles.length < 30) {
         warnings.push(`${ticker}: insufficient price history`);
         continue;

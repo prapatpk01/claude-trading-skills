@@ -36,7 +36,7 @@ export default function Home() {
       {tab === "scanner" && <ScannerTab />}
 
       <div className="footer-note">
-        Data: Alpha Vantage &amp; Finnhub · Persistence: Supabase (falls back to in-memory). <br />
+        Data: Yahoo Finance (free, no key) · Persistence: Supabase (falls back to in-memory). <br />
         For research and education only — nothing here is investment advice. Always do your own research.
       </div>
     </div>

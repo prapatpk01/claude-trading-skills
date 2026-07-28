@@ -46,7 +46,7 @@ export default function ScannerTab() {
           </button>
         </div>
         <p className="notice" style={{ marginTop: 10 }}>
-          Alpha Vantage free tier is rate-limited (~5 req/min). Scans run sequentially — a default 16-name universe may take a moment or hit limits; paste a shorter custom list for reliability.
+          Powered by free Yahoo Finance data (no API key). Scans run sequentially over the universe — the default 16-name list takes a few seconds.
         </p>
         {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
       </div>

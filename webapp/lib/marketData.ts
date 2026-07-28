@@ -7,9 +7,21 @@ import type {
   Candle,
   MarketData,
 } from "./types";
+import { getYahooMarketData, yahooQuote, yahooCandles } from "./yahoo";
 
 const AV_BASE = "https://www.alphavantage.co/query";
 const FH_BASE = "https://finnhub.io/api/v1";
+
+/**
+ * Which data provider to use. Defaults to Yahoo Finance (free, no key,
+ * same source as the Python `yfinance` library). Set DATA_PROVIDER=alphavantage
+ * to use Alpha Vantage instead (requires ALPHA_VANTAGE_API_KEY).
+ */
+export function dataProvider(): "yahoo" | "alphavantage" {
+  return (process.env.DATA_PROVIDER || "yahoo").toLowerCase() === "alphavantage"
+    ? "alphavantage"
+    : "yahoo";
+}
 
 function avKey() {
   return process.env.ALPHA_VANTAGE_API_KEY || "demo";
@@ -202,6 +214,13 @@ export async function fhQuote(ticker: string): Promise<Quote | null> {
  * rather than throwing, so partial data still renders.
  */
 export async function getMarketData(ticker: string): Promise<MarketData> {
+  if (dataProvider() === "yahoo") {
+    return getYahooMarketData(ticker);
+  }
+  return getAlphaVantageMarketData(ticker);
+}
+
+async function getAlphaVantageMarketData(ticker: string): Promise<MarketData> {
   const t = ticker.trim().toUpperCase();
   const sources = new Set<string>();
   const warnings: string[] = [];
@@ -260,4 +279,22 @@ export async function getMarketData(ticker: string): Promise<MarketData> {
     sources: Array.from(sources),
     warnings,
   };
+}
+
+// ── Provider-agnostic helpers (used by scan + quote routes) ───────────
+
+/** Daily candles from the active provider (oldest → newest). */
+export async function dailyCandles(ticker: string, days = 200): Promise<Candle[]> {
+  if (dataProvider() === "yahoo") return yahooCandles(ticker, days);
+  return avDaily(ticker, days > 130 ? "full" : "compact");
+}
+
+/** Lightweight latest quote from the active provider. */
+export async function getLightQuote(ticker: string): Promise<Quote | null> {
+  if (dataProvider() === "yahoo") {
+    return yahooQuote(ticker).catch(() => null);
+  }
+  let q = await avGlobalQuote(ticker).catch(() => null);
+  if (!q) q = await fhQuote(ticker).catch(() => null);
+  return q;
 }
