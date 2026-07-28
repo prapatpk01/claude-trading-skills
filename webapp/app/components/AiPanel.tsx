@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // Minimal, safe markdown-ish renderer (bold + bullets + headers). No HTML injection.
 function renderMarkdown(text: string): React.ReactNode {
@@ -29,8 +29,13 @@ export default function AiPanel({
   buildBody: () => Record<string, any>;
 }) {
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ text: string; modelLabel: string } | null>(null);
+  const [result, setResult] = useState<{ text: string; modelLabel: string; provider?: string; tier?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ configured: boolean; models: { label: string; tier: string }[]; freeCount: number } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/ai").then((r) => r.json()).then(setStatus).catch(() => {});
+  }, []);
 
   async function run() {
     setLoading(true);
@@ -57,7 +62,16 @@ export default function AiPanel({
         <button className="btn ai-btn" onClick={run} disabled={loading}>
           {loading ? <><span className="spinner" /> Thinking…</> : <>✨ {label}</>}
         </button>
-        {result && <span className="ai-model">answered by {result.modelLabel}</span>}
+        {result ? (
+          <span className="ai-model">
+            answered by {result.modelLabel}
+            {result.tier === "free" && <span className="tag" style={{ marginLeft: 6 }}>free</span>}
+          </span>
+        ) : status?.configured ? (
+          <span className="ai-model" title={status.models.map((m) => m.label).join(" → ")}>
+            {status.models.length} models ready ({status.freeCount} free) · auto-switch on limit
+          </span>
+        ) : null}
       </div>
       {error && <div className="err" style={{ marginTop: 10 }}>⚠ {error}</div>}
       {result && (

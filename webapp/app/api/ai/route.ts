@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runAI, aiConfigured } from "@/lib/ai";
+import { runAI, aiConfigured, activeChain, configuredProviders, setupHint } from "@/lib/ai";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,12 +52,21 @@ Write: **Portfolio read** (concentration, sector/factor tilt, biggest risks), **
 Keep it under ~280 words.`;
 }
 
+/** Status: which providers/models are live (used by the UI badge). */
+export async function GET() {
+  const chain = activeChain();
+  return NextResponse.json({
+    configured: aiConfigured(),
+    providers: configuredProviders(),
+    models: chain.map((m) => ({ label: m.label, tier: m.tier })),
+    freeCount: chain.filter((m) => m.tier === "free").length,
+    hint: aiConfigured() ? null : setupHint(),
+  });
+}
+
 export async function POST(req: NextRequest) {
   if (!aiConfigured()) {
-    return NextResponse.json(
-      { error: "AI not configured. Add OPENROUTER_API_KEY (free key at openrouter.ai/keys) and redeploy to enable AI analysis." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: setupHint() }, { status: 400 });
   }
   const body = await req.json().catch(() => ({}));
   const mode = body.mode;

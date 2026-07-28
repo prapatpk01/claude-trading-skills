@@ -24,15 +24,29 @@ The 3-statement model and DCF are **linked with real Excel formulas** — edit t
 assumption cells (growth, margins, WACC, terminal growth) and every downstream number,
 including the sensitivity table, recalculates in Excel.
 
-### ✨ AI analysis (multi-model, auto-fallback)
-Both the Research tab and the Portfolio tab have an **AI** button that generates a
-second-opinion analysis — verdict, bull/bear points, valuation read, portfolio risk, and
-next steps. It runs through **OpenRouter**, so one key unlocks many models (Claude, GPT,
-Gemini, Llama, DeepSeek, Qwen…). Free models are tried first and the app **automatically
-switches to the next model** when one is rate-limited or out of credit, so analysis keeps
-working. The chain is configurable via `AI_MODELS`. Requires `OPENROUTER_API_KEY`
-(free key at [openrouter.ai/keys](https://openrouter.ai/keys)); without it the buttons
-explain how to enable it.
+### ✨ AI analysis (multi-provider, auto-rotation)
+The Research and Portfolio tabs each have an **AI** button producing a second-opinion
+analysis — verdict, bull/bear points, valuation read, portfolio risk, next steps.
+
+**Add as many provider keys as you want** (all optional). The app builds a fallback chain
+across every provider you configured, tries **free tiers first**, and automatically
+switches to the next model when one is rate-limited or out of credit.
+
+| Provider | Env var | Free API tier? | Get a key |
+| --- | --- | --- | --- |
+| Google Gemini | `GEMINI_API_KEY` | ✅ generous | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| Groq | `GROQ_API_KEY` | ✅ | [console.groq.com/keys](https://console.groq.com/keys) |
+| Cerebras | `CEREBRAS_API_KEY` | ✅ | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+| Mistral | `MISTRAL_API_KEY` | ✅ | [console.mistral.ai](https://console.mistral.ai/api-keys) |
+| OpenRouter | `OPENROUTER_API_KEY` | ✅ `:free` models | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Anthropic (Claude) | `ANTHROPIC_API_KEY` | ❌ pay-per-token | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
+| OpenAI (GPT) | `OPENAI_API_KEY` | ❌ pay-per-token | [platform.openai.com](https://platform.openai.com/api-keys) |
+
+> Claude and GPT have **no free API tier** — those keys sit at the end of the chain and are
+> only reached after every free model is exhausted. For a zero-cost setup, add the free
+> providers only. Override the whole chain with `AI_MODELS` (`provider:model|Label`, comma-separated).
+
+The panel shows how many models are live and which one answered.
 
 ### 2. 💼 Portfolio & Watchlist
 Record holdings (shares, cost basis, personal target, rolling thesis), see live
