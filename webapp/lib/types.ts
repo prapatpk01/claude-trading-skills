@@ -74,12 +74,26 @@ export interface Candle {
   volume: number;
 }
 
+export interface QuarterlyRow {
+  end: string;
+  revenue: number | null;
+  netIncome: number | null;
+  eps: number | null;
+  netMargin: number | null;
+  /** Year-over-year revenue growth vs the same quarter a year earlier. */
+  revenueYoY?: number | null;
+}
+
 export interface MarketData {
   ticker: string;
   quote: Quote | null;
   overview: Overview | null;
   financials: Financials;
   earnings: EarningsRow[];
+  /** Last 8 reported quarters (SEC), newest first. */
+  quarters: QuarterlyRow[];
+  /** Annual diluted EPS history, newest first. */
+  annualEps: { year: number; end: string; eps: number }[];
   candles: Candle[]; // daily, oldest → newest
   benchmarkCandles: Candle[]; // SPY daily, oldest → newest
   sources: string[];

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runAI, aiConfigured, activeChain, configuredProviders, setupHint } from "@/lib/ai";
+import { runAI, aiConfigured, activeChain, configuredProviders, setupHint, keyDiagnostics } from "@/lib/ai";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,6 +61,8 @@ export async function GET() {
     models: chain.map((m) => ({ label: m.label, tier: m.tier })),
     freeCount: chain.filter((m) => m.tier === "free").length,
     hint: aiConfigured() ? null : setupHint(),
+    // booleans only — shows whether the server sees each key, never its value
+    detectedKeys: keyDiagnostics(),
   });
 }
 

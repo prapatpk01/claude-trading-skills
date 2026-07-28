@@ -89,6 +89,29 @@ function annualStock(facts: any, tags: string[], unit = "USD"): Map<number, numb
   return out;
 }
 
+/**
+ * Quarterly series for a flow metric, newest first.
+ * Only true ~3-month periods are kept, deduped by period end, so cumulative
+ * year-to-date facts filed alongside them cannot inflate the numbers.
+ */
+function quarterlySeries(facts: any, tags: string[], unit = "USD"): { end: string; val: number }[] {
+  const rows: FactEntry[] = [];
+  for (const tag of tags) {
+    for (const e of unitEntries(facts, tag, unit)) {
+      if (!e.start || !e.end || e.val == null) continue;
+      const span = days(e.start, e.end);
+      if (span < 80 || span > 100) continue;
+      rows.push(e);
+    }
+    if (rows.length) break; // first tag with data wins, avoids mixing definitions
+  }
+  const seen = new Set<string>();
+  return rows
+    .sort((a, b) => b.end.localeCompare(a.end))
+    .filter((e) => (seen.has(e.end) ? false : (seen.add(e.end), true)))
+    .map((e) => ({ end: e.end, val: e.val }));
+}
+
 /** Most recent value regardless of period type (used for TTM-ish figures). */
 function latest(facts: any, tags: string[], unit = "USD"): number | null {
   let best: FactEntry | null = null;
@@ -101,25 +124,18 @@ function latest(facts: any, tags: string[], unit = "USD"): number | null {
   return best ? best.val : null;
 }
 
-/** Sum of the last four quarterly values (trailing twelve months). */
+/**
+ * Trailing twelve months = sum of the last four quarters.
+ * Returns null unless those four quarters are actually contiguous (their
+ * end dates span ~9 months); a gap means filings are missing and the sum
+ * would understate the true TTM figure.
+ */
 function ttm(facts: any, tags: string[], unit = "USD"): number | null {
-  const quarters: FactEntry[] = [];
-  for (const tag of tags) {
-    for (const e of unitEntries(facts, tag, unit)) {
-      if (!e.start || !e.end || e.val == null) continue;
-      const span = days(e.start, e.end);
-      if (span < 80 || span > 100) continue; // ~one quarter
-      quarters.push(e);
-    }
-    if (quarters.length) break; // prefer the first tag that has data
-  }
-  if (quarters.length < 4) return null;
-  const seen = new Set<string>();
-  const uniq = quarters
-    .sort((a, b) => b.end.localeCompare(a.end))
-    .filter((e) => (seen.has(e.end) ? false : (seen.add(e.end), true)));
-  if (uniq.length < 4) return null;
-  return uniq.slice(0, 4).reduce((s, e) => s + e.val, 0);
+  const q = quarterlySeries(facts, tags, unit);
+  if (q.length < 4) return null;
+  const span = days(q[3].end, q[0].end);
+  if (span < 250 || span > 290) return null;
+  return q.slice(0, 4).reduce((s, e) => s + e.val, 0);
 }
 
 const TAGS = {
@@ -145,9 +161,27 @@ const TAGS = {
   dividends: ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
 };
 
+export interface QuarterRow {
+  end: string;
+  revenue: number | null;
+  netIncome: number | null;
+  eps: number | null;
+  netMargin: number | null;
+}
+
+export interface AnnualEps {
+  year: number;
+  end: string;
+  eps: number;
+}
+
 export interface SecFundamentals {
   entityName: string;
   financials: Financials;
+  /** Last 8 reported quarters, newest first. */
+  quarters: QuarterRow[];
+  /** Annual diluted EPS by fiscal year, newest first. */
+  annualEps: AnnualEps[];
   epsTTM: number | null;
   sharesOutstanding: number | null;
   revenueTTM: number | null;
@@ -226,9 +260,40 @@ export function parseCompanyFacts(data: any): SecFundamentals {
   const netIncomeTTM = ttm(facts, TAGS.netIncome) ?? (Number(income[0]?.netIncome) || null);
   const grossProfitTTM = ttm(facts, TAGS.grossProfit) ?? (Number(income[0]?.grossProfit) || null);
 
+  // ── Quarterly series (revenue / net income / EPS) ──
+  const qRev = quarterlySeries(facts, TAGS.revenue);
+  const qNi = quarterlySeries(facts, TAGS.netIncome);
+  const qEps = quarterlySeries(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], "USD/shares");
+  const revByEnd = new Map(qRev.map((r) => [r.end, r.val]));
+  const niByEnd = new Map(qNi.map((r) => [r.end, r.val]));
+  const epsByEnd = new Map(qEps.map((r) => [r.end, r.val]));
+  const quarterEnds = Array.from(new Set([...qRev, ...qNi].map((r) => r.end)))
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, 8);
+  const quarters: QuarterRow[] = quarterEnds.map((end) => {
+    const revenue = revByEnd.get(end) ?? null;
+    const netIncome = niByEnd.get(end) ?? null;
+    return {
+      end,
+      revenue,
+      netIncome,
+      eps: epsByEnd.get(end) ?? null,
+      netMargin: revenue && netIncome != null && revenue !== 0 ? netIncome / revenue : null,
+    };
+  });
+
+  // ── Annual diluted EPS (for historical-multiple valuation) ──
+  const annualEps: AnnualEps[] = Array.from(
+    annualFlow(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], "USD/shares").entries()
+  )
+    .sort((a, b) => b[0] - a[0])
+    .map(([year, eps]) => ({ year, end: `${year}-12-31`, eps }));
+
   return {
     entityName: data?.entityName ?? "",
     financials: { income, balance, cashflow },
+    quarters,
+    annualEps,
     epsTTM,
     sharesOutstanding,
     revenueTTM,

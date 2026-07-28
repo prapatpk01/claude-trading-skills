@@ -329,7 +329,10 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
     ["Cash & Equivalents ($M)", n(b0.cashAndEquivalents) / M, "#,##0"],
     ["Total Debt ($M)", (n(b0.longTermDebt) + n(b0.shortTermDebt)) / M, "#,##0"],
     ["Total Equity ($M)", n(b0.totalShareholderEquity) / M, "#,##0"],
-    ["Debt / Equity", { formula: `B${r + 4}/MAX(B${r + 5},0.0001)` }, "0.00"],
+    // Total Debt is at row r+3 and Total Equity at r+4 (this row is r+5) —
+    // referencing r+4/r+5 made the cell depend on itself and Excel showed a
+    // circular-reference error.
+    ["Debt / Equity", { formula: `B${r + 3}/MAX(B${r + 4},0.0001)` }, "0.00"],
     ["Free Cash Flow ($M)", fcf, "#,##0"],
     ["FCF Margin", a.assumptions.fcfMargin, "0.0%"],
   ];
@@ -346,8 +349,48 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
   bandRows(ws, r, r + metrics.length - 1, 2);
   r += metrics.length + 1;
 
+  // ── Quarterly results (SEC 10-Q/10-K derived) ──
+  const quarters = a.data.quarters ?? [];
+  if (quarters.length) {
+    sectionHeader(ws, `A${r}:F${r}`, "Quarterly Results ($M) — last 8 reported quarters");
+    r++;
+    headerRow(ws, r, ["Quarter ended", "Revenue", "Net Income", "Net Margin", "EPS", "Rev YoY"]);
+    r++;
+    const qStart = r;
+    quarters.forEach((q) => {
+      ws.getCell(r, 1).value = q.end;
+      ws.getCell(r, 1).alignment = { indent: 1 };
+      ws.getCell(r, 2).value = q.revenue != null ? q.revenue / M : "n/a";
+      ws.getCell(r, 2).numFmt = "#,##0";
+      ws.getCell(r, 3).value = q.netIncome != null ? q.netIncome / M : "n/a";
+      ws.getCell(r, 3).numFmt = "#,##0";
+      // margin as a live formula so edits recalculate
+      ws.getCell(r, 4).value = { formula: `IF(B${r}=0,"",C${r}/B${r})` };
+      ws.getCell(r, 4).numFmt = "0.0%";
+      ws.getCell(r, 5).value = q.eps ?? "n/a";
+      ws.getCell(r, 5).numFmt = "$0.00";
+      ws.getCell(r, 6).value = q.revenueYoY ?? "n/a";
+      ws.getCell(r, 6).numFmt = "0.0%";
+      [2, 3, 4, 5, 6].forEach((c) => (ws.getCell(r, c).alignment = { horizontal: "right" }));
+      r++;
+    });
+    bandRows(ws, qStart, r - 1, 6);
+    ws.addConditionalFormatting({
+      ref: `F${qStart}:F${r - 1}`,
+      rules: [
+        { type: "cellIs", operator: "greaterThan", formulae: ["0"], style: { font: { color: { argb: GREEN } } } } as any,
+        { type: "cellIs", operator: "lessThan", formulae: ["0"], style: { font: { color: { argb: RED } } } } as any,
+      ],
+    });
+    ws.addConditionalFormatting({
+      ref: `D${qStart}:D${r - 1}`,
+      rules: [{ type: "dataBar", cfvo: [{ type: "min" }, { type: "max" }], color: { argb: BLUE } } as any],
+    });
+    r++;
+  }
+
   // Recent earnings
-  sectionHeader(ws, `A${r}:F${r}`, "Recent Earnings (Beat / Miss)");
+  sectionHeader(ws, `A${r}:F${r}`, "Recent Earnings (Beat / Miss vs consensus)");
   r++;
   headerRow(ws, r, ["Quarter", "Reported EPS", "Est. EPS", "Surprise", "Surprise %", "Result"]);
   r++;
@@ -388,7 +431,17 @@ function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
 
   sectionHeader(ws, "A3:D3", "Scenario Analysis (probability-weighted)");
   headerRow(ws, 4, ["Scenario", "Probability", "Target Price", "Narrative"]);
+  // Method note so the targets can be audited rather than taken on faith
   let r = 5;
+  if (a.valuationNote) {
+    ws.mergeCells(`A${r}:D${r + 1}`);
+    const mn = ws.getCell(`A${r}`);
+    mn.value = `Method: ${a.valuationNote}`;
+    mn.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    mn.font = { size: 9, italic: true, color: { argb: GREY } };
+    ws.getRow(r).height = 30;
+    r += 2;
+  }
   const first = r;
   a.thesis.forEach((s) => {
     ws.getCell(r, 1).value = s.label;

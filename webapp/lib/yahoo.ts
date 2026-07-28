@@ -212,7 +212,9 @@ export async function getYahooMarketData(ticker: string): Promise<MarketData> {
     rawQuote(t).then((r) => { if (r) sources.add("Yahoo Finance (quote)"); return r; }).catch((e) => { warnings.push(`Yahoo quote: ${e?.message ?? "failed"}`); return null; }),
     summaryGroup(t, PROFILE_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (fundamentals)"); return r; }),
     summaryGroup(t, STATEMENT_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (financial statements)"); return r; }),
-    yahooCandles(t, 400).then((r) => { sources.add("Yahoo Finance (daily history)"); return r; }).catch((e) => { warnings.push(`Yahoo history: ${e?.message ?? "failed"}`); return [] as Candle[]; }),
+    // 5 years of daily bars: needed to sample the historical P/E range that
+    // the valuation scenarios are built from (400 days only covers one year).
+    yahooCandles(t, 1900).then((r) => { sources.add("Yahoo Finance (daily history)"); return r; }).catch((e) => { warnings.push(`Yahoo history: ${e?.message ?? "failed"}`); return [] as Candle[]; }),
     yahooCandles("SPY", 200).catch(() => [] as Candle[]),
   ]);
 
@@ -236,6 +238,7 @@ export async function getYahooMarketData(ticker: string): Promise<MarketData> {
 
   return {
     ticker: t, quote, overview, financials, earnings, candles, benchmarkCandles,
+    quarters: [], annualEps: [],
     sources: Array.from(sources), warnings,
   };
 }

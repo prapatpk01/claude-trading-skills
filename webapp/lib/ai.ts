@@ -52,7 +52,27 @@ export const DEFAULT_CHAIN: ModelSpec[] = [
   { provider: "openrouter", model: "anthropic/claude-3.7-sonnet",         label: "Claude 3.7 Sonnet (OR)",  tier: "paid" },
 ];
 
-const keyFor = (p: ProviderId): string | undefined => process.env[PROVIDERS[p].envKey];
+/**
+ * Read a provider key.
+ *
+ * These MUST be static `process.env.NAME` references: Next.js inlines env
+ * vars at build time by static analysis, so a computed lookup like
+ * `process.env[name]` can resolve to undefined in the bundled output even
+ * when the variable is set on the host.
+ */
+function keyFor(p: ProviderId): string | undefined {
+  const raw =
+    p === "gemini"     ? process.env.GEMINI_API_KEY :
+    p === "groq"       ? process.env.GROQ_API_KEY :
+    p === "cerebras"   ? process.env.CEREBRAS_API_KEY :
+    p === "mistral"    ? process.env.MISTRAL_API_KEY :
+    p === "openrouter" ? process.env.OPENROUTER_API_KEY :
+    p === "anthropic"  ? process.env.ANTHROPIC_API_KEY :
+    p === "openai"     ? process.env.OPENAI_API_KEY :
+    undefined;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
+}
 
 /** Chain filtered to providers that actually have a key configured. */
 export function activeChain(): ModelSpec[] {
@@ -91,7 +111,20 @@ export function setupHint(): string {
     .filter((p) => PROVIDERS[p].freeTier)
     .map((p) => `${PROVIDERS[p].envKey} (${PROVIDERS[p].signup})`)
     .join(", ");
-  return `No AI provider key found. Add at least one of these free-tier keys as an environment variable, then redeploy: ${list}`;
+  return `No AI provider key found. Add at least one of these free-tier keys as an environment variable, then REDEPLOY (env changes only apply to new deployments): ${list}`;
+}
+
+/**
+ * Which key variables the running server can actually see — booleans only,
+ * never values. Lets the UI distinguish "key missing" from "key present but
+ * the call failed", which is otherwise impossible to diagnose in production.
+ */
+export function keyDiagnostics(): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const p of Object.keys(PROVIDERS) as ProviderId[]) {
+    out[PROVIDERS[p].envKey] = !!keyFor(p);
+  }
+  return out;
 }
 
 // ── Provider adapters ─────────────────────────────────────────────────

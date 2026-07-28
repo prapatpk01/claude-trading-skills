@@ -81,6 +81,8 @@ function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): Mark
     overview: null,
     financials: { income: [], balance: [], cashflow: [] },
     earnings: [],
+    quarters: [],
+    annualEps: [],
     candles,
     benchmarkCandles: spy,
     sources: ["Daily price history"],

@@ -15,6 +15,7 @@ import type {
   DcfResult,
   SwingSetup,
 } from "./types";
+import { multipleScenarios, scenarioProbabilities, type MultipleScenarios } from "./valuation";
 
 export interface ThesisScenario {
   label: "Bull" | "Base" | "Bear";
@@ -35,6 +36,9 @@ export interface AnalysisResult {
   signal: "BUY" | "HOLD" | "SELL";
   signalReasons: string[];
   thesis: ThesisScenario[];
+  /** How the scenario targets were derived (method + key inputs). */
+  valuationNote: string;
+  multiples: MultipleScenarios | null;
   catalysts: { horizon: string; event: string; impact: string }[];
   risks: string[];
   targetPrice: number;
@@ -45,31 +49,64 @@ function round2(x: number) {
   return Math.round(x * 100) / 100;
 }
 
-function buildThesis(data: MarketData, dcf: DcfResult | null): ThesisScenario[] {
+function buildThesis(
+  data: MarketData,
+  dcf: DcfResult | null,
+  mult: MultipleScenarios | null,
+  momentumScore: number
+): { scenarios: ThesisScenario[]; valuationNote: string } {
   const price = data.quote?.price ?? 0;
-  const base = dcf?.fairValue ?? (price ? round2(price * 1.1) : 0);
   const name = data.overview?.name ?? data.ticker;
   const sector = data.overview?.sector ?? "its sector";
-  return [
-    {
-      label: "Bull",
-      probability: 25,
-      targetPrice: round2(base * 1.25),
-      narrative: `${name} sustains above-consensus growth in ${sector}, margins expand on operating leverage, and multiple re-rates as execution de-risks the story. Upside to ~${round2(base * 1.25)}.`,
-    },
-    {
-      label: "Base",
-      probability: 55,
-      targetPrice: round2(base),
-      narrative: `Growth decelerates gradually in line with the sector; margins hold. DCF fair value ~${round2(base)} anchors the base case with modest re-rating.`,
-    },
-    {
-      label: "Bear",
-      probability: 20,
-      targetPrice: round2(base * 0.72),
-      narrative: `Demand softens, competition compresses margins, and the multiple contracts on a risk-off tape. Downside to ~${round2(base * 0.72)}.`,
-    },
-  ];
+
+  // Prefer the market-anchored multiple method; fall back to the DCF, and to
+  // a price-anchored band only when neither is available.
+  let bear: number, base: number, bull: number, note: string;
+  if (mult) {
+    ({ bear, base, bull } = mult);
+    note = `${mult.method}. Forward EPS $${mult.forwardEps} (${mult.epsGrowth >= 0 ? "+" : ""}${mult.epsGrowth}% growth); P/E band ${mult.peLow}x / ${mult.peMid}x / ${mult.peHigh}x.`;
+    if (dcf) {
+      const gap = base > 0 ? ((dcf.fairValue - base) / base) * 100 : 0;
+      note += ` DCF cross-check: $${dcf.fairValue} (${gap >= 0 ? "+" : ""}${Math.round(gap)}% vs base) at a ${(dcf.wacc * 100).toFixed(1)}% WACC — a large gap usually means the market is pricing growth beyond the explicit forecast horizon.`;
+    }
+  } else if (dcf) {
+    base = dcf.fairValue;
+    bull = round2(base * 1.25);
+    bear = round2(base * 0.75);
+    note = `DCF-based (no usable EPS history for a multiple approach). WACC ${(dcf.wacc * 100).toFixed(1)}%, terminal growth ${(dcf.terminalGrowth * 100).toFixed(1)}%.`;
+  } else {
+    base = round2(price);
+    bull = round2(price * 1.2);
+    bear = round2(price * 0.8);
+    note = "Insufficient fundamental data — scenarios are a generic ±20% band around the current price and should not be relied on.";
+  }
+
+  const p = scenarioProbabilities(momentumScore, price, base);
+  const ret = (t: number) => (price ? ` (${t >= price ? "+" : ""}${Math.round(((t - price) / price) * 100)}% vs spot)` : "");
+
+  return {
+    valuationNote: note,
+    scenarios: [
+      {
+        label: "Bull",
+        probability: p.bull,
+        targetPrice: bull,
+        narrative: `${name} sustains above-trend growth in ${sector}, margins expand on operating leverage, and the market pays a premium multiple (upper end of its historical range). Target ~$${bull}${ret(bull)}.`,
+      },
+      {
+        label: "Base",
+        probability: p.base,
+        targetPrice: base,
+        narrative: `Growth moderates toward trend and the shares hold their typical multiple. Target ~$${base}${ret(base)}.`,
+      },
+      {
+        label: "Bear",
+        probability: p.bear,
+        targetPrice: bear,
+        narrative: `Demand softens, competition compresses margins, and the multiple de-rates to the low end of its historical range. Target ~$${bear}${ret(bear)}.`,
+      },
+    ],
+  };
 }
 
 function buildCatalysts(data: MarketData) {
@@ -114,10 +151,19 @@ export async function buildAnalysis(ticker: string): Promise<AnalysisResult> {
     ? `Post-earnings drift: last quarter beat by ${data.earnings[0]?.surprisePercent?.toFixed(1)}%. Revision momentum positive.`
     : "Sector-rotation / trend-persistence driver; no fresh earnings surprise flagged.";
   const swing = buildSwingSetup(data, technicals, momentum, catalystNote);
-  const { signal, reasons } = signalFrom(technicals, dcf?.upsidePct ?? null);
-  const thesis = buildThesis(data, dcf);
+  const multiples = multipleScenarios(
+    data.candles,
+    data.annualEps,
+    data.overview?.eps ?? null,
+    data.overview?.peRatio ?? null
+  );
+  const { scenarios: thesis, valuationNote } = buildThesis(data, dcf, multiples, momentum.total);
   const price = data.quote?.price ?? 0;
   const targetPrice = thesis.reduce((acc, s) => acc + (s.targetPrice * s.probability) / 100, 0);
+  // The signal follows the blended target (market-anchored) rather than the
+  // DCF alone, which can sit far from spot for high-multiple compounders.
+  const blendedUpside = price ? ((targetPrice - price) / price) * 100 : null;
+  const { signal, reasons } = signalFrom(technicals, blendedUpside);
 
   return {
     ticker: data.ticker,
@@ -131,6 +177,8 @@ export async function buildAnalysis(ticker: string): Promise<AnalysisResult> {
     signal,
     signalReasons: reasons,
     thesis,
+    valuationNote,
+    multiples,
     catalysts: buildCatalysts(data),
     risks: buildRisks(data),
     targetPrice: round2(targetPrice),

@@ -195,9 +195,13 @@ export interface DcfAssumptions {
 /** Default assumptions inferred from fundamentals with sane fallbacks. */
 export function defaultAssumptions(data: MarketData): DcfAssumptions {
   const ov = data.overview;
-  const beta = ov?.beta ?? 1.1;
+  const rawBeta = ov?.beta ?? 1.1;
+  // Blume-adjusted beta: raw betas measured over ~1y are noisy and mean-revert
+  // toward 1. Using a raw 2.0+ beta pushes WACC past 14% and makes the DCF
+  // collapse far below any sensible value for a large-cap.
+  const beta = clamp((0.67 * rawBeta + 0.33) * 100, 50, 180) / 100;
   // CAPM-ish WACC: rf 4.3% + beta * ERP 5.0%, floored/capped
-  const wacc = clamp((0.043 + beta * 0.05) * 100, 7, 15) / 100;
+  const wacc = clamp((0.043 + beta * 0.05) * 100, 7, 13) / 100;
   // Revenue growth taper from recent history
   const inc = data.financials.income;
   let hist = 0.1;

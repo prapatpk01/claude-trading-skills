@@ -262,22 +262,39 @@ async function enrich(data: MarketData): Promise<void> {
           revenueTTM: prev.revenueTTM ?? sec.revenueTTM,
           grossProfitTTM: prev.grossProfitTTM ?? sec.grossProfitTTM,
         };
-        // ratios derived from SEC figures
-        if (sec.revenueTTM && sec.netIncomeTTM != null && data.overview.profitMargin == null) {
-          data.overview.profitMargin = sec.netIncomeTTM / sec.revenueTTM;
-        }
-        if (sec.equity && sec.netIncomeTTM != null && data.overview.roe == null) {
-          data.overview.roe = sec.netIncomeTTM / sec.equity;
-        }
-        if (sec.assets && sec.netIncomeTTM != null && data.overview.roa == null) {
-          data.overview.roa = sec.netIncomeTTM / sec.assets;
-        }
+        if (sec.quarters.length) data.quarters = withYoY(sec.quarters);
+        if (sec.annualEps.length) data.annualEps = sec.annualEps;
+
+        // Ratios are computed from the latest full fiscal year, which is the
+        // most reliable series we have. A TTM sum is only used when it agrees
+        // with the annual figure — stitched-together quarterly facts are easy
+        // to get wrong (missing or restated filings silently understate them).
         const inc0 = data.financials.income[0];
-        if (inc0 && data.overview.operatingMargin == null) {
-          const rev = Number(inc0.totalRevenue) || 0;
-          const op = Number(inc0.operatingIncome) || 0;
-          if (rev > 0) data.overview.operatingMargin = op / rev;
+        const bal0 = data.financials.balance[0];
+        const revFY = Number(inc0?.totalRevenue) || 0;
+        const niFY = Number(inc0?.netIncome) || 0;
+        const opFY = Number(inc0?.operatingIncome) || 0;
+        const equityFY = Number(bal0?.totalShareholderEquity) || 0;
+        const assetsFY = Number(bal0?.totalAssets) || 0;
+
+        const agrees = (ttmVal: number | null, fyVal: number) =>
+          ttmVal != null && fyVal !== 0 && Math.abs(ttmVal - fyVal) / Math.abs(fyVal) < 0.6;
+        const revBase = agrees(sec.revenueTTM, revFY) ? sec.revenueTTM! : revFY;
+        const niBase = agrees(sec.netIncomeTTM, niFY) ? sec.netIncomeTTM! : niFY;
+
+        if (revBase > 0 && niBase !== 0 && data.overview.profitMargin == null) {
+          data.overview.profitMargin = niBase / revBase;
         }
+        if (equityFY > 0 && niBase !== 0 && data.overview.roe == null) {
+          data.overview.roe = niBase / equityFY;
+        }
+        if (assetsFY > 0 && niBase !== 0 && data.overview.roa == null) {
+          data.overview.roa = niBase / assetsFY;
+        }
+        if (revFY > 0 && data.overview.operatingMargin == null) {
+          data.overview.operatingMargin = opFY / revFY;
+        }
+        if (data.overview.revenueTTM == null && revBase > 0) data.overview.revenueTTM = revBase;
       }
     } catch (e: any) {
       data.warnings.push(`SEC EDGAR: ${e?.message ?? "unavailable"}`);
@@ -324,6 +341,48 @@ async function enrich(data: MarketData): Promise<void> {
   if (ov.priceToSales == null && ov.revenueTTM && ov.marketCap) {
     ov.priceToSales = Math.round((ov.marketCap / ov.revenueTTM) * 100) / 100;
   }
+  // Forward P/E: analyst estimates aren't available from the free sources, so
+  // when no provider supplied one we estimate next year's EPS by extending the
+  // company's own EPS trend. Surfaced as an estimate in the UI, not consensus.
+  if (ov.forwardPE == null && price > 0) {
+    const fwdEps = forwardEpsEstimate(data.annualEps, ov.eps);
+    if (fwdEps && fwdEps > 0) {
+      ov.forwardPE = Math.round((price / fwdEps) * 100) / 100;
+      data.sources.push("Derived (forward P/E from EPS trend — estimate, not consensus)");
+    }
+  }
+}
+
+/** Next-year EPS estimated from the company's own annual EPS trend. */
+export function forwardEpsEstimate(
+  annualEps: { year: number; eps: number }[],
+  epsTTM: number | null
+): number | null {
+  const base = epsTTM ?? annualEps[0]?.eps ?? null;
+  if (!base || base <= 0) return null;
+  let growth = 0.08;
+  if (annualEps.length >= 2) {
+    const newest = annualEps[0].eps;
+    const idx = Math.min(annualEps.length - 1, 4);
+    const oldest = annualEps[idx].eps;
+    if (newest > 0 && oldest > 0 && idx > 0) {
+      const cagr = Math.pow(newest / oldest, 1 / idx) - 1;
+      growth = Math.max(-0.15, Math.min(0.35, cagr * 0.7)); // damped, capped
+    }
+  }
+  return Math.round(base * (1 + growth) * 100) / 100;
+}
+
+/** Attach year-over-year revenue growth to each quarter (vs 4 quarters back). */
+function withYoY(quarters: { end: string; revenue: number | null; netIncome: number | null; eps: number | null; netMargin: number | null }[]) {
+  return quarters.map((q, i) => {
+    const prior = quarters[i + 4];
+    const yoy =
+      prior?.revenue && q.revenue && prior.revenue !== 0
+        ? (q.revenue - prior.revenue) / prior.revenue
+        : null;
+    return { ...q, revenueYoY: yoy };
+  });
 }
 
 function stripNulls(o: any): any {
@@ -398,6 +457,8 @@ async function getAlphaVantageMarketData(ticker: string): Promise<MarketData> {
     overview,
     financials,
     earnings,
+    quarters: [],
+    annualEps: [],
     candles,
     benchmarkCandles,
     sources: Array.from(sources),

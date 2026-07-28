@@ -104,7 +104,7 @@ export default function AnalyzeTab() {
               <h3 className="sub">Key Metrics</h3>
               <KV k="Market Cap" v={bn(ov?.marketCap)} />
               <KV k="P/E (TTM)" v={num(ov?.peRatio, 1)} />
-              <KV k="Forward P/E" v={num(ov?.forwardPE, 1)} />
+              <KV k="Forward P/E (est.)" v={num(ov?.forwardPE, 1)} />
               <KV k="EPS (TTM)" v={money(ov?.eps)} />
               <KV k="Profit Margin" v={ov?.profitMargin != null ? pct(ov.profitMargin * 100) : "—"} />
               <KV k="ROE (TTM)" v={ov?.roe != null ? pct(ov.roe * 100) : "—"} />
@@ -124,8 +124,42 @@ export default function AnalyzeTab() {
             </div>
           </div>
 
+          {data.data.quarters?.length > 0 && (
+            <div className="card">
+              <h3 className="sub">Quarterly Results (last 8 reported)</h3>
+              <div className="table-wrap">
+                <table className="tbl">
+                  <thead><tr>
+                    <th>Quarter</th><th className="num">Revenue</th><th className="num">Net Income</th>
+                    <th className="num">Net Margin</th><th className="num">EPS</th><th className="num">Rev YoY</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.data.quarters.map((q: any) => (
+                      <tr key={q.end}>
+                        <td>{q.end}</td>
+                        <td className="num">{bn(q.revenue)}</td>
+                        <td className="num">{bn(q.netIncome)}</td>
+                        <td className="num">{q.netMargin != null ? pct(q.netMargin * 100) : "—"}</td>
+                        <td className="num">{q.eps != null ? money(q.eps) : "—"}</td>
+                        <td className={cls("num", (q.revenueYoY ?? 0) >= 0 ? "pos" : "neg")}>
+                          {q.revenueYoY != null ? `${q.revenueYoY >= 0 ? "+" : ""}${pct(q.revenueYoY * 100)}` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ fontSize: 11, marginTop: 8 }}>Source: SEC EDGAR XBRL (10-Q / 10-K filings).</p>
+            </div>
+          )}
+
           <div className="card">
             <h3 className="sub">Scenario Thesis (probability-weighted)</h3>
+            {data.valuationNote && (
+              <p className="notice" style={{ marginBottom: 12 }}>
+                <strong>Method:</strong> {data.valuationNote}
+              </p>
+            )}
             <div className="table-wrap"><table className="tbl">
               <thead><tr><th>Scenario</th><th className="num">Prob.</th><th className="num">Target</th><th>Narrative</th></tr></thead>
               <tbody>

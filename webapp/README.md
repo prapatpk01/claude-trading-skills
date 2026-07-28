@@ -20,6 +20,19 @@ Type a ticker and get a live on-screen brief plus a downloadable Excel workbook 
 | 5. 3-Statement Model | 5-year IS / CFS / BS forecast — editable assumption cells recompute the model |
 | 6. Valuation & Scenarios | WACC build-up, DCF cash flows, terminal value, **live sensitivity grid**, scenario targets |
 
+**How the scenario targets are built.** A bare 5-year DCF systematically undervalues
+high-multiple compounders — with a beta-driven WACC and a fast growth taper it can land
+70%+ below spot, printing a "bull case" below the current price. So the primary method is
+relative: sample the **P/E the market has actually paid** for this company over the past
+five years (monthly, against the annual EPS reported at the time), then apply the 25th /
+50th / 75th percentile multiples to a forward EPS estimate. Years with anomalously
+depressed EPS (write-downs, acquisition amortization) are excluded — they produce
+enormous "P/E" readings that reflect a broken denominator — and the band is capped at
+±50% of the median multiple. The DCF still runs and is reported as a cross-check, with
+beta Blume-adjusted (`0.67·β + 0.33`) so a noisy 2.0+ raw beta can't push WACC past 13%.
+Scenario probabilities respond to momentum and to how stretched price is versus the base
+case, rather than being fixed.
+
 The 3-statement model and DCF are **linked with real Excel formulas** — edit the blue
 assumption cells (growth, margins, WACC, terminal growth) and every downstream number,
 including the sensitivity table, recalculates in Excel.
