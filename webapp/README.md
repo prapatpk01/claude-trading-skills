@@ -68,12 +68,25 @@ npm install
 npm run dev                 # http://localhost:3000
 ```
 
-### Data source — Yahoo Finance by default (no key!)
-Out of the box the app uses **Yahoo Finance** via [`yahoo-finance2`](https://github.com/gadicc/yahoo-finance2)
-— the same source as the Python `yfinance` library. **No API key, no signup, generous limits**,
-and it works for any US-listed ticker. Nothing to configure.
+### Data sources — no API key required
+The app layers several **free, keyless** sources so it degrades gracefully:
 
-Optionally switch to Alpha Vantage with `DATA_PROVIDER=alphavantage` + `ALPHA_VANTAGE_API_KEY`.
+| Layer | Source | Provides |
+| --- | --- | --- |
+| Prices | **Yahoo Finance** chart endpoint (`yahoo-finance2`, same source as Python's `yfinance`) | Daily OHLCV, all technicals |
+| Quote/fundamentals | Yahoo `quote` / `quoteSummary` | Live quote, ratios — *when reachable* |
+| **Fundamentals & statements** | **SEC EDGAR XBRL** company facts | Revenue, income, balance sheet, cash flow, EPS, shares, industry |
+| Derived | Price history | 52-week range, beta vs SPY, market cap, P/E, P/S |
+| Optional | Alpha Vantage / Finnhub (`ALPHA_VANTAGE_API_KEY`) | Extra fallback + earnings surprises |
+
+> ⚠️ **Why SEC EDGAR matters:** Yahoo's `quote` and `quoteSummary` endpoints require a
+> cookie+crumb handshake that Yahoo **blocks for datacenter IPs**. On Vercel/Railway those
+> calls fail while the public chart endpoint keeps working — which is why fundamentals used
+> to show `0` / `n/a` in production. SEC EDGAR is an official public API with no such
+> restriction, so statements and key figures now populate on any host. Set a contact
+> `SEC_USER_AGENT` (SEC asks for one); a default is provided.
+
+Optionally switch the price provider with `DATA_PROVIDER=alphavantage` + `ALPHA_VANTAGE_API_KEY`.
 
 ### Environment variables (`.env`)
 | Var | Purpose | Required |

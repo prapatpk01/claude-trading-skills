@@ -8,6 +8,8 @@ import type {
   MarketData,
 } from "./types";
 import { getYahooMarketData, yahooQuote, yahooCandles, overviewHasData, financialsHasData } from "./yahoo";
+import { getSecFundamentals } from "./sec";
+import { week52Range, computeBeta } from "./derive";
 
 const AV_BASE = "https://www.alphavantage.co/query";
 const FH_BASE = "https://finnhub.io/api/v1";
@@ -216,26 +218,130 @@ export async function fhQuote(ticker: string): Promise<Quote | null> {
 export async function getMarketData(ticker: string): Promise<MarketData> {
   if (dataProvider() === "yahoo") {
     const data = await getYahooMarketData(ticker);
-    // If Yahoo's fundamentals endpoint is blocked from this host, backfill
-    // from Alpha Vantage when a key is available (it works from cloud IPs).
-    if (process.env.ALPHA_VANTAGE_API_KEY) {
-      const t = data.ticker;
-      if (!overviewHasData(data.overview)) {
-        const ov = await avOverview(t).catch(() => null);
-        if (ov) { data.overview = ov; data.sources.push("Alpha Vantage (OVERVIEW fallback)"); }
-      }
-      if (!financialsHasData(data.financials)) {
-        const fin = await avFinancials(t).catch(() => null);
-        if (fin && fin.income.length) { data.financials = fin; data.sources.push("Alpha Vantage (statements fallback)"); }
-        if (data.earnings.length === 0) {
-          const e = await avEarnings(t).catch(() => []);
-          if (e.length) { data.earnings = e; }
-        }
-      }
-    }
+    await enrich(data);
     return data;
   }
-  return getAlphaVantageMarketData(ticker);
+  const data = await getAlphaVantageMarketData(ticker);
+  await enrich(data);
+  return data;
+}
+
+/**
+ * Fill gaps left by the primary provider.
+ *
+ * Yahoo's quote/quoteSummary endpoints need a cookie+crumb handshake that
+ * Yahoo blocks for cloud hosts, so on Vercel/Railway only the public chart
+ * endpoint succeeds and fundamentals arrive empty. We repair that with:
+ *   1. SEC EDGAR  — real statements & share count, free and keyless
+ *   2. Alpha Vantage — optional, only if a key is configured
+ *   3. Price history — beta and the 52-week range need no provider at all
+ * Ratios are then derived from whatever we recovered.
+ */
+async function enrich(data: MarketData): Promise<void> {
+  const t = data.ticker;
+
+  // ── 1. SEC EDGAR fundamentals + statements ──
+  if (!financialsHasData(data.financials) || !overviewHasData(data.overview)) {
+    try {
+      const sec = await getSecFundamentals(t);
+      if (sec) {
+        if (!financialsHasData(data.financials) && sec.financials.income.length) {
+          data.financials = sec.financials;
+          data.sources.push("SEC EDGAR (XBRL company facts)");
+        }
+        const prev = data.overview ?? emptyOverview(t);
+        const hasVal = (v: any) => v != null && v !== "n/a" && v !== "";
+        data.overview = {
+          ...prev,
+          name: prev.name && prev.name !== t ? prev.name : sec.entityName || t,
+          industry: hasVal(prev.industry) ? prev.industry : sec.industry ?? "n/a",
+          sector: hasVal(prev.sector) ? prev.sector : sec.industry ?? "n/a",
+          description: prev.description || sec.description || "",
+          eps: prev.eps ?? sec.epsTTM,
+          sharesOutstanding: prev.sharesOutstanding ?? sec.sharesOutstanding,
+          revenueTTM: prev.revenueTTM ?? sec.revenueTTM,
+          grossProfitTTM: prev.grossProfitTTM ?? sec.grossProfitTTM,
+        };
+        // ratios derived from SEC figures
+        if (sec.revenueTTM && sec.netIncomeTTM != null && data.overview.profitMargin == null) {
+          data.overview.profitMargin = sec.netIncomeTTM / sec.revenueTTM;
+        }
+        if (sec.equity && sec.netIncomeTTM != null && data.overview.roe == null) {
+          data.overview.roe = sec.netIncomeTTM / sec.equity;
+        }
+        if (sec.assets && sec.netIncomeTTM != null && data.overview.roa == null) {
+          data.overview.roa = sec.netIncomeTTM / sec.assets;
+        }
+        const inc0 = data.financials.income[0];
+        if (inc0 && data.overview.operatingMargin == null) {
+          const rev = Number(inc0.totalRevenue) || 0;
+          const op = Number(inc0.operatingIncome) || 0;
+          if (rev > 0) data.overview.operatingMargin = op / rev;
+        }
+      }
+    } catch (e: any) {
+      data.warnings.push(`SEC EDGAR: ${e?.message ?? "unavailable"}`);
+    }
+  }
+
+  // ── 2. Alpha Vantage (optional, only when a key is present) ──
+  if (process.env.ALPHA_VANTAGE_API_KEY) {
+    if (!overviewHasData(data.overview)) {
+      const ov = await avOverview(t).catch(() => null);
+      if (ov) { data.overview = { ...ov, ...stripNulls(data.overview) }; data.sources.push("Alpha Vantage (OVERVIEW fallback)"); }
+    }
+    if (!financialsHasData(data.financials)) {
+      const fin = await avFinancials(t).catch(() => null);
+      if (fin && fin.income.length) { data.financials = fin; data.sources.push("Alpha Vantage (statements fallback)"); }
+    }
+    if (data.earnings.length === 0) {
+      const e = await avEarnings(t).catch(() => []);
+      if (e.length) { data.earnings = e; data.sources.push("Alpha Vantage (earnings fallback)"); }
+    }
+  }
+
+  // ── 3. Derived from price history — always available ──
+  const price = data.quote?.price ?? 0;
+  const ov = (data.overview ??= emptyOverview(t));
+  if (data.candles.length) {
+    if (ov.week52High == null || ov.week52Low == null) {
+      const r = week52Range(data.candles);
+      ov.week52High ??= r.high;
+      ov.week52Low ??= r.low;
+      if (r.high != null) data.sources.push("Derived (52-week range from price history)");
+    }
+    if (ov.beta == null && data.benchmarkCandles.length) {
+      const b = computeBeta(data.candles, data.benchmarkCandles);
+      if (b != null) { ov.beta = b; data.sources.push("Derived (beta vs SPY)"); }
+    }
+  }
+  if (ov.marketCap == null && ov.sharesOutstanding && price) {
+    ov.marketCap = ov.sharesOutstanding * price;
+  }
+  if (ov.peRatio == null && ov.eps && ov.eps > 0 && price) {
+    ov.peRatio = Math.round((price / ov.eps) * 100) / 100;
+  }
+  if (ov.priceToSales == null && ov.revenueTTM && ov.marketCap) {
+    ov.priceToSales = Math.round((ov.marketCap / ov.revenueTTM) * 100) / 100;
+  }
+}
+
+function stripNulls(o: any): any {
+  if (!o) return {};
+  const out: any = {};
+  for (const [k, v] of Object.entries(o)) if (v !== null && v !== undefined) out[k] = v;
+  return out;
+}
+
+function emptyOverview(ticker: string): Overview {
+  return {
+    symbol: ticker, name: ticker, description: "", sector: "n/a", industry: "n/a",
+    currency: "USD", country: "n/a", marketCap: null, peRatio: null, forwardPE: null,
+    pegRatio: null, priceToSales: null, priceToBook: null, eps: null, dividendYield: null,
+    profitMargin: null, operatingMargin: null, roe: null, roa: null, revenueTTM: null,
+    grossProfitTTM: null, ebitda: null, beta: null, week52High: null, week52Low: null,
+    sma50: null, sma200: null, analystTargetPrice: null, sharesOutstanding: null,
+  };
 }
 
 async function getAlphaVantageMarketData(ticker: string): Promise<MarketData> {
