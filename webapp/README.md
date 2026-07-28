@@ -64,9 +64,33 @@ npm run dev                 # http://localhost:3000
 > The bundled schema uses permissive single-tenant RLS (personal use). For multi-user,
 > add a `user_id` column and scope policies to `auth.uid()`.
 
-## Deploy (Vercel)
-Push this folder to a repo, import it in Vercel, set the env vars above, and deploy.
-The XLSX generation and all data fetching run in Node.js API routes.
+## Deploy
+
+All XLSX generation and data fetching run in Node.js API routes, so any Node host works.
+
+### Railway (recommended if you already use Railway)
+The app lives in the `webapp/` subfolder, so point the service at it:
+
+1. **New → Deploy from GitHub repo** → pick `claude-trading-skills`.
+2. Service **Settings → Root Directory = `webapp`** (required — otherwise the build can't find `package.json`).
+3. Nixpacks auto-detects Next.js and uses [`webapp/railway.json`](railway.json)
+   (`npm ci && npm run build` → `npm run start`). Railway injects `PORT`, which
+   `next start` reads automatically — no extra config needed.
+4. **Variables** tab → add:
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=...
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+   ALPHA_VANTAGE_API_KEY=...
+   ```
+5. **Settings → Networking → Generate Domain** to get a public URL.
+
+> 💡 Cost: a Next.js web service stays *always-on*, unlike a bot that idles.
+> On the Hobby plan ($5 credit/mo) an always-on ~512 MB service can consume most
+> of that credit on its own, so running it **alongside** a bot may tip you into
+> paid usage. To cut cost, cap memory in service settings or scale to 0 when idle.
+
+### Vercel
+Import the repo, set **Root Directory = `webapp`**, add the env vars above, deploy.
 
 ## Architecture
 ```
