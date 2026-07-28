@@ -7,7 +7,7 @@ import type {
   Candle,
   MarketData,
 } from "./types";
-import { getYahooMarketData, yahooQuote, yahooCandles } from "./yahoo";
+import { getYahooMarketData, yahooQuote, yahooCandles, overviewHasData, financialsHasData } from "./yahoo";
 
 const AV_BASE = "https://www.alphavantage.co/query";
 const FH_BASE = "https://finnhub.io/api/v1";
@@ -215,7 +215,25 @@ export async function fhQuote(ticker: string): Promise<Quote | null> {
  */
 export async function getMarketData(ticker: string): Promise<MarketData> {
   if (dataProvider() === "yahoo") {
-    return getYahooMarketData(ticker);
+    const data = await getYahooMarketData(ticker);
+    // If Yahoo's fundamentals endpoint is blocked from this host, backfill
+    // from Alpha Vantage when a key is available (it works from cloud IPs).
+    if (process.env.ALPHA_VANTAGE_API_KEY) {
+      const t = data.ticker;
+      if (!overviewHasData(data.overview)) {
+        const ov = await avOverview(t).catch(() => null);
+        if (ov) { data.overview = ov; data.sources.push("Alpha Vantage (OVERVIEW fallback)"); }
+      }
+      if (!financialsHasData(data.financials)) {
+        const fin = await avFinancials(t).catch(() => null);
+        if (fin && fin.income.length) { data.financials = fin; data.sources.push("Alpha Vantage (statements fallback)"); }
+        if (data.earnings.length === 0) {
+          const e = await avEarnings(t).catch(() => []);
+          if (e.length) { data.earnings = e; }
+        }
+      }
+    }
+    return data;
   }
   return getAlphaVantageMarketData(ticker);
 }

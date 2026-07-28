@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { money, num, pct, cls } from "./format";
+import AiPanel from "./AiPanel";
 
 interface Holding { id: string; ticker: string; shares: number; avg_cost: number; thesis?: string; target_price?: number | null; }
 interface WatchItem { id: string; ticker: string; reason?: string; alert_price?: number | null; }
@@ -54,6 +55,27 @@ export default function PortfolioTab() {
         <div className="metric"><div className="label">Return</div><div className={cls("value", pnlPct >= 0 ? "pos" : "neg")}>{pnlPct >= 0 ? "+" : ""}{pct(pnlPct)}</div></div>
       </div>
 
+      <div className="card ai-card" style={{ marginTop: 18 }}>
+        <h3 className="sub">✨ AI Portfolio Review</h3>
+        <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
+          Multi-model read on concentration, risk, position notes &amp; watchlist priorities. Auto-switches models if one hits its limit.
+        </p>
+        <AiPanel
+          label="Review my portfolio with AI"
+          buildBody={() => ({
+            mode: "portfolio",
+            portfolio: {
+              holdings: holdings.map((h) => ({ ...h, price: quotes[h.ticker]?.price ?? null })),
+              watchlist: watch,
+              mktValue: Math.round(mktValue),
+              costBasis: Math.round(costBasis),
+              pnl: Math.round(pnl),
+              pnlPct: Number(pnlPct.toFixed(1)),
+            },
+          })}
+        />
+      </div>
+
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 className="section" style={{ margin: 0 }}>💼 Portfolio Holdings</h2>
@@ -64,7 +86,7 @@ export default function PortfolioTab() {
         </div>
         <HoldingForm onAdd={load} />
         {loading ? <p className="muted">Loading…</p> : (
-          <table className="tbl" style={{ marginTop: 12 }}>
+          <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
             <thead><tr>
               <th>Ticker</th><th className="num">Shares</th><th className="num">Avg Cost</th><th className="num">Price</th>
               <th className="num">Mkt Value</th><th className="num">P/L</th><th className="num">Target</th><th>Thesis</th><th></th>
@@ -91,14 +113,14 @@ export default function PortfolioTab() {
               })}
               {holdings.length === 0 && <tr><td colSpan={9} className="muted">No holdings yet — add one above.</td></tr>}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
       <div className="card">
         <h2 className="section">⭐ Watchlist</h2>
         <WatchForm onAdd={load} />
-        <table className="tbl" style={{ marginTop: 12 }}>
+        <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
           <thead><tr><th>Ticker</th><th className="num">Price</th><th className="num">Chg</th><th className="num">Alert</th><th>Reason</th><th></th></tr></thead>
           <tbody>
             {watch.map((w) => {
@@ -117,7 +139,7 @@ export default function PortfolioTab() {
             })}
             {watch.length === 0 && <tr><td colSpan={6} className="muted">Watchlist empty.</td></tr>}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>
   );

@@ -77,7 +77,7 @@ export default function ScannerTab() {
             </div>
           </div>
 
-          <table className="tbl" style={{ marginTop: 14 }}>
+          <div className="table-wrap"><table className="tbl" style={{ marginTop: 14 }}>
             <thead><tr><th>Timeframe</th><th className="num">Risk:Reward</th><th className="num">Entry Range</th><th className="num">Target</th><th className="num">Stop</th><th className="num">Exp. Return</th><th className="num">Win Prob.</th></tr></thead>
             <tbody>
               <tr>
@@ -90,7 +90,7 @@ export default function ScannerTab() {
                 <td className="num">{s.winProbability}%</td>
               </tr>
             </tbody>
-          </table>
+          </table></div>
 
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             <div><strong>📈 Momentum &amp; RS:</strong> <span className="muted">{s.momentumNote}</span></div>

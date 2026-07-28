@@ -10,7 +10,6 @@ import type {
 } from "./types";
 
 // yahoo-finance2 v4 is class-based and must be instantiated.
-// Cast to any so we can pass lenient runtime options without type friction.
 const yf: any = new (YahooFinance as any)({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 
 const num = (v: any): number | null => {
@@ -18,6 +17,10 @@ const num = (v: any): number | null => {
   if (typeof v === "object" && v.raw !== undefined) v = v.raw;
   const n = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(n) ? n : null;
+};
+const pick = (...vals: (number | null | undefined)[]): number | null => {
+  for (const v of vals) if (v !== null && v !== undefined && Number.isFinite(v)) return v as number;
+  return null;
 };
 
 function fiscalDate(v: any): string {
@@ -29,9 +32,26 @@ function fiscalDate(v: any): string {
   return String(v);
 }
 
-// ── Quote ─────────────────────────────────────────────────────────────
-export async function yahooQuote(ticker: string): Promise<Quote | null> {
-  const q = await yf.quote(ticker, { validateResult: false });
+async function retry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
+  let lastErr: any;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+// ── Raw quote (rich object, used for both Quote and Overview) ─────────
+async function rawQuote(ticker: string): Promise<any | null> {
+  const q = await retry<any>(() => yf.quote(ticker, { validateResult: false }));
+  return q && q.regularMarketPrice !== undefined ? q : null;
+}
+
+function toQuote(q: any, ticker: string): Quote | null {
   if (!q || q.regularMarketPrice === undefined) return null;
   return {
     symbol: q.symbol ?? ticker,
@@ -47,10 +67,14 @@ export async function yahooQuote(ticker: string): Promise<Quote | null> {
   };
 }
 
-// ── Candles (daily) ───────────────────────────────────────────────────
+export async function yahooQuote(ticker: string): Promise<Quote | null> {
+  return toQuote(await rawQuote(ticker), ticker);
+}
+
+// ── Candles (daily) — public chart endpoint, most reliable on cloud ───
 export async function yahooCandles(ticker: string, days = 400): Promise<Candle[]> {
   const period1 = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const res = await yf.chart(ticker, { period1, interval: "1d" });
+  const res = await retry<any>(() => yf.chart(ticker, { period1, interval: "1d" }));
   const rows: any[] = res?.quotes ?? [];
   return rows
     .filter((r) => r.close != null)
@@ -65,49 +89,41 @@ export async function yahooCandles(ticker: string, days = 400): Promise<Candle[]
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-// ── Overview + financials + earnings from one quoteSummary call ────────
-const SUMMARY_MODULES = [
-  "assetProfile",
-  "summaryDetail",
-  "defaultKeyStatistics",
-  "financialData",
-  "price",
-  "incomeStatementHistory",
-  "balanceSheetHistory",
-  "cashflowStatementHistory",
-  "earningsHistory",
-];
+// ── quoteSummary split into groups so one failing module doesn't nuke all
+const PROFILE_MODULES = ["assetProfile", "summaryDetail", "defaultKeyStatistics", "financialData", "price"];
+const STATEMENT_MODULES = ["incomeStatementHistory", "balanceSheetHistory", "cashflowStatementHistory", "earningsHistory"];
 
-interface SummaryBundle {
-  overview: Overview | null;
-  financials: Financials;
-  earnings: EarningsRow[];
+async function summaryGroup(ticker: string, modules: string[]): Promise<any | null> {
+  try {
+    return await retry<any>(() => yf.quoteSummary(ticker, { modules, validateResult: false }));
+  } catch {
+    return null;
+  }
 }
 
-export async function yahooSummary(ticker: string, quote: Quote | null): Promise<SummaryBundle> {
-  const s = await yf.quoteSummary(ticker, { modules: SUMMARY_MODULES, validateResult: false });
+function buildOverview(ticker: string, q: any, s: any): Overview {
   const ap = s?.assetProfile ?? {};
   const sd = s?.summaryDetail ?? {};
   const ks = s?.defaultKeyStatistics ?? {};
   const fd = s?.financialData ?? {};
   const pr = s?.price ?? {};
-
-  const overview: Overview = {
+  q = q ?? {};
+  return {
     symbol: ticker,
-    name: pr.longName ?? pr.shortName ?? ticker,
+    name: pr.longName ?? pr.shortName ?? q.longName ?? q.shortName ?? ticker,
     description: ap.longBusinessSummary ?? "",
     sector: ap.sector ?? "n/a",
     industry: ap.industry ?? "n/a",
-    currency: pr.currency ?? sd.currency ?? "USD",
+    currency: pr.currency ?? q.currency ?? "USD",
     country: ap.country ?? "n/a",
-    marketCap: num(pr.marketCap) ?? num(sd.marketCap),
-    peRatio: num(sd.trailingPE),
-    forwardPE: num(sd.forwardPE) ?? num(ks.forwardPE),
-    pegRatio: num(ks.pegRatio) ?? num(ks.trailingPegRatio),
+    marketCap: pick(num(pr.marketCap), num(sd.marketCap), num(q.marketCap)),
+    peRatio: pick(num(sd.trailingPE), num(q.trailingPE)),
+    forwardPE: pick(num(sd.forwardPE), num(ks.forwardPE), num(q.forwardPE)),
+    pegRatio: pick(num(ks.pegRatio), num(ks.trailingPegRatio)),
     priceToSales: num(sd.priceToSalesTrailing12Months),
-    priceToBook: num(ks.priceToBook),
-    eps: num(ks.trailingEps) ?? (quote ? num((quote as any).eps) : null),
-    dividendYield: num(sd.dividendYield),
+    priceToBook: pick(num(ks.priceToBook), num(q.priceToBook)),
+    eps: pick(num(ks.trailingEps), num(q.epsTrailingTwelveMonths)),
+    dividendYield: pick(num(sd.dividendYield), num(q.dividendYield), num(q.trailingAnnualDividendYield)),
     profitMargin: num(fd.profitMargins),
     operatingMargin: num(fd.operatingMargins),
     roe: num(fd.returnOnEquity),
@@ -115,23 +131,24 @@ export async function yahooSummary(ticker: string, quote: Quote | null): Promise
     revenueTTM: num(fd.totalRevenue),
     grossProfitTTM: num(fd.grossProfits),
     ebitda: num(fd.ebitda),
-    beta: num(sd.beta) ?? num(ks.beta),
-    week52High: num(sd.fiftyTwoWeekHigh),
-    week52Low: num(sd.fiftyTwoWeekLow),
-    sma50: num(sd.fiftyDayAverage),
-    sma200: num(sd.twoHundredDayAverage),
-    analystTargetPrice: num(fd.targetMeanPrice),
-    sharesOutstanding: num(ks.sharesOutstanding),
+    beta: pick(num(sd.beta), num(ks.beta)),
+    week52High: pick(num(sd.fiftyTwoWeekHigh), num(q.fiftyTwoWeekHigh)),
+    week52Low: pick(num(sd.fiftyTwoWeekLow), num(q.fiftyTwoWeekLow)),
+    sma50: pick(num(sd.fiftyDayAverage), num(q.fiftyDayAverage)),
+    sma200: pick(num(sd.twoHundredDayAverage), num(q.twoHundredDayAverage)),
+    analystTargetPrice: pick(num(fd.targetMeanPrice), num(q.targetPriceMean)),
+    sharesOutstanding: pick(num(ks.sharesOutstanding), num(q.sharesOutstanding)),
   };
+}
 
+function buildFinancials(s: any): Financials {
   const mapRows = (arr: any[], dateKey: string, fields: Record<string, string>): FinancialRow[] =>
     (arr ?? []).slice(0, 5).map((r) => {
       const row: FinancialRow = { fiscalDate: fiscalDate(r[dateKey]) };
       for (const [key, yKey] of Object.entries(fields)) row[key] = num(r[yKey]) ?? 0;
       return row;
     });
-
-  const financials: Financials = {
+  return {
     income: mapRows(s?.incomeStatementHistory?.incomeStatementHistory, "endDate", {
       totalRevenue: "totalRevenue",
       grossProfit: "grossProfit",
@@ -161,79 +178,64 @@ export async function yahooSummary(ticker: string, quote: Quote | null): Promise
       changeInCashAndCashEquivalents: "changeInCash",
     }),
   };
+}
 
+function buildEarnings(s: any): EarningsRow[] {
   const hist: any[] = s?.earningsHistory?.history ?? [];
-  const earnings: EarningsRow[] = hist
+  return hist
     .map((h) => ({
       fiscalDate: fiscalDate(h.quarter),
       reportedEPS: num(h.epsActual),
       estimatedEPS: num(h.epsEstimate),
       surprise: num(h.epsDifference),
-      // Yahoo gives surprisePercent as a ratio (0.05); express as percent (5.0)
       surprisePercent: h.surprisePercent != null ? (num(h.surprisePercent) ?? 0) * 100 : null,
     }))
-    .reverse() // newest first
+    .reverse()
     .slice(0, 8);
-
-  return { overview, financials, earnings };
 }
 
-// ── Full aggregator (mirrors marketData.getMarketData) ────────────────
+export function overviewHasData(o: Overview | null): boolean {
+  if (!o) return false;
+  return o.marketCap != null || o.peRatio != null || o.eps != null || o.revenueTTM != null;
+}
+export function financialsHasData(f: Financials): boolean {
+  return f.income.length > 0 && Number(f.income[0].totalRevenue) > 0;
+}
+
+// ── Full aggregator ───────────────────────────────────────────────────
 export async function getYahooMarketData(ticker: string): Promise<MarketData> {
   const t = ticker.trim().toUpperCase();
   const sources = new Set<string>();
   const warnings: string[] = [];
 
-  const safe = async <T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
-    try {
-      const r = await fn();
-      sources.add(label);
-      return r;
-    } catch (e: any) {
-      warnings.push(`${label}: ${e?.message ?? "failed"}`);
-      return fallback;
-    }
-  };
-
-  const quote = await safe("Yahoo Finance (quote)", () => yahooQuote(t), null);
-  const [summary, candles, benchmarkCandles] = await Promise.all([
-    safe("Yahoo Finance (fundamentals)", () => yahooSummary(t, quote), {
-      overview: null,
-      financials: { income: [], balance: [], cashflow: [] },
-      earnings: [],
-    } as SummaryBundle),
-    safe("Yahoo Finance (daily history)", () => yahooCandles(t, 400), [] as Candle[]),
-    safe("Yahoo Finance (SPY benchmark)", () => yahooCandles("SPY", 200), [] as Candle[]),
+  const [q, profile, statements, candles, benchmarkCandles] = await Promise.all([
+    rawQuote(t).then((r) => { if (r) sources.add("Yahoo Finance (quote)"); return r; }).catch((e) => { warnings.push(`Yahoo quote: ${e?.message ?? "failed"}`); return null; }),
+    summaryGroup(t, PROFILE_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (fundamentals)"); return r; }),
+    summaryGroup(t, STATEMENT_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (financial statements)"); return r; }),
+    yahooCandles(t, 400).then((r) => { sources.add("Yahoo Finance (daily history)"); return r; }).catch((e) => { warnings.push(`Yahoo history: ${e?.message ?? "failed"}`); return [] as Candle[]; }),
+    yahooCandles("SPY", 200).catch(() => [] as Candle[]),
   ]);
 
-  let finalQuote = quote;
-  if (!finalQuote && candles.length > 0) {
+  const overview = buildOverview(t, q, profile);
+  const financials = buildFinancials(statements);
+  const earnings = buildEarnings(statements);
+  if (!overviewHasData(overview)) warnings.push("Yahoo fundamentals unavailable (endpoint may be blocked from this host).");
+  if (!financialsHasData(financials)) warnings.push("Yahoo financial statements unavailable.");
+
+  let quote = toQuote(q, t);
+  if (!quote && candles.length > 0) {
     const last = candles[candles.length - 1];
     const prev = candles[candles.length - 2] ?? last;
-    finalQuote = {
-      symbol: t,
-      price: last.close,
-      change: last.close - prev.close,
+    quote = {
+      symbol: t, price: last.close, change: last.close - prev.close,
       changePercent: prev.close ? ((last.close - prev.close) / prev.close) * 100 : 0,
-      high: last.high,
-      low: last.low,
-      open: last.open,
-      prevClose: prev.close,
-      volume: last.volume,
-      asOf: last.date,
+      high: last.high, low: last.low, open: last.open, prevClose: prev.close, volume: last.volume, asOf: last.date,
     };
     sources.add("Derived (daily candles)");
   }
 
   return {
-    ticker: t,
-    quote: finalQuote,
-    overview: summary.overview,
-    financials: summary.financials,
-    earnings: summary.earnings,
-    candles,
-    benchmarkCandles,
-    sources: Array.from(sources),
-    warnings,
+    ticker: t, quote, overview, financials, earnings, candles, benchmarkCandles,
+    sources: Array.from(sources), warnings,
   };
 }

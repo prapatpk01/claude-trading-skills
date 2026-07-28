@@ -24,6 +24,16 @@ The 3-statement model and DCF are **linked with real Excel formulas** — edit t
 assumption cells (growth, margins, WACC, terminal growth) and every downstream number,
 including the sensitivity table, recalculates in Excel.
 
+### ✨ AI analysis (multi-model, auto-fallback)
+Both the Research tab and the Portfolio tab have an **AI** button that generates a
+second-opinion analysis — verdict, bull/bear points, valuation read, portfolio risk, and
+next steps. It runs through **OpenRouter**, so one key unlocks many models (Claude, GPT,
+Gemini, Llama, DeepSeek, Qwen…). Free models are tried first and the app **automatically
+switches to the next model** when one is rate-limited or out of credit, so analysis keeps
+working. The chain is configurable via `AI_MODELS`. Requires `OPENROUTER_API_KEY`
+(free key at [openrouter.ai/keys](https://openrouter.ai/keys)); without it the buttons
+explain how to enable it.
+
 ### 2. 💼 Portfolio & Watchlist
 Record holdings (shares, cost basis, personal target, rolling thesis), see live
 market value / unrealized P&L, and maintain a watchlist with alert levels and reasons.

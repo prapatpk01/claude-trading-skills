@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { money, num, pct, bn, cls } from "./format";
+import AiPanel from "./AiPanel";
 
 export default function AnalyzeTab() {
   const [ticker, setTicker] = useState("");
@@ -90,6 +91,14 @@ export default function AnalyzeTab() {
             </div>
           </div>
 
+          <div className="card ai-card">
+            <h3 className="sub">✨ AI Second Opinion</h3>
+            <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
+              Multi-model analysis of {data.ticker}: verdict, bull/bear points, valuation read &amp; what to watch. Auto-switches between models if one is busy.
+            </p>
+            <AiPanel label={`Analyze ${data.ticker} with AI`} buildBody={() => ({ mode: "research", analysis: data })} />
+          </div>
+
           <div className="grid cols-2">
             <div className="card">
               <h3 className="sub">Key Metrics</h3>
@@ -117,7 +126,7 @@ export default function AnalyzeTab() {
 
           <div className="card">
             <h3 className="sub">Scenario Thesis (probability-weighted)</h3>
-            <table className="tbl">
+            <div className="table-wrap"><table className="tbl">
               <thead><tr><th>Scenario</th><th className="num">Prob.</th><th className="num">Target</th><th>Narrative</th></tr></thead>
               <tbody>
                 {data.thesis.map((s: any) => (
@@ -129,7 +138,7 @@ export default function AnalyzeTab() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           </div>
 
           {data.swing && (
