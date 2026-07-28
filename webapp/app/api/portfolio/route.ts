@@ -18,22 +18,39 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const ticker = String(body.ticker ?? "").trim().toUpperCase();
-  if (!ticker) return NextResponse.json({ error: "ticker required" }, { status: 400 });
+  if (!/^[A-Z.\-]{1,10}$/.test(ticker)) {
+    return NextResponse.json({ error: "Enter a valid ticker symbol (letters only, e.g. NVDA)." }, { status: 400 });
+  }
+  // Empty form fields arrive as "" — Number("") is 0, so treat blanks as absent
+  // rather than storing a silent zero.
+  const optNum = (v: any): number | null => {
+    if (v === null || v === undefined || String(v).trim() === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const shares = optNum(body.shares);
+  const avgCost = optNum(body.avg_cost);
+  if (shares === null || shares <= 0) {
+    return NextResponse.json({ error: "Shares must be a number greater than zero." }, { status: 400 });
+  }
+  if (avgCost === null || avgCost < 0) {
+    return NextResponse.json({ error: "Average cost must be a valid number." }, { status: 400 });
+  }
   const row = {
     ticker,
-    shares: Number(body.shares) || 0,
-    avg_cost: Number(body.avg_cost) || 0,
-    notes: body.notes ?? null,
-    thesis: body.thesis ?? null,
-    target_price: body.target_price != null ? Number(body.target_price) : null,
+    shares,
+    avg_cost: avgCost,
+    notes: body.notes?.trim() || null,
+    thesis: body.thesis?.trim() || null,
+    target_price: optNum(body.target_price),
   };
   const sb = getSupabase();
   if (sb) {
     const { data, error } = await sb.from("holdings").insert(row).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
     return NextResponse.json({ holding: data });
   }
-  return NextResponse.json({ holding: memStore.addHolding(row) });
+  return NextResponse.json({ holding: memStore.addHolding(row), backend: "memory" });
 }
 
 export async function PATCH(req: NextRequest) {

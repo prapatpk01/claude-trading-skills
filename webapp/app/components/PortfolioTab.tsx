@@ -12,17 +12,28 @@ export default function PortfolioTab() {
   const [quotes, setQuotes] = useState<Record<string, { price: number; changePercent: number } | null>>({});
   const [backend, setBackend] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [quotesLoading, setQuotesLoading] = useState(false);
+  const [failedQuotes, setFailedQuotes] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [p, w] = await Promise.all([
-      fetch("/api/portfolio").then((r) => r.json()),
-      fetch("/api/watchlist").then((r) => r.json()),
-    ]);
-    setHoldings(p.holdings ?? []);
-    setWatch(w.watchlist ?? []);
-    setBackend(p.backend ?? "");
-    setLoading(false);
+    setError(null);
+    try {
+      const [p, w] = await Promise.all([
+        fetch("/api/portfolio").then((r) => r.json()),
+        fetch("/api/watchlist").then((r) => r.json()),
+      ]);
+      if (p.error) throw new Error(`Portfolio: ${p.error}`);
+      if (w.error) throw new Error(`Watchlist: ${w.error}`);
+      setHoldings(p.holdings ?? []);
+      setWatch(w.watchlist ?? []);
+      setBackend(p.backend ?? "");
+    } catch (e: any) {
+      setError(e.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -30,11 +41,22 @@ export default function PortfolioTab() {
   const refreshQuotes = useCallback(async () => {
     const tickers = Array.from(new Set([...holdings.map((h) => h.ticker), ...watch.map((w) => w.ticker)]));
     if (!tickers.length) return;
-    const res = await fetch(`/api/quote?tickers=${tickers.join(",")}`).then((r) => r.json());
-    setQuotes(res.quotes ?? {});
+    setQuotesLoading(true);
+    try {
+      const res = await fetch(`/api/quote?tickers=${tickers.join(",")}`).then((r) => r.json());
+      setQuotes(res.quotes ?? {});
+      setFailedQuotes(res.failed ?? []);
+    } catch {
+      setFailedQuotes(tickers);
+    } finally {
+      setQuotesLoading(false);
+    }
   }, [holdings, watch]);
 
-  useEffect(() => { if (holdings.length || watch.length) refreshQuotes(); }, [holdings.length, watch.length]); // eslint-disable-line
+  // Key on the actual ticker list: keying on length alone missed refreshes when
+  // one holding replaced another (count unchanged, symbols different).
+  const tickerKey = [...holdings.map((h) => h.ticker), ...watch.map((w) => w.ticker)].sort().join(",");
+  useEffect(() => { if (tickerKey) refreshQuotes(); }, [tickerKey]); // eslint-disable-line
 
   // ── totals ──
   let mktValue = 0, costBasis = 0;
@@ -79,11 +101,19 @@ export default function PortfolioTab() {
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 className="section" style={{ margin: 0 }}>💼 Portfolio Holdings</h2>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span className="tag">store: {backend || "…"}</span>
-            <button className="btn ghost sm" onClick={refreshQuotes}>↻ Refresh prices</button>
+            <button className="btn ghost sm" onClick={refreshQuotes} disabled={quotesLoading}>
+              {quotesLoading ? <><span className="spinner" /> Prices…</> : "↻ Refresh prices"}
+            </button>
           </div>
         </div>
+        {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
+        {failedQuotes.length > 0 && (
+          <div className="notice" style={{ marginTop: 12 }}>
+            Could not fetch a live price for: <strong>{failedQuotes.join(", ")}</strong>. Market value for those rows falls back to cost basis. Check the symbol is a valid US-listed ticker, or retry.
+          </div>
+        )}
         <HoldingForm onAdd={load} />
         {loading ? <p className="muted">Loading…</p> : (
           <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
@@ -148,7 +178,9 @@ export default function PortfolioTab() {
 function HoldingForm({ onAdd }: { onAdd: () => void }) {
   const [f, setF] = useState({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "" });
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   return (
+    <>
     <form
       className="searchbar"
       style={{ marginTop: 12 }}
@@ -156,10 +188,22 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
         e.preventDefault();
         if (!f.ticker) return;
         setBusy(true);
-        await fetch("/api/portfolio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) });
-        setF({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "" });
-        setBusy(false);
-        onAdd();
+        setErr(null);
+        try {
+          const res = await fetch("/api/portfolio", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(f),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || "Could not save the holding");
+          setF({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "" });
+          onAdd();
+        } catch (e: any) {
+          setErr(e.message);
+        } finally {
+          setBusy(false);
+        }
       }}
     >
       <input className="input-ticker" placeholder="TICKER" value={f.ticker} onChange={(e) => setF({ ...f, ticker: e.target.value })} maxLength={10} />
@@ -169,13 +213,17 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
       <input placeholder="Thesis / notes" value={f.thesis} onChange={(e) => setF({ ...f, thesis: e.target.value })} style={{ flex: 1, minWidth: 160 }} />
       <button className="btn" disabled={busy}>{busy ? "…" : "Add holding"}</button>
     </form>
+    {err && <div className="err" style={{ marginTop: 10 }}>⚠ {err}</div>}
+    </>
   );
 }
 
 function WatchForm({ onAdd }: { onAdd: () => void }) {
   const [f, setF] = useState({ ticker: "", alert_price: "", reason: "" });
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   return (
+    <>
     <form
       className="searchbar"
       style={{ marginTop: 12 }}
@@ -183,10 +231,22 @@ function WatchForm({ onAdd }: { onAdd: () => void }) {
         e.preventDefault();
         if (!f.ticker) return;
         setBusy(true);
-        await fetch("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) });
-        setF({ ticker: "", alert_price: "", reason: "" });
-        setBusy(false);
-        onAdd();
+        setErr(null);
+        try {
+          const res = await fetch("/api/watchlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(f),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || "Could not save to the watchlist");
+          setF({ ticker: "", alert_price: "", reason: "" });
+          onAdd();
+        } catch (e: any) {
+          setErr(e.message);
+        } finally {
+          setBusy(false);
+        }
       }}
     >
       <input className="input-ticker" placeholder="TICKER" value={f.ticker} onChange={(e) => setF({ ...f, ticker: e.target.value })} maxLength={10} />
@@ -194,5 +254,7 @@ function WatchForm({ onAdd }: { onAdd: () => void }) {
       <input placeholder="Why watching?" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} style={{ flex: 1, minWidth: 160 }} />
       <button className="btn" disabled={busy}>{busy ? "…" : "Add"}</button>
     </form>
+    {err && <div className="err" style={{ marginTop: 10 }}>⚠ {err}</div>}
+    </>
   );
 }

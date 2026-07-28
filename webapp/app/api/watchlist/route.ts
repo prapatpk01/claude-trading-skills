@@ -18,16 +18,25 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const ticker = String(body.ticker ?? "").trim().toUpperCase();
-  if (!ticker) return NextResponse.json({ error: "ticker required" }, { status: 400 });
+  if (!/^[A-Z.\-]{1,10}$/.test(ticker)) {
+    return NextResponse.json({ error: "Enter a valid ticker symbol (letters only, e.g. NVDA)." }, { status: 400 });
+  }
+  const alertRaw = body.alert_price;
+  const alertPrice =
+    alertRaw === null || alertRaw === undefined || String(alertRaw).trim() === ""
+      ? null
+      : Number.isFinite(Number(alertRaw))
+      ? Number(alertRaw)
+      : null;
   const row = {
     ticker,
-    reason: body.reason ?? null,
-    alert_price: body.alert_price != null ? Number(body.alert_price) : null,
+    reason: body.reason?.trim() || null,
+    alert_price: alertPrice,
   };
   const sb = getSupabase();
   if (sb) {
     const { data, error } = await sb.from("watchlist").upsert(row, { onConflict: "ticker" }).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
     return NextResponse.json({ item: data });
   }
   return NextResponse.json({ item: memStore.addWatch(row) });

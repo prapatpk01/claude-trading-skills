@@ -474,9 +474,38 @@ export async function dailyCandles(ticker: string, days = 200): Promise<Candle[]
   return avDaily(ticker, days > 130 ? "full" : "compact");
 }
 
-/** Lightweight latest quote from the active provider. */
+/**
+ * Lightweight latest quote from the active provider.
+ *
+ * Yahoo's `quote` endpoint needs the cookie+crumb handshake that Yahoo blocks
+ * for datacenter IPs, so on Vercel/Railway it returns nothing and every
+ * portfolio row would show an empty price. The public chart endpoint keeps
+ * working, so we derive the last close (and day change) from it — that is the
+ * path that actually succeeds in production.
+ */
 export async function getLightQuote(ticker: string): Promise<Quote | null> {
   if (dataProvider() === "yahoo") {
+    const fromCandles = await yahooCandles(ticker, 12)
+      .then((candles) => {
+        if (candles.length === 0) return null;
+        const last = candles[candles.length - 1];
+        const prev = candles[candles.length - 2] ?? last;
+        return {
+          symbol: ticker,
+          price: last.close,
+          change: last.close - prev.close,
+          changePercent: prev.close ? ((last.close - prev.close) / prev.close) * 100 : 0,
+          high: last.high,
+          low: last.low,
+          open: last.open,
+          prevClose: prev.close,
+          volume: last.volume,
+          asOf: last.date,
+        } as Quote;
+      })
+      .catch(() => null);
+    if (fromCandles) return fromCandles;
+    // last resort: the authenticated endpoint, in case it is reachable here
     return yahooQuote(ticker).catch(() => null);
   }
   let q = await avGlobalQuote(ticker).catch(() => null);
