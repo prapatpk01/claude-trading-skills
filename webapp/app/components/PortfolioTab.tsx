@@ -69,6 +69,20 @@ export default function PortfolioTab() {
   const tickerKey = [...holdings.map((h) => h.ticker), ...watch.map((w) => w.ticker)].sort().join(",");
   useEffect(() => { if (tickerKey) refreshQuotes(); }, [tickerKey]); // eslint-disable-line
 
+  const startEdit = useCallback((h: Holding) => {
+    setRowError(null);
+    setEditingId(h.id);
+    setDraft({
+      ticker: h.ticker,
+      shares: String(h.shares),
+      avg_cost: String(h.avg_cost),
+      target_price: h.target_price != null ? String(h.target_price) : "",
+      thesis: h.thesis ?? "",
+      opened_at: h.opened_at ?? (h.created_at ? h.created_at.slice(0, 10) : ""),
+      closed_at: h.closed_at ?? "",
+    });
+  }, []);
+
   // ── totals ──
   let mktValue = 0, costBasis = 0;
   for (const h of holdings) {
@@ -307,25 +321,9 @@ export default function PortfolioTab() {
                       {h.opened_at ?? (h.created_at ? h.created_at.slice(0, 10) : "—")}
                       {h.closed_at && <><br /><span className="neg">closed {h.closed_at}</span></>}
                     </td>
-                    <td className="muted" style={{ fontSize: 12, maxWidth: 220 }}>{h.thesis || "—"}</td>
+                    <td style={{ maxWidth: 230 }}><ThesisCell text={h.thesis} onAdd={() => startEdit(h)} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>
-                      <button
-                        className="btn ghost sm"
-                        title="Edit this position"
-                        onClick={() => {
-                          setRowError(null);
-                          setEditingId(h.id);
-                          setDraft({
-                            ticker: h.ticker,
-                            shares: String(h.shares),
-                            avg_cost: String(h.avg_cost),
-                            target_price: h.target_price != null ? String(h.target_price) : "",
-                            thesis: h.thesis ?? "",
-                            opened_at: h.opened_at ?? (h.created_at ? h.created_at.slice(0, 10) : ""),
-                            closed_at: h.closed_at ?? "",
-                          });
-                        }}
-                      >
+                      <button className="btn ghost sm" title="Edit this position" onClick={() => startEdit(h)}>
                         ✎
                       </button>{" "}
                       <button
@@ -338,7 +336,7 @@ export default function PortfolioTab() {
                   </tr>
                 );
               })}
-              {holdings.length === 0 && <tr><td colSpan={9} className="muted">No holdings yet — add one above.</td></tr>}
+              {holdings.length === 0 && <tr><td colSpan={10} className="muted">No holdings yet — add one above.</td></tr>}
             </tbody>
           </table></div>
         )}
@@ -654,5 +652,51 @@ function IdeaTracker({ refreshKey }: { refreshKey: string }) {
 
       {s?.note && <p className="notice" style={{ marginTop: 12 }}>{s.note}</p>}
     </div>
+  );
+}
+
+/**
+ * Thesis cell — shows a short form by default and expands on click.
+ * An empty thesis previously rendered a bare dash, which gave no hint that
+ * one could be added, so the empty state is now the affordance.
+ */
+function ThesisCell({ text, onAdd }: { text?: string | null; onAdd: () => void }) {
+  const [open, setOpen] = useState(false);
+  const body = (text ?? "").trim();
+
+  if (!body) {
+    return (
+      <button
+        onClick={onAdd}
+        title="Add a thesis for this position"
+        style={{
+          background: "transparent", border: "1px dashed var(--border-strong)", borderRadius: 7,
+          color: "var(--muted)", font: "inherit", fontSize: 11.5, padding: "3px 9px", cursor: "pointer",
+        }}
+      >
+        + add note
+      </button>
+    );
+  }
+
+  const SHORT = 70;
+  const isLong = body.length > SHORT;
+  return (
+    <span
+      onClick={() => isLong && setOpen((o) => !o)}
+      title={isLong && !open ? body : undefined}
+      className="muted"
+      style={{
+        fontSize: 12, lineHeight: 1.45, display: "block",
+        cursor: isLong ? "pointer" : "default",
+      }}
+    >
+      {open || !isLong ? body : `${body.slice(0, SHORT).trimEnd()}…`}
+      {isLong && (
+        <span style={{ color: "var(--accent-2)", marginLeft: 5, whiteSpace: "nowrap", fontSize: 11 }}>
+          {open ? "less" : "more"}
+        </span>
+      )}
+    </span>
   );
 }
