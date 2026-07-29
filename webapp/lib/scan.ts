@@ -2,6 +2,7 @@ import { dailyCandles } from "./marketData";
 import { computeTechnicals, computeMomentumScore, buildSwingSetup } from "./analysis";
 import { ema, pctReturn, sma } from "./indicators";
 import { scoreMomentumV3, type MomentumScoreV3 } from "./team/scoring";
+import { runSAMP, type SampResult } from "./team/samp";
 import { computeBeta } from "./derive";
 import type { MarketData, SwingSetup, Candle } from "./types";
 
@@ -58,6 +59,8 @@ export interface ScanResult {
   setups: SwingSetup[];
   /** Sentinel v3.0 score for each setup, keyed by ticker. */
   sentinel: Record<string, MomentumScoreV3>;
+  /** SAMP 3-layer read per setup (Priya's desk), keyed by ticker. */
+  samp: Record<string, Pick<SampResult, "direction" | "strength" | "acceleration" | "regime" | "state" | "strongBull" | "strongBear" | "earlyBull" | "watchLong" | "lastSignal" | "barsSinceLastSignal">>;
   /** Names excluded by a hard block, with the reason. */
   rejected: { ticker: string; score: number; blocks: string[] }[];
   scanned: number;
@@ -107,6 +110,7 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
 
   const candidates: SwingSetup[] = [];
   const sentinel: Record<string, MomentumScoreV3> = {};
+  const samp: ScanResult["samp"] = {};
   const rejected: { ticker: string; score: number; blocks: string[] }[] = [];
   let scanned = 0;
   // sequential to stay polite to the data provider
@@ -129,6 +133,17 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
       const v3 = scoreMomentumV3({ candles, benchmark: spy, beta });
       sentinel[ticker] = v3;
 
+      // Priya's SAMP engine — an independent 3-layer read on the same bars
+      const sp = runSAMP(candles, { profile: "Precision" });
+      if (sp) {
+        samp[ticker] = {
+          direction: sp.direction, strength: sp.strength, acceleration: sp.acceleration,
+          regime: sp.regime, state: sp.state, strongBull: sp.strongBull, strongBear: sp.strongBear,
+          earlyBull: sp.earlyBull, watchLong: sp.watchLong,
+          lastSignal: sp.lastSignal, barsSinceLastSignal: sp.barsSinceLastSignal,
+        };
+      }
+
       if (v3.signal === "REJECT" && v3.hardBlocks.length) {
         rejected.push({ ticker, score: v3.total, blocks: v3.hardBlocks.map((b) => b.reason) });
         continue; // a hard block bars the name from the shortlist
@@ -145,5 +160,5 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
     .sort((a, b) => b.momentumScore - a.momentumScore)
     .slice(0, topN);
 
-  return { regime, setups, sentinel, rejected, scanned, warnings, asOf: new Date().toISOString() };
+  return { regime, setups, sentinel, samp, rejected, scanned, warnings, asOf: new Date().toISOString() };
 }

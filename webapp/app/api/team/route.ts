@@ -4,6 +4,7 @@ import { getMarketData, dailyCandles, getLightQuote } from "@/lib/marketData";
 import { buildTickerMemo } from "@/lib/team/memo";
 import { buildBookReview } from "@/lib/team/book";
 import { scoreMomentumV3, atrStop } from "@/lib/team/scoring";
+import { runSAMP } from "@/lib/team/samp";
 import { assessRegime } from "@/lib/team/governance";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { getSupabase } from "@/lib/supabase";
@@ -174,6 +175,8 @@ export async function POST(req: NextRequest) {
           const score = scoreMomentumV3({ candles, benchmark: spy, beta });
           const price = candles[candles.length - 1].close;
           const stop = atrStop(candles, price, 2);
+          // Priya's SAMP engine as a second, independent read
+          const samp = runSAMP(candles, { profile: "Precision" });
           rows.push({
             ticker: w.ticker,
             reason: w.reason ?? null,
@@ -181,6 +184,22 @@ export async function POST(req: NextRequest) {
             price: Math.round(price * 100) / 100,
             score: score.total,
             signal: score.signal,
+            samp: samp
+              ? {
+                  direction: samp.direction,
+                  strength: samp.strength,
+                  acceleration: samp.acceleration,
+                  regime: samp.regime,
+                  longQuality: samp.longQuality,
+                  state: samp.state,
+                  strongBull: samp.strongBull,
+                  strongBear: samp.strongBear,
+                  earlyBull: samp.earlyBull,
+                  watchLong: samp.watchLong,
+                  lastSignal: samp.lastSignal,
+                  barsSinceLastSignal: samp.barsSinceLastSignal,
+                }
+              : null,
             signalReason: score.signalReason,
             hardBlocks: score.hardBlocks,
             phaseTotals: score.phaseTotals,

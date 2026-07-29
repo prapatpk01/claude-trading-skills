@@ -10,6 +10,7 @@ import { scoreMomentumV3, atrStop, type MomentumScoreV3 } from "./scoring";
 import { assessRegime, runGates, type RegimeAssessment, type GateResult } from "./governance";
 import { assessPositionZone, sizeByRisk, checkRiskCaps, type ZoneAssessment, type RiskCheck } from "./risk";
 import { classifySleeve, type Sleeve } from "./portfolio";
+import { runSAMP, type SampResult } from "./samp";
 import { ROSTER, FUND } from "./roster";
 
 export interface DeskNote {
@@ -29,6 +30,8 @@ export interface TickerMemo {
   score: MomentumScoreV3;
   gates: GateResult;
   sleeve: Sleeve;
+  /** Priya's desk — Sentinel Adaptive Structure v1.6 SAMP engine. */
+  samp: SampResult | null;
   stop: { stop: number; atr: number } | null;
   suggestedShares: number | null;
   riskChecks: RiskCheck[];
@@ -190,6 +193,45 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     verdict: score.signalReason,
   });
 
+  // Priya Nair — SAMP engine (Sentinel Adaptive Structure v1.6)
+  const samp = runSAMP(data.candles, { profile: "Precision" });
+  if (samp) {
+    const layerBullets = [
+      `Layer 1 · Market direction: ${samp.direction} (regime-adaptive pressure, EMA-smoothed)`,
+      `Layer 2 · Momentum strength: ${samp.strength}`,
+      `Layer 3 · Acceleration: ${samp.acceleration}`,
+      `Weighting regime: ${samp.regime} — trend ${samp.weights.trend} · direction ${samp.weights.dir} · structure ${samp.weights.struct} · price action ${samp.weights.pa} · flow ${samp.weights.flow}`,
+      `Components: trend ${samp.components.trend} · directional ${samp.components.direction} · structure ${samp.components.structure} · price action ${samp.components.priceAction} · flow ${samp.components.flow}`,
+      `Setup quality — long ${samp.longQuality}/100, short ${samp.shortQuality}/100 (fires at ${samp.thresholds.quality})`,
+      `Gates on the current bar: context ${samp.contextLong ? "long ✅" : samp.contextShort ? "short ✅" : "none"} · room ${samp.roomOkLong ? "ok" : "blocked"} · chase ${samp.chaseOkLong ? "ok" : "extended"}`,
+    ];
+    if (samp.lastSignal) {
+      layerBullets.push(
+        `Last confirmed signal: ${samp.lastSignal.type} on ${samp.lastSignal.date} at ${money(samp.lastSignal.price)} — quality ${samp.lastSignal.quality}, via ${samp.lastSignal.trigger}${samp.barsSinceLastSignal != null ? ` (${samp.barsSinceLastSignal} bars ago)` : ""}`
+      );
+    } else {
+      layerBullets.push(`No confirmed signal in ${samp.bars} bars of history — the chase and location filters suppress entries into extended moves.`);
+    }
+    const states: string[] = [];
+    if (samp.strongBull) states.push("STRONG BULL pressure — direction, strength and acceleration aligned");
+    if (samp.strongBear) states.push("STRONG BEAR pressure");
+    if (samp.earlyBull) states.push("EARLY BULL TURN — acceleration flipped positive ahead of a full signal");
+    if (samp.earlyBear) states.push("EARLY BEAR TURN");
+    if (samp.watchLong) states.push("WATCH long — setup forming but not yet confirmed");
+    if (samp.watchShort) states.push("WATCH short");
+    if (states.length) layerBullets.push(...states.map((s) => `⚡ ${s}`));
+
+    desks.push({
+      member: ROSTER.priya.name,
+      role: ROSTER.priya.role,
+      heading: `SAMP 3-layer engine — direction ${samp.direction}, ${samp.regime.toLowerCase()}`,
+      bullets: layerBullets,
+      verdict: samp.lastSignal
+        ? `Engine state ${samp.state === 1 ? "long" : samp.state === -1 ? "short" : "flat"}. A signal requires context, location, trigger and pressure together — pressure alone never fires one.`
+        : "No entry confirmed. Turning-point states warn that pressure is rotating; they are not trade signals on their own.",
+    });
+  }
+
   // Aisha Fontaine — catalyst
   desks.push({
     member: ROSTER.aisha.name,
@@ -313,6 +355,7 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     score,
     gates,
     sleeve,
+    samp,
     stop,
     suggestedShares,
     riskChecks,

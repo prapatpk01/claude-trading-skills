@@ -265,7 +265,7 @@ export default function PortfolioTab() {
                 <table className="tbl">
                   <thead><tr>
                     <th>#</th><th>Ticker</th><th className="num">Price</th><th className="num">Score</th>
-                    <th>Signal</th><th className="num">Stop</th><th>Notes</th>
+                    <th>Signal</th><th className="num">SAMP L1/L3</th><th className="num">Stop</th><th>Notes</th>
                   </tr></thead>
                   <tbody>
                     {res.rows.map((row: any, i: number) => (
@@ -275,6 +275,20 @@ export default function PortfolioTab() {
                         <td className="num">{row.price != null ? money(row.price) : "—"}</td>
                         <td className="num">{row.score != null ? `${row.score}/100` : "—"}</td>
                         <td>{row.signal ? <SignalBadge signal={row.signal} /> : <span className="muted">n/a</span>}</td>
+                        <td className="num">
+                          {row.samp ? (
+                            <>
+                              <span className={row.samp.direction >= 0 ? "pos" : "neg"}>{row.samp.direction}</span>
+                              {" / "}
+                              <span className={row.samp.acceleration >= 0 ? "pos" : "neg"}>{row.samp.acceleration}</span>
+                              {(row.samp.strongBull || row.samp.earlyBull || row.samp.watchLong) && (
+                                <><br /><span style={{ fontSize: 10 }} className="muted">
+                                  {row.samp.strongBull ? "⚡ strong" : row.samp.earlyBull ? "⚡ early turn" : "👁 watch"}
+                                </span></>
+                              )}
+                            </>
+                          ) : "—"}
+                        </td>
                         <td className="num">{row.stop != null ? money(row.stop) : "—"}</td>
                         <td className="muted" style={{ fontSize: 11.5, maxWidth: 260 }}>
                           {row.error

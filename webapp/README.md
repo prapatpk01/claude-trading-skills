@@ -58,6 +58,20 @@ Flow 25 (OBV+MFI · volume expansion) · 3C Structure 15 (MA stack · pattern) �
 price rises · RSI < 45 without MA confirmation · dollar volume under $10M. **Rule #1** downgrades
 a single block to WATCH when the score exceeds 80; two or more blocks always reject.
 
+**Quant desk — SAMP engine.** Priya Nair's desk runs a faithful port of §0 of
+*Sentinel Adaptive Structure v1.6* (Pine v6), the fund's own TradingView indicator, so the
+same signal can be evaluated server-side over the app's candles. Five pressure components
+(trend velocity, DMI directional pressure, market structure, price action, volume flow) are
+combined with **regime-adaptive weights** — strong trend / transition / range — then smoothed
+into three layers: **L1 direction**, **L2 strength**, **L3 acceleration**.
+
+A signal fires only when **context, location, trigger and pressure** all agree: macro context by
+profile, a room/chase filter that refuses to buy into nearby resistance or an extended move, one
+of three triggers (pullback reclaim, sweep reversal, breakout with optional retest), two-bar
+pressure persistence, a setup-quality score past its threshold, and a cooldown state machine that
+allows one signal per confirmed setup. Pressure crossing a threshold never fires a trade by
+itself — which is why a relentless trend can legitimately produce **no** signal.
+
 **Rule #5 is enforced**: any input the free data feed cannot verify is flagged `[U]` and scores
 **zero** — it is never estimated. Items the feed genuinely cannot supply (scheduled FOMC/CPI dates,
 the earnings blackout, consensus estimates) are reported as such rather than invented, and

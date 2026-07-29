@@ -123,6 +123,36 @@ export default function ScannerTab() {
             </tbody>
           </table></div>
 
+          {result.samp?.[s.ticker] && (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "rgba(79,140,255,.08)", border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 12, marginBottom: 6 }}>
+                <strong>🧠 SAMP 3-layer</strong> <span className="muted">— Sentinel Adaptive Structure v1.6 · {result.samp[s.ticker].regime}</span>
+              </div>
+              <div className="grid cols-3" style={{ gap: 8 }}>
+                <div className="metric" style={{ padding: "8px 10px" }}>
+                  <div className="label">L1 Direction</div>
+                  <div className={cls("value", result.samp[s.ticker].direction >= 0 ? "pos" : "neg")} style={{ fontSize: 16 }}>{result.samp[s.ticker].direction}</div>
+                </div>
+                <div className="metric" style={{ padding: "8px 10px" }}>
+                  <div className="label">L2 Strength</div>
+                  <div className="value" style={{ fontSize: 16 }}>{result.samp[s.ticker].strength}</div>
+                </div>
+                <div className="metric" style={{ padding: "8px 10px" }}>
+                  <div className="label">L3 Acceleration</div>
+                  <div className={cls("value", result.samp[s.ticker].acceleration >= 0 ? "pos" : "neg")} style={{ fontSize: 16 }}>{result.samp[s.ticker].acceleration}</div>
+                </div>
+              </div>
+              <div className="muted" style={{ fontSize: 11.5, marginTop: 7 }}>
+                {result.samp[s.ticker].strongBull && "⚡ STRONG BULL pressure aligned. "}
+                {result.samp[s.ticker].earlyBull && "⚡ Early bull turn. "}
+                {result.samp[s.ticker].watchLong && "👁 Watch long — setup forming. "}
+                {result.samp[s.ticker].lastSignal
+                  ? `Last engine signal: ${result.samp[s.ticker].lastSignal.type} on ${result.samp[s.ticker].lastSignal.date} (quality ${result.samp[s.ticker].lastSignal.quality}, ${result.samp[s.ticker].lastSignal.trigger})`
+                  : "No confirmed engine signal — location/chase filters are suppressing entry."}
+              </div>
+            </div>
+          )}
+
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             <div><strong>📈 Momentum &amp; RS:</strong> <span className="muted">{s.momentumNote}</span></div>
             <div><strong>📡 Volume:</strong> <span className="muted">{s.volumeNote}</span></div>

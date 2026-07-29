@@ -134,6 +134,39 @@ export default function AnalyzeTab() {
                       <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>{m.verdict.detail}</div>
                     </div>
 
+                    {m.samp && (
+                      <>
+                        <h3 className="sub" style={{ marginTop: 0 }}>
+                          🧠 SAMP 3-layer engine — Sentinel Adaptive Structure v1.6 ({m.samp.regime})
+                        </h3>
+                        <div className="grid cols-4" style={{ marginBottom: 10 }}>
+                          <div className="metric">
+                            <div className="label">L1 Direction</div>
+                            <div className={cls("value", m.samp.direction >= 0 ? "pos" : "neg")} style={{ fontSize: 18 }}>{m.samp.direction}</div>
+                          </div>
+                          <div className="metric">
+                            <div className="label">L2 Strength</div>
+                            <div className="value" style={{ fontSize: 18 }}>{m.samp.strength}</div>
+                          </div>
+                          <div className="metric">
+                            <div className="label">L3 Acceleration</div>
+                            <div className={cls("value", m.samp.acceleration >= 0 ? "pos" : "neg")} style={{ fontSize: 18 }}>{m.samp.acceleration}</div>
+                          </div>
+                          <div className="metric">
+                            <div className="label">Setup quality</div>
+                            <div className="value" style={{ fontSize: 18 }}>{m.samp.longQuality}<span className="muted" style={{ fontSize: 12 }}>/{m.samp.thresholds.quality}</span></div>
+                            <div className="sub">long side</div>
+                          </div>
+                        </div>
+                        <p className="notice" style={{ marginBottom: 14 }}>
+                          {m.samp.lastSignal
+                            ? <>Last engine signal: <strong>{m.samp.lastSignal.type}</strong> on {m.samp.lastSignal.date} at {money(m.samp.lastSignal.price)} — quality {m.samp.lastSignal.quality}, via {m.samp.lastSignal.trigger}
+                                {m.samp.barsSinceLastSignal != null && ` (${m.samp.barsSinceLastSignal} bars ago)`}.</>
+                            : <>No confirmed signal across {m.samp.bars} bars — a signal needs context, location, trigger <em>and</em> pressure together, so extended moves are deliberately not chased.</>}
+                        </p>
+                      </>
+                    )}
+
                     <h3 className="sub" style={{ marginTop: 0 }}>Desk notes</h3>
                     <DeskNotes desks={m.desks} />
 
