@@ -12,6 +12,8 @@ const RANGES = [
 
 export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string }) {
   const [days, setDays] = useState(365);
+  // Income is shown after withholding by default — that is what actually lands.
+  const [net, setNet] = useState(true);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,18 +87,29 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
       {/* ── Dividends ───────────────────────────────── */}
       {div && (
         <div className="card">
-          <h2 className="section">💰 Dividend Income</h2>
-
-          <div className="grid cols-4">
-            <Metric label="Est. forward / yr" value={money(div.estAnnualIncome)} accent="pos" sub="next 12 months" />
-            <Metric label="Est. per month" value={money(div.estMonthlyAverage)} sub="average" />
-            <Metric label="Received (12M)" value={money(div.trailingIncome12m)} sub="trailing actual" />
-            <Metric label="Yield / on cost"
-              value={`${div.portfolioYield != null ? pct(div.portfolioYield) : "—"} / ${div.yieldOnCost != null ? pct(div.yieldOnCost) : "—"}`} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <h2 className="section" style={{ margin: 0 }}>💰 Dividend Income</h2>
+            <div className="tabs" style={{ padding: 4 }}>
+              <button className={`tab ${net ? "active" : ""}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => setNet(true)}>
+                Net of {div.withholdingPct}% tax
+              </button>
+              <button className={`tab ${!net ? "active" : ""}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => setNet(false)}>
+                Gross
+              </button>
+            </div>
           </div>
 
-          <h3 className="sub">Monthly income — last 24 months</h3>
-          <DividendBars data={div.byMonth} />
+          <div className="grid cols-4">
+            <Metric label="Est. forward / yr" value={money(net ? div.estAnnualIncomeNet : div.estAnnualIncome)} accent="pos"
+              sub={net ? `after ${div.withholdingPct}% tax · gross ${money(div.estAnnualIncome)}` : "gross, next 12 months"} />
+            <Metric label="Est. per month" value={money(net ? div.estMonthlyAverageNet : div.estMonthlyAverage)} sub="average" />
+            <Metric label="Received (12M)" value={money(net ? div.trailingIncome12mNet : div.trailingIncome12m)} sub="trailing actual" />
+            <Metric label="Yield / on cost"
+              value={`${(net ? div.portfolioYieldNet : div.portfolioYield) != null ? pct(net ? div.portfolioYieldNet : div.portfolioYield) : "—"} / ${(net ? div.yieldOnCostNet : div.yieldOnCost) != null ? pct(net ? div.yieldOnCostNet : div.yieldOnCost) : "—"}`} />
+          </div>
+
+          <h3 className="sub">Monthly income — last 24 months {net && <span className="muted" style={{ fontWeight: 400 }}>(net of tax)</span>}</h3>
+          <DividendBars data={net ? div.byMonthNet : div.byMonth} />
 
           <div className="grid cols-2" style={{ marginTop: 18 }}>
             <div>
@@ -106,8 +119,8 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
                   <thead><tr><th>Year</th><th className="num">Income</th><th className="num">vs prior</th></tr></thead>
                   <tbody>
                     {div.byYear.length === 0 && <tr><td colSpan={3} className="muted">No dividend history.</td></tr>}
-                    {div.byYear.map((y: any, i: number) => {
-                      const prior = div.byYear[i + 1];
+                    {(net ? div.byYearNet : div.byYear).map((y: any, i: number) => {
+                      const prior = (net ? div.byYearNet : div.byYear)[i + 1];
                       const chg = prior && prior.amount > 0 ? ((y.amount - prior.amount) / prior.amount) * 100 : null;
                       return (
                         <tr key={y.period}>
@@ -128,7 +141,7 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
                 <table className="tbl">
                   <thead><tr><th>Month</th><th className="num">Income</th></tr></thead>
                   <tbody>
-                    {div.byMonth.slice(-12).reverse().map((m: any) => (
+                    {(net ? div.byMonthNet : div.byMonth).slice(-12).reverse().map((m: any) => (
                       <tr key={m.period}>
                         <td>{m.period}</td>
                         <td className={cls("num", m.amount > 0 ? "pos" : "muted")}>{m.amount > 0 ? money(m.amount) : "—"}</td>
@@ -145,7 +158,7 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
             <table className="tbl">
               <thead><tr>
                 <th>Ticker</th><th>Frequency</th><th className="num">Last paid</th><th className="num">TTM / share</th>
-                <th className="num">Est. income / yr</th><th className="num">Yield</th><th className="num">On cost</th>
+                <th className="num">Est. income / yr</th><th className="num">Net after tax</th><th className="num">Yield</th><th className="num">On cost</th>
               </tr></thead>
               <tbody>
                 {div.holdings.map((h: any) => (
@@ -155,7 +168,8 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
                     <td className="num">{h.lastAmount != null ? `${money(h.lastAmount)}` : "—"}<br />
                       <span className="muted" style={{ fontSize: 11 }}>{h.lastExDate ?? ""}</span></td>
                     <td className="num">{h.ttmPerShare > 0 ? money(h.ttmPerShare) : "—"}</td>
-                    <td className="num pos">{h.estAnnualIncome > 0 ? money(h.estAnnualIncome) : "—"}</td>
+                    <td className="num">{h.estAnnualIncome > 0 ? money(h.estAnnualIncome) : "—"}</td>
+                    <td className="num pos">{h.estAnnualIncomeNet > 0 ? money(h.estAnnualIncomeNet) : "—"}</td>
                     <td className="num">{h.currentYield != null ? pct(h.currentYield) : "—"}</td>
                     <td className="num">{h.yieldOnCost != null ? pct(h.yieldOnCost) : "—"}</td>
                   </tr>
@@ -171,17 +185,24 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
           ) : (
             <div className="table-wrap">
               <table className="tbl">
-                <thead><tr><th>Est. ex-date</th><th>Ticker</th><th className="num">Per share</th><th className="num">Est. payout</th><th>In</th></tr></thead>
+                <thead><tr><th>Est. ex-date</th><th>Est. pay date</th><th>Ticker</th><th className="num">Per share</th><th className="num">Gross</th><th className="num">Net after tax</th><th>In</th></tr></thead>
                 <tbody>
                   {div.calendar.map((c: any) => {
-                    const daysAway = Math.round((new Date(c.exDate + "T00:00:00Z").getTime() - Date.now()) / 86400000);
+                    // Whole calendar days between today and the ex-date, both
+                    // taken at UTC midnight — a fractional difference used to
+                    // round tomorrow down to "due".
+                    const today = new Date();
+                    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+                    const daysAway = Math.round((new Date(c.exDate + "T00:00:00Z").getTime() - todayUtc) / 86400000);
                     return (
                       <tr key={`${c.ticker}-${c.exDate}`}>
                         <td><strong>{c.exDate}</strong></td>
+                        <td className="muted">{c.payDate}</td>
                         <td>{c.ticker}</td>
                         <td className="num">{money(c.estAmountPerShare)}</td>
-                        <td className="num pos">{money(c.estPayout)}</td>
-                        <td className="muted">{daysAway <= 0 ? "due" : `${daysAway}d`}</td>
+                        <td className="num">{money(c.estPayout)}</td>
+                        <td className="num pos">{money(c.estPayoutNet)}</td>
+                        <td className="muted">{daysAway < 0 ? "past" : daysAway === 0 ? "today" : daysAway === 1 ? "tomorrow" : `${daysAway}d`}</td>
                       </tr>
                     );
                   })}
@@ -190,7 +211,13 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
             </div>
           )}
           <p className="notice" style={{ marginTop: 12 }}>
-            Ex-dates are <strong>projected</strong> from each holding's own payment cadence and last amount — they are not company-announced dates. Forward income assumes the latest payment repeats at that cadence; a cut, raise or special dividend will change it.
+            Ex-dates are <strong>projected</strong> from each holding's own calendar position — the day of the month the
+            issuer has actually been using — rather than announced dates. <strong>Pay dates are estimated</strong> from
+            the ex-date plus a typical settlement lag by frequency; the free data feed carries ex-dates only, so no
+            per-issuer pay date can be verified. Forward income assumes the latest payment repeats at that cadence; a
+            cut, raise or special dividend will change it. Net figures deduct <strong>{div.withholdingPct}% US
+            withholding</strong>, the treaty rate for a Thai-resident holder — your broker may apply a different rate,
+            and this is not tax advice.
           </p>
         </div>
       )}

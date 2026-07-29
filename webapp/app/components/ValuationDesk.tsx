@@ -81,7 +81,7 @@ function PlanRow({ p }: { p: any }) {
           <td colSpan={9} style={{ background: "rgba(8,14,28,.45)" }}>
             <div style={{ display: "grid", gap: 10, padding: "4px 2px 8px" }}>
               <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 5 }}>
-                {p.reasons.map((r: string, i: number) => (
+                {(p.reasons ?? []).map((r: string, i: number) => (
                   <li key={i} style={{ fontSize: 12.5, lineHeight: 1.55 }}>{r}</li>
                 ))}
               </ul>
@@ -100,13 +100,29 @@ function PlanRow({ p }: { p: any }) {
                 </div>
               )}
 
-              {p.anchors.length > 0 && (
+              {(p.entryConfirmations?.length > 0 || p.entryWarnings?.length > 0) && (
+                <div>
+                  <div className="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".4px", marginBottom: 5 }}>
+                    ENTRY LAYER
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
+                    {(p.entryConfirmations ?? []).map((c: string, i: number) => (
+                      <li key={`c${i}`} className="pos" style={{ fontSize: 12, lineHeight: 1.5 }}>{c}</li>
+                    ))}
+                    {(p.entryWarnings ?? []).map((w: string, i: number) => (
+                      <li key={`w${i}`} style={{ fontSize: 12, lineHeight: 1.5, color: "var(--amber)" }}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {p.anchors?.length > 0 && (
                 <div>
                   <div className="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".4px", marginBottom: 5 }}>
                     FAIR VALUE ANCHORS · {p.confidence} confidence
                   </div>
                   <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
-                    {p.anchors.map((a: any, i: number) => (
+                    {(p.anchors ?? []).map((a: any, i: number) => (
                       <li key={i} style={{ fontSize: 12, lineHeight: 1.5 }}>
                         <strong>{a.method} {money(a.fairValue)}</strong>
                         <span className="muted"> (weight {a.weight}) — {a.detail}</span>
@@ -118,10 +134,9 @@ function PlanRow({ p }: { p: any }) {
               )}
 
               <div className="muted" style={{ fontSize: 11.5 }}>
-                Position {money(p.marketValue)} · {pct(p.weightPct)} of NAV · Rule&nbsp;#3 zone {p.zone.icon} {p.zone.zone}
-                {p.conviction?.score != null && ` · ${p.conviction.model} ${p.conviction.score}/100 (${p.conviction.grade})`}
+                Position {money(p.marketValue)} · {pct(p.weightPct)} of NAV · {p.engine}
+                {p.isHybrid && " · Hybrid Compounder"}
                 {p.buyBelow != null && ` · add zone below ${money(p.buyBelow)}`}
-                {p.trimTrigger != null && ` · trim trigger ${money(p.trimTrigger)}`}
                 {p.theme && ` · ${p.theme.label} leading`}
               </div>
             </div>

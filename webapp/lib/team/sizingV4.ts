@@ -71,6 +71,14 @@ export interface PlanV4 {
   coveragePct: number;
   verdict: ValuationRead["verdict"];
   deviationPct: number | null;
+  fairValue: number | null;
+  buyBelow: number | null;
+  confidence: ValuationRead["confidence"];
+  anchors: ValuationRead["anchors"];
+  valuationNote: string;
+  entryConfirmations: string[];
+  entryWarnings: string[];
+  theme: { label: string; rsPct: number } | null;
   action: ActionV4;
   deltaShares: number;
   deltaValue: number;
@@ -328,6 +336,14 @@ export function buildPlansV4(input: BookV4Input): BookV4Result {
       coveragePct: own.coveragePct,
       verdict: p.valuation.verdict,
       deviationPct: p.valuation.deviationPct,
+      fairValue: p.valuation.fairValue,
+      buyBelow: p.valuation.buyBelow,
+      confidence: p.valuation.confidence,
+      anchors: p.valuation.anchors ?? [],
+      valuationNote: p.valuation.note,
+      entryConfirmations: p.entry?.confirmations ?? [],
+      entryWarnings: p.entry?.warnings ?? [],
+      theme: p.theme ?? null,
       action,
       deltaShares,
       deltaValue: round2(deltaValue),
