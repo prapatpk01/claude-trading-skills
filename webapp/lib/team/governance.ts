@@ -146,96 +146,140 @@ export interface GateResult {
 
 export interface GateInput {
   regime: RegimeAssessment;
-  score: MomentumScoreV3;
+  /** The engine this candidate is being assessed under. */
+  engine?: "Momentum Growth" | "High Dividend Growth" | "Cash/Defensive";
+  /** Engine score 0-100 and its qualification facts (v4). */
+  engineScore?: number | null;
+  growthPct?: number | null;
+  yieldPct?: number | null;
+  /** Structure confirmation from the entry layer. */
+  entryCleared?: boolean | null;
+  entryDetail?: string;
+  /** Valuation verdict, reviewed rather than gated on. */
+  valuationVerdict?: string | null;
+  hardBlocks?: { code: string; reason: string }[];
   positionWeightPct: number | null;
   stop: number | null;
   entry: number | null;
   dataQualityScore: number;
+  /** Coverage of the engine model — how much of it could be evaluated. */
+  coveragePct?: number | null;
   nearTier1Event?: boolean;
+  /** Both engine gates must pass independently for a hybrid. */
+  isHybrid?: boolean;
+  hybridMissing?: string[];
 }
 
-/** Section 8 — the nine pre-trade gates. */
+/** v4 §19 — the eleven pre-trade gates. */
 export function runGates(input: GateInput): GateResult {
-  const { regime, score } = input;
-  const blocks: HardBlock[] = score.hardBlocks;
+  const { regime } = input;
+  const blocks = input.hardBlocks ?? [];
+  const engine = input.engine ?? "Momentum Growth";
+  const score = input.engineScore ?? null;
 
   const gates: Gate[] = [
     {
       n: 1,
-      label: "Regime timestamp verified (≤ 24h)",
-      owner: "Daniel Cho",
-      pass: true,
-      detail: "Regime computed from the current session's price feed",
+      label: "Data verified and current",
+      owner: "Nina Okonkwo",
+      pass: input.dataQualityScore >= 70,
+      detail: `${input.dataQualityScore}% of scored inputs verified${input.coveragePct != null ? `, ${input.coveragePct}% of the engine model evaluable` : ""}`,
     },
     {
       n: 2,
-      label: "Regime score ≥ 40 (Neutral or better)",
+      label: "Regime permits deployment",
       owner: "Daniel Cho",
-      pass: regime.score >= 40,
-      detail: `${regime.score}/100 — ${regime.regime}`,
+      pass: regime.regime === "Crisis"
+        ? false
+        : regime.regime === "Risk-Off"
+        ? engine !== "Momentum Growth"
+        : true,
+      detail: `${regime.icon} ${regime.regime} ${regime.score}/100 — ${regime.deployRule}`,
     },
     {
       n: 3,
-      label: "Momentum score ≥ 58/100",
-      owner: "Maya Chen",
-      pass: score.total >= 58,
-      detail: `${score.total}/100`,
+      label: "Correct engine identified",
+      owner: "James Hartwell",
+      pass: engine !== undefined,
+      detail: `${engine}${input.isHybrid ? " · qualifies as a Hybrid Compounder" : ""}`,
     },
     {
       n: 4,
-      label: "Soft-block check (Rule #1)",
-      owner: "Maya Chen",
-      pass: blocks.length === 0 ? true : blocks.length === 1 && score.total > 80,
-      detail:
-        blocks.length === 0
-          ? "No hard blocks"
-          : blocks.length === 1
-          ? `One block (${blocks[0].code}) — ${score.total > 80 ? "score > 80, soft-block applies" : "score ≤ 80, no relief"}`
-          : `${blocks.length} blocks — automatic reject`,
+      label: "Growth > 12% (Engine A) or yield ≥ 5% (Engine B)",
+      owner: "Sofia Reyes / Lena Müller",
+      pass: engine === "Cash/Defensive"
+        ? null
+        : engine === "High Dividend Growth"
+        ? input.yieldPct != null && input.yieldPct >= 5
+        : input.growthPct != null && input.growthPct > 12,
+      detail: engine === "High Dividend Growth"
+        ? `Yield ${input.yieldPct != null ? `${input.yieldPct.toFixed(1)}%` : "unavailable"} against the 5% gate`
+        : `Growth ${input.growthPct != null ? `${input.growthPct.toFixed(1)}%` : "unavailable"} against the 12% gate`,
     },
     {
       n: 5,
-      label: "Position ≤ 20% NAV (Rule #3)",
-      owner: "Kai Tanaka",
-      pass: input.positionWeightPct == null ? null : input.positionWeightPct <= 20,
-      detail:
-        input.positionWeightPct == null
-          ? "No position size supplied — evaluate at sizing"
-          : `${input.positionWeightPct.toFixed(2)}% of NAV`,
+      label: "Engine score ≥ 65",
+      owner: "Maya Chen",
+      pass: score == null ? null : score >= 65,
+      detail: score == null ? "No engine score" : `${score}/100`,
     },
     {
       n: 6,
-      label: "ATR stop defined (Rule #4)",
-      owner: "Kai Tanaka",
-      pass: input.stop != null && input.entry != null,
-      detail: input.stop != null && input.entry != null
-        ? `Stop ${input.stop.toFixed(2)} vs entry ${input.entry.toFixed(2)}`
-        : "No stop computed",
+      label: "No hard block",
+      owner: "Miriam Osei",
+      pass: blocks.length === 0,
+      detail: blocks.length ? blocks.map((b) => b.code).join(", ") : "None",
     },
     {
       n: 7,
-      label: "Data quality ≥ 70% with V/E/U flags",
-      owner: "Miriam Osei",
-      pass: input.dataQualityScore >= 70,
-      detail: `${input.dataQualityScore}% of scored inputs verified${score.unavailable.length ? ` — unavailable: ${score.unavailable.join(", ")}` : ""}`,
+      label: "Trend / structure confirmation",
+      owner: "Maya Chen",
+      pass: input.entryCleared ?? null,
+      detail: input.entryDetail ?? (input.entryCleared == null ? "Entry layer not evaluated" : input.entryCleared ? "Above the 200-day with two confirmations" : "Entry layer not cleared"),
     },
     {
       n: 8,
-      label: "Stagger rule near Tier-1 events (Rule #2)",
-      owner: "Aisha Fontaine",
-      pass: input.nearTier1Event ? false : null,
-      detail: input.nearTier1Event
-        ? "Tier-1 event within 5 days — maximum one-third deployment"
-        : "No Tier-1 event flagged. FOMC/CPI/NFP dates are not in the free data feed — confirm manually",
+      label: "Valuation reviewed",
+      owner: "Thomas Eriksson",
+      // v4 §13 — valuation is reviewed, not gated on. It sizes the trade.
+      pass: input.valuationVerdict ? true : null,
+      detail: input.valuationVerdict
+        ? `${input.valuationVerdict} — modifies size, does not veto (§13)`
+        : "No usable valuation anchor — size at plan and note the gap",
     },
     {
       n: 9,
-      label: "CIO sign-off",
+      label: "Position and risk limits (15% normal / 20% hard, 1.5% NAV risk)",
+      owner: "Kai Tanaka",
+      pass: input.positionWeightPct == null
+        ? null
+        : input.positionWeightPct <= 20 && input.stop != null && input.entry != null,
+      detail: input.positionWeightPct == null
+        ? "No position size supplied — evaluate at sizing"
+        : `${input.positionWeightPct.toFixed(2)}% of NAV${input.stop != null && input.entry != null ? `, stop ${input.stop.toFixed(2)} vs entry ${input.entry.toFixed(2)}` : ", no stop defined"}`,
+    },
+    {
+      n: 10,
+      label: "Event / catalyst risk reviewed",
+      owner: "Aisha Fontaine",
+      pass: input.nearTier1Event ? false : null,
+      detail: input.nearTier1Event
+        ? "Tier-1 event within 5 days — maximum one-third deployment (Rule #2)"
+        : "No Tier-1 event flagged. FOMC/CPI/NFP dates are not in the free data feed — confirm manually",
+    },
+    {
+      n: 11,
+      label: "CIO approval",
       owner: "James Hartwell",
       pass: null,
       detail: "Manual authorisation — the system never self-approves a deployment",
     },
   ];
+
+  // A Hybrid Compounder must clear both engines independently (§19).
+  if (input.isHybrid === false && input.hybridMissing?.length) {
+    gates[2].detail += ` — not a hybrid: ${input.hybridMissing.join(", ")}`;
+  }
 
   const evaluated = gates.filter((g) => g.pass !== null).length;
   const passed = gates.filter((g) => g.pass === true).length;

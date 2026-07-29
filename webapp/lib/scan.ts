@@ -2,6 +2,9 @@ import { dailyCandles } from "./marketData";
 import { computeTechnicals, computeMomentumScore, buildSwingSetup } from "./analysis";
 import { ema, pctReturn, sma } from "./indicators";
 import { scoreMomentumV3, type MomentumScoreV3 } from "./team/scoring";
+import { readStructure, scoreEngineA, checkEntry, ENTRY_SCORE } from "./team/engines";
+import { buildGrowthInput, bestGrowthPct } from "./team/growthInputs";
+import { getSecFundamentals } from "./sec";
 import { runSAMP, type SampResult } from "./team/samp";
 import { computeBeta } from "./derive";
 import type { MarketData, SwingSetup, Candle } from "./types";
@@ -64,6 +67,8 @@ export interface ScanResult {
   setups: SwingSetup[];
   /** Sentinel v3.0 score for each setup, keyed by ticker. */
   sentinel: Record<string, MomentumScoreV3>;
+  /** Team Rules v4 Engine A read per scanned name, keyed by ticker. */
+  engines: Record<string, any>;
   /** SAMP 3-layer read per setup (Priya's desk), keyed by ticker. */
   samp: Record<string, Pick<SampResult, "direction" | "strength" | "acceleration" | "regime" | "state" | "strongBull" | "strongBear" | "earlyBull" | "watchLong" | "lastSignal" | "barsSinceLastSignal">>;
   /** Names excluded, with the rule that excluded them. */
@@ -75,6 +80,7 @@ export interface ScanResult {
   noQualifiers: string | null;
   /** Minimum reward:risk a setup must offer to be presented. */
   minRiskReward: number;
+  rulesVersion?: string;
 }
 
 function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): MarketData {
@@ -119,6 +125,7 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
 
   const candidates: SwingSetup[] = [];
   const sentinel: Record<string, MomentumScoreV3> = {};
+  const engines: Record<string, any> = {};
   const samp: ScanResult["samp"] = {};
   const rejected: ScanResult["rejected"] = [];
   let scanned = 0;
@@ -142,6 +149,26 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
       const v3 = scoreMomentumV3({ candles, benchmark: spy, beta });
       sentinel[ticker] = v3;
 
+      // Team Rules v4 Engine A. The scanner hunts growth, so the 12% growth
+      // gate and the entry layer apply here exactly as they do to the book —
+      // a chart alone is "momentum without growth", which v4 classes as
+      // tactical only and does not present as a fund setup.
+      const sec = await getSecFundamentals(ticker).catch(() => null);
+      const growth = buildGrowthInput(sec, false);
+      const growthPct = bestGrowthPct(growth);
+      const structure = readStructure(candles, spy);
+      const engineA = scoreEngineA({ growth, structure });
+      const entryCheck = checkEntry(structure);
+      engines[ticker] = {
+        score: engineA.score,
+        signal: engineA.signal,
+        coveragePct: engineA.coveragePct,
+        growthPct,
+        growthClass: engineA.lines.find((l) => l.label === "Revenue / EPS growth")?.detail ?? null,
+        blocks: engineA.blocks,
+        entry: entryCheck,
+      };
+
       // Priya's SAMP engine — an independent 3-layer read on the same bars
       const sp = runSAMP(candles, { profile: "Precision" });
       if (sp) {
@@ -157,6 +184,31 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
       // own rules would actually allow a long. Previously only hard blocks
       // filtered the list, so a REJECT-scored name could still appear as the
       // top setup — with an entry, a target and a sub-1:1 reward:risk.
+      // v4 §3/§5 — the growth gate first.
+      if (engineA.blocks.some((b) => b.code === "GROWTH_LT_12")) {
+        rejected.push({
+          ticker, score: engineA.score, signal: engineA.signal,
+          blocks: engineA.blocks.map((b) => b.reason),
+          reason: growthPct == null
+            ? "No growth history available — cannot clear the 12% growth gate (Engine A)"
+            : `Growth ${growthPct.toFixed(1)}% is below the 12% gate — momentum without growth is tactical only, not a fund setup`,
+        });
+        continue;
+      }
+      if (engineA.score < ENTRY_SCORE) {
+        rejected.push({
+          ticker, score: engineA.score, signal: engineA.signal, blocks: [],
+          reason: `Engine A score ${engineA.score} is below the ${ENTRY_SCORE} entry bar (${engineA.coveragePct}% of the model evaluable)`,
+        });
+        continue;
+      }
+      if (!entryCheck.cleared) {
+        rejected.push({
+          ticker, score: engineA.score, signal: engineA.signal, blocks: [],
+          reason: `Entry layer not cleared — ${entryCheck.failures.join("; ")}`,
+        });
+        continue;
+      }
       if (v3.hardBlocks.length) {
         rejected.push({
           ticker, score: v3.total, signal: v3.signal,
@@ -205,12 +257,13 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
 
   const noQualifiers = setups.length === 0
     ? `No name cleared the bar out of ${scanned} scanned. ${rejected.filter((r) => r.blocks.length).length} were hard-blocked, ` +
-      `${rejected.filter((r) => !r.blocks.length).length} failed on score, pressure or reward:risk. ` +
+      `${rejected.filter((r) => !r.blocks.length).length} failed on the 12% growth gate, the 65 engine score, the entry layer, pressure or reward:risk. ` +
       `Market regime is ${regime.stance.toLowerCase()} — in a broad pullback the model is designed to return nothing rather than the least-bad chart.`
     : null;
 
   return {
-    regime, setups, sentinel, samp, rejected, scanned, warnings,
+    regime, setups, sentinel, engines, samp, rejected, scanned, warnings,
     asOf: new Date().toISOString(), noQualifiers, minRiskReward: MIN_RR,
+    rulesVersion: "v4.0",
   };
 }

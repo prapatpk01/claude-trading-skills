@@ -105,7 +105,13 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
 
   const gates = runGates({
     regime,
-    score,
+    engine: sleeve === "Income/Dividend" ? "High Dividend Growth"
+      : sleeve === "Cash/Defensive" ? "Cash/Defensive" : "Momentum Growth",
+    engineScore: score.total,
+    yieldPct: input.yieldPct ?? null,
+    hardBlocks: score.hardBlocks,
+    entryCleared: null,
+    valuationVerdict: null,
     positionWeightPct: input.currentWeightPct ?? null,
     stop: stop?.stop ?? null,
     entry: price,

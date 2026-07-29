@@ -203,6 +203,15 @@ export default function ScannerTab() {
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
             <div>
               <h2 className="section" style={{ margin: 0 }}>{i + 1}. {s.ticker} <span className="muted" style={{ fontWeight: 400, fontSize: 14 }}>({s.name})</span></h2>
+              {result.engines?.[s.ticker] && (
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", margin: "6px 0" }}>
+                  <span className="tag">Engine A {result.engines[s.ticker].score}/100 · {result.engines[s.ticker].signal}</span>
+                  {result.engines[s.ticker].growthPct != null && (
+                    <span className="tag">Growth {result.engines[s.ticker].growthPct.toFixed(1)}%</span>
+                  )}
+                  <span className="tag">{result.engines[s.ticker].coveragePct}% model coverage</span>
+                </div>
+              )}
               <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span className="tag">{s.setupType}</span>
                 <WatchButton

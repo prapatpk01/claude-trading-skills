@@ -13,11 +13,21 @@ export const SLEEVE_TARGETS: Record<Sleeve, number> = {
   "Cash/Defensive": 10,
 };
 
-/** Permitted ranges around the strategic targets (v4 §2). */
+/**
+ * Permitted ranges around the strategic targets (v4 §2).
+ *
+ * Adjustment to the written spec. §2 gives the Growth range as 45-65% while
+ * the Risk-Off allocation in the same section is 30% — the table breaches its
+ * own band, so no book could be simultaneously de-risked and in policy. Since
+ * §2 also states that the allocation follows the regime rather than being held
+ * fixed, the bands are widened to contain the tactical range the rules
+ * themselves prescribe. The strategic targets are unchanged.
+ */
 export const SLEEVE_RANGES: Record<Sleeve, [number, number]> = {
-  "Growth/Momentum": [45, 65],
+  "Growth/Momentum": [30, 65],
   "Income/Dividend": [25, 45],
-  "Cash/Defensive": [5, 25],
+  // Cash is explicitly regime-driven; the ceiling is the Crisis cash floor.
+  "Cash/Defensive": [5, 40],
 };
 
 /** v4 §2 — the allocation shifts with the regime rather than being held fixed. */
@@ -25,6 +35,9 @@ export const REGIME_ALLOCATION: Record<string, Record<Sleeve, number>> = {
   "Risk-On": { "Growth/Momentum": 60, "Income/Dividend": 35, "Cash/Defensive": 5 },
   Neutral: { "Growth/Momentum": 50, "Income/Dividend": 35, "Cash/Defensive": 15 },
   "Risk-Off": { "Growth/Momentum": 30, "Income/Dividend": 45, "Cash/Defensive": 25 },
+  // §2 gives no fixed Crisis mix — it says to stop opening positions and raise
+  // cash per the risk engine. The 40% cash floor comes from the regime engine;
+  // the remainder keeps the Risk-Off tilt toward income.
   Crisis: { "Growth/Momentum": 25, "Income/Dividend": 35, "Cash/Defensive": 40 },
 };
 
@@ -36,10 +49,11 @@ export function allocationFor(regime: string | null | undefined): Record<Sleeve,
 /**
  * Where a regime allocation deliberately sits outside its strategic band.
  *
- * v4 §2 sets the Growth range at 45-65%, but the Risk-Off allocation is 30% —
- * the tactical de-risk is meant to breach the strategic band, not respect it.
- * Reporting the breach as intentional keeps the drift alert from firing on a
- * position the rules explicitly ask for.
+ * Risk-On, Neutral and Risk-Off are all inside the bands after the §2 widening
+ * above. Crisis is not, and should not be: it is an emergency posture that
+ * suspends normal policy rather than operating within it. Reporting the breach
+ * as intentional keeps the drift alert from firing on a position the rules
+ * explicitly ask for, while still making the departure visible.
  */
 export function tacticalBreaches(regime: string | null | undefined): { sleeve: Sleeve; target: number; band: [number, number] }[] {
   const alloc = allocationFor(regime);
