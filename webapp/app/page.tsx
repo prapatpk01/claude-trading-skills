@@ -3,15 +3,16 @@ import { useState } from "react";
 import AnalyzeTab from "./components/AnalyzeTab";
 import PortfolioTab from "./components/PortfolioTab";
 import ScannerTab from "./components/ScannerTab";
+import TabNav, { type TabDef } from "./components/TabNav";
 
-const TABS = [
+const TABS: TabDef[] = [
   { id: "analyze", label: "🔎 Ticker Analysis" },
   { id: "portfolio", label: "💼 Portfolio & Watchlist" },
   { id: "scanner", label: "📡 Momentum Scanner" },
-] as const;
+];
 
 export default function Home() {
-  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("analyze");
+  const [tab, setTab] = useState<string>("analyze");
   return (
     <div className="container">
       <header className="app">
@@ -22,13 +23,7 @@ export default function Home() {
             <p>Type a ticker → institutional research workbook · portfolio tracking · momentum scans</p>
           </div>
         </div>
-        <div className="tabs">
-          {TABS.map((t) => (
-            <button key={t.id} className={`tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabNav tabs={TABS} active={tab} onChange={setTab} />
       </header>
 
       {tab === "analyze" && <AnalyzeTab />}
@@ -36,7 +31,7 @@ export default function Home() {
       {tab === "scanner" && <ScannerTab />}
 
       <div className="footer-note">
-        Data: Yahoo Finance (free, no key) · Persistence: Supabase (falls back to in-memory). <br />
+        Data: Yahoo Finance + SEC EDGAR (free, no key) · Persistence: Supabase (falls back to in-memory). <br />
         For research and education only — nothing here is investment advice. Always do your own research.
       </div>
     </div>
