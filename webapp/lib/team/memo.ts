@@ -11,6 +11,7 @@ import { assessRegime, runGates, type RegimeAssessment, type GateResult } from "
 import { assessPositionZone, sizeByRisk, checkRiskCaps, type ZoneAssessment, type RiskCheck } from "./risk";
 import { classifySleeve, type Sleeve } from "./portfolio";
 import { runSAMP, type SampResult } from "./samp";
+import { multiTimeframe, earningsQuality, buildConviction, type MtfResult, type ConvictionResult, type QualityFlag } from "./intelligence";
 import { ROSTER, FUND } from "./roster";
 
 export interface DeskNote {
@@ -32,6 +33,12 @@ export interface TickerMemo {
   sleeve: Sleeve;
   /** Priya's desk — Sentinel Adaptive Structure v1.6 SAMP engine. */
   samp: SampResult | null;
+  /** Daily vs weekly confirmation. */
+  mtf: MtfResult;
+  /** Cash-backed-earnings checks. */
+  quality: { flags: QualityFlag[]; score: number | null; summary: string };
+  /** Aggregate read plus the places the desks disagree. */
+  conviction: ConvictionResult;
   stop: { stop: number; atr: number } | null;
   suggestedShares: number | null;
   riskChecks: RiskCheck[];
@@ -232,6 +239,28 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     });
   }
 
+  // ── Multi-timeframe confirmation (Maya + Daniel jointly) ──
+  const mtf = multiTimeframe(data.candles);
+  desks.push({
+    member: ROSTER.maya.name,
+    role: ROSTER.maya.role,
+    heading: `Multi-timeframe confirmation — ${mtf.aligned ? "aligned" : "disagreement"}`,
+    bullets: mtf.reads.map((r) => r.detail),
+    verdict: mtf.verdict,
+  });
+
+  // ── Earnings quality (Sofia + Marcus) ──
+  const earnQuality = earningsQuality(data.financials);
+  desks.push({
+    member: ROSTER.marcus.name,
+    role: ROSTER.marcus.role,
+    heading: `Earnings quality — ${earnQuality.score != null ? `${earnQuality.score}/100` : "not gradable"}`,
+    bullets: earnQuality.flags.map(
+      (f: QualityFlag) => `${f.verdict === "good" ? "✅" : f.verdict === "watch" ? "⚠️" : f.verdict === "poor" ? "❌" : "⏸"} ${f.label}: ${f.value} — ${f.note}`
+    ),
+    verdict: earnQuality.summary,
+  });
+
   // Aisha Fontaine — catalyst
   desks.push({
     member: ROSTER.aisha.name,
@@ -320,6 +349,32 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     verdict: gates.verdict,
   });
 
+  // ── Conviction & cross-desk conflicts (Miriam's bias check) ──
+  const conviction = buildConviction({
+    momentumScore: score.total,
+    hasHardBlock: score.hardBlocks.length > 0,
+    sampDirection: samp?.direction ?? null,
+    sampAcceleration: samp?.acceleration ?? null,
+    mtfAligned: mtf.reads.length >= 2 ? mtf.aligned : null,
+    qualityScore: earnQuality.score,
+    valuationUpsidePct: input.upsidePct ?? null,
+    regimeScore: regime.score,
+    gatesCleared: gates.cleared,
+  });
+  desks.push({
+    member: ROSTER.miriam.name,
+    role: ROSTER.miriam.role,
+    heading: `Conviction ${conviction.score}/100 — ${conviction.label}`,
+    bullets: [
+      ...conviction.agreements.map((a) => `✅ ${a}`),
+      ...conviction.conflicts.map((c) => `⚠️ ${c.between} — ${c.issue} ${c.implication}`),
+      ...(conviction.agreements.length === 0 && conviction.conflicts.length === 0
+        ? ["No strong agreement or conflict detected across the desks."]
+        : []),
+    ],
+    verdict: conviction.note,
+  });
+
   // James Hartwell — CIO verdict
   const cioHeadline = !gates.cleared
     ? "HOLD — gate failure"
@@ -356,6 +411,9 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     gates,
     sleeve,
     samp,
+    mtf,
+    quality: earnQuality,
+    conviction,
     stop,
     suggestedShares,
     riskChecks,

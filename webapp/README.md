@@ -72,6 +72,26 @@ pressure persistence, a setup-quality score past its threshold, and a cooldown s
 allows one signal per confirmed setup. Pressure crossing a threshold never fires a trade by
 itself — which is why a relentless trend can legitimately produce **no** signal.
 
+**Analytical layers above the desks.** Three checks catch what a single desk misses:
+
+- **Multi-timeframe confirmation** — the daily read is checked against the weekly structure.
+  A daily signal fighting the weekly trend is the classic failed breakout, so the
+  disagreement is stated rather than averaged away.
+- **Earnings quality** — cash conversion (OCF / net income), free-cash-flow margin, the
+  accrual ratio, the three-year operating-margin trend, and leverage. Reported profit is an
+  opinion; cash is a fact, and the gap between them is graded.
+- **Conviction & cross-desk conflict** — the desks are combined into one score *and* the
+  places they disagree are named: momentum against the pressure engine, daily against
+  weekly, momentum against valuation, cheap against poor quality, single-name strength
+  against a risk-off tape. Two or more conflicts mark the idea **Conflicted** regardless of
+  score, because a high score built on desks pointing opposite ways is a worse trade than a
+  moderate one they all agree on.
+
+**The scanner returns nothing when nothing qualifies.** A name is only presented when it
+clears the hard blocks, scores above the watch floor, has non-negative SAMP pressure and
+offers at least 1:3 reward:risk. Everything it rejected is listed with the rule that
+excluded it, and any of those names can be pushed straight to the watchlist.
+
 **Rule #5 is enforced**: any input the free data feed cannot verify is flagged `[U]` and scores
 **zero** — it is never estimated. Items the feed genuinely cannot supply (scheduled FOMC/CPI dates,
 the earnings blackout, consensus estimates) are reported as such rather than invented, and

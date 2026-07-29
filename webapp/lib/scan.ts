@@ -6,6 +6,11 @@ import { runSAMP, type SampResult } from "./team/samp";
 import { computeBeta } from "./derive";
 import type { MarketData, SwingSetup, Candle } from "./types";
 
+/** Score floor to be presented at all — below this the model says REJECT. */
+const WATCH_FLOOR = 42;
+/** The swing brief calls for at least 1:3 reward:risk. */
+const MIN_RR = 3;
+
 // A pragmatic default liquid, high-beta momentum universe.
 export const DEFAULT_UNIVERSE = [
   "NVDA", "AMD", "AVGO", "MSFT", "META", "AMZN", "GOOGL", "TSLA",
@@ -61,11 +66,15 @@ export interface ScanResult {
   sentinel: Record<string, MomentumScoreV3>;
   /** SAMP 3-layer read per setup (Priya's desk), keyed by ticker. */
   samp: Record<string, Pick<SampResult, "direction" | "strength" | "acceleration" | "regime" | "state" | "strongBull" | "strongBear" | "earlyBull" | "watchLong" | "lastSignal" | "barsSinceLastSignal">>;
-  /** Names excluded by a hard block, with the reason. */
-  rejected: { ticker: string; score: number; blocks: string[] }[];
+  /** Names excluded, with the rule that excluded them. */
+  rejected: { ticker: string; score: number; signal: string; blocks: string[]; reason: string }[];
   scanned: number;
   warnings: string[];
   asOf: string;
+  /** Set when nothing cleared the bar, with the reason why. */
+  noQualifiers: string | null;
+  /** Minimum reward:risk a setup must offer to be presented. */
+  minRiskReward: number;
 }
 
 function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): MarketData {
@@ -111,7 +120,7 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
   const candidates: SwingSetup[] = [];
   const sentinel: Record<string, MomentumScoreV3> = {};
   const samp: ScanResult["samp"] = {};
-  const rejected: { ticker: string; score: number; blocks: string[] }[] = [];
+  const rejected: ScanResult["rejected"] = [];
   let scanned = 0;
   // sequential to stay polite to the data provider
   for (const ticker of universe) {
@@ -144,13 +153,47 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
         };
       }
 
-      if (v3.signal === "REJECT" && v3.hardBlocks.length) {
-        rejected.push({ ticker, score: v3.total, blocks: v3.hardBlocks.map((b) => b.reason) });
-        continue; // a hard block bars the name from the shortlist
+      // ── Qualification. A name is only presented as a setup when the fund's
+      // own rules would actually allow a long. Previously only hard blocks
+      // filtered the list, so a REJECT-scored name could still appear as the
+      // top setup — with an entry, a target and a sub-1:1 reward:risk.
+      if (v3.hardBlocks.length) {
+        rejected.push({
+          ticker, score: v3.total, signal: v3.signal,
+          blocks: v3.hardBlocks.map((b) => b.reason),
+          reason: `Hard block — ${v3.hardBlocks.map((b) => b.code).join(", ")}`,
+        });
+        continue;
+      }
+      if (v3.total < WATCH_FLOOR) {
+        rejected.push({
+          ticker, score: v3.total, signal: v3.signal, blocks: [],
+          reason: `Score ${v3.total} below the ${WATCH_FLOOR} watch floor — ${v3.signal}`,
+        });
+        continue;
+      }
+      // Don't advertise a long while the pressure engine reads bearish.
+      if (sp && sp.direction < 0 && sp.acceleration < 0) {
+        rejected.push({
+          ticker, score: v3.total, signal: v3.signal, blocks: [],
+          reason: `SAMP pressure negative (direction ${sp.direction}, acceleration ${sp.acceleration}) — long setup withheld`,
+        });
+        continue;
       }
 
-      const setup = buildSwingSetup(md, tech, score, "Trend persistence / sector momentum (scan-derived).");
-      if (setup) candidates.push({ ...setup, momentumScore: v3.total });
+      // Build the setup from the SAME score that is displayed, so the card and
+      // its thesis can never quote two different numbers for one name.
+      const unified = { ...score, total: v3.total, momentumRS: v3.phaseTotals["3A"]?.points ?? score.momentumRS };
+      const setup = buildSwingSetup(md, tech, unified, "Trend persistence / sector momentum (scan-derived).");
+      if (!setup) continue;
+      if (setup.riskReward < MIN_RR) {
+        rejected.push({
+          ticker, score: v3.total, signal: v3.signal, blocks: [],
+          reason: `Reward:risk 1:${setup.riskReward} below the 1:${MIN_RR} minimum at this entry`,
+        });
+        continue;
+      }
+      candidates.push(setup);
     } catch (e: any) {
       warnings.push(`${ticker}: ${e?.message ?? "failed"}`);
     }
@@ -160,5 +203,14 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
     .sort((a, b) => b.momentumScore - a.momentumScore)
     .slice(0, topN);
 
-  return { regime, setups, sentinel, samp, rejected, scanned, warnings, asOf: new Date().toISOString() };
+  const noQualifiers = setups.length === 0
+    ? `No name cleared the bar out of ${scanned} scanned. ${rejected.filter((r) => r.blocks.length).length} were hard-blocked, ` +
+      `${rejected.filter((r) => !r.blocks.length).length} failed on score, pressure or reward:risk. ` +
+      `Market regime is ${regime.stance.toLowerCase()} — in a broad pullback the model is designed to return nothing rather than the least-bad chart.`
+    : null;
+
+  return {
+    regime, setups, sentinel, samp, rejected, scanned, warnings,
+    asOf: new Date().toISOString(), noQualifiers, minRiskReward: MIN_RR,
+  };
 }

@@ -134,6 +134,35 @@ export default function AnalyzeTab() {
                       <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>{m.verdict.detail}</div>
                     </div>
 
+                    {m.conviction && (
+                      <div style={{ marginBottom: 14 }}>
+                        <h3 className="sub" style={{ marginTop: 0 }}>
+                          🎯 Conviction {m.conviction.score}/100 — {m.conviction.label}
+                        </h3>
+                        <div className="bar" style={{ marginBottom: 10 }}>
+                          <span style={{ width: `${m.conviction.score}%` }} />
+                        </div>
+                        {m.conviction.agreements?.length > 0 && (
+                          <ul style={{ margin: "0 0 8px", paddingLeft: 18, display: "grid", gap: 4 }}>
+                            {m.conviction.agreements.map((a: string, i: number) => (
+                              <li key={i} className="pos" style={{ fontSize: 12.5 }}>{a}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {m.conviction.conflicts?.length > 0 && (
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {m.conviction.conflicts.map((c: any, i: number) => (
+                              <div key={i} style={{ padding: "9px 12px", borderRadius: 10, background: "rgba(255,93,108,.08)", border: "1px solid rgba(255,93,108,.28)" }}>
+                                <div style={{ fontSize: 12, fontWeight: 700 }}>⚠️ {c.between}</div>
+                                <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{c.issue} <strong>{c.implication}</strong></div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <p className="notice" style={{ marginTop: 10 }}>{m.conviction.note}</p>
+                      </div>
+                    )}
+
                     {m.samp && (
                       <>
                         <h3 className="sub" style={{ marginTop: 0 }}>

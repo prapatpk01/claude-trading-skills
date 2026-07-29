@@ -2,6 +2,37 @@
 import { useState } from "react";
 import { money, num, pct, cls } from "./format";
 
+/** Save a scanned name straight into the watchlist. */
+function WatchButton({ ticker, reason }: { ticker: string; reason: string }) {
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [msg, setMsg] = useState("");
+  return (
+    <button
+      className={`btn ${state === "saved" ? "ghost" : "ghost"} sm`}
+      disabled={state === "saving" || state === "saved"}
+      title={state === "error" ? msg : `Add ${ticker} to the watchlist`}
+      onClick={async () => {
+        setState("saving");
+        try {
+          const res = await fetch("/api/watchlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticker, reason }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || "could not save");
+          setState("saved");
+        } catch (e: any) {
+          setMsg(e.message);
+          setState("error");
+        }
+      }}
+    >
+      {state === "saved" ? "★ On watchlist" : state === "saving" ? "…" : state === "error" ? "⚠ Retry" : "☆ Watch"}
+    </button>
+  );
+}
+
 export default function ScannerTab() {
   const [tickers, setTickers] = useState("");
   const [loading, setLoading] = useState(false);
@@ -64,26 +95,56 @@ export default function ScannerTab() {
         </div>
       )}
 
+      {result?.noQualifiers && (
+        <div className="card">
+          <h3 className="sub" style={{ marginTop: 0 }}>🚫 No qualifying setup</h3>
+          <p style={{ fontSize: 13.5, lineHeight: 1.6 }}>{result.noQualifiers}</p>
+          <p className="notice" style={{ marginTop: 10 }}>
+            An empty result is a result. Presenting the least-bad chart in a broad pullback is how a
+            momentum model loses money, so the scanner returns nothing rather than manufacturing a trade.
+            Every name it looked at is listed below with the rule that excluded it — useful as a watchlist
+            for when the tape turns.
+          </p>
+        </div>
+      )}
+
       {result?.rejected?.length > 0 && (
         <div className="card">
-          <h3 className="sub" style={{ marginTop: 0 }}>⚖️ Excluded by hard block (Sentinel v3.0)</h3>
+          <h3 className="sub" style={{ marginTop: 0 }}>
+            ⚖️ Excluded — {result.rejected.length} name{result.rejected.length > 1 ? "s" : ""} (Sentinel v3.0)
+          </h3>
+          <p className="muted" style={{ fontSize: 12, marginTop: -4, marginBottom: 10 }}>
+            These are the scan universe members that did <strong>not</strong> qualify. They are not
+            recommendations — each row shows the specific rule that stopped it. Add any of them to your
+            watchlist to track for a re-entry.
+          </p>
           <div className="table-wrap">
             <table className="tbl">
-              <thead><tr><th>Ticker</th><th className="num">Score</th><th>Blocking rule</th></tr></thead>
+              <thead><tr><th>Ticker</th><th className="num">Score</th><th>Why it was excluded</th><th></th></tr></thead>
               <tbody>
                 {result.rejected.map((r: any) => (
                   <tr key={r.ticker}>
                     <td><strong>{r.ticker}</strong></td>
                     <td className="num muted">{r.score}/100</td>
-                    <td className="neg" style={{ fontSize: 12 }}>{r.blocks.join(" · ")}</td>
+                    <td className="neg" style={{ fontSize: 12 }}>
+                      {r.reason}
+                      {r.blocks?.length > 0 && (
+                        <><br /><span className="muted" style={{ fontSize: 11 }}>{r.blocks.join(" · ")}</span></>
+                      )}
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <WatchButton ticker={r.ticker} reason={`Scan ${new Date().toISOString().slice(0, 10)}: ${r.reason}`} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="notice" style={{ marginTop: 10 }}>
-            A hard block overrides any score — ADX below 20, price under the 200-SMA, distribution on rising price,
-            weak RSI without MA confirmation, or under $10M daily dollar volume.
+            Hard blocks override any score: ADX below 20 · price under the 200-SMA · distribution on rising
+            price · RSI under 45 without MA confirmation · under $10M daily dollar volume. Names can also be
+            excluded for scoring below {result.rejected.some((r: any) => r.reason?.includes("watch floor")) ? "42" : "the watch floor"},
+            for negative SAMP pressure, or for offering less than 1:{result.minRiskReward ?? 3} reward:risk.
           </p>
         </div>
       )}
@@ -93,7 +154,13 @@ export default function ScannerTab() {
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
             <div>
               <h2 className="section" style={{ margin: 0 }}>{i + 1}. {s.ticker} <span className="muted" style={{ fontWeight: 400, fontSize: 14 }}>({s.name})</span></h2>
-              <div style={{ marginTop: 4 }}><span className="tag">{s.setupType}</span></div>
+              <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span className="tag">{s.setupType}</span>
+                <WatchButton
+                  ticker={s.ticker}
+                  reason={`Scan ${new Date().toISOString().slice(0, 10)}: ${s.setupType}, score ${s.momentumScore}/100, entry ${s.entryLow}–${s.entryHigh}, stop ${s.stop}`}
+                />
+              </div>
             </div>
             <div style={{ textAlign: "right" }}>
               <div className="badge-score">{s.momentumScore}</div>
