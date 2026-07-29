@@ -26,6 +26,7 @@ const ACTION_CLASS: Record<string, string> = {
   WATCH: "pill hold",
   TRIM: "pill sell",
   EXIT: "pill sell",
+  "EXIT REVIEW": "pill sell",
 };
 
 function VerdictBadge({ verdict }: { verdict: string | null }) {
@@ -52,8 +53,9 @@ function PlanRow({ p }: { p: any }) {
       <tr onClick={() => setOpen((o) => !o)} style={{ cursor: "pointer" }}>
         <td>
           <strong>{p.ticker}</strong>
+          {p.isHybrid && <span className="tag" style={{ marginLeft: 6, fontSize: 9.5 }}>HYBRID</span>}
           <br />
-          <span className="muted" style={{ fontSize: 10.5 }}>{p.sleeve}</span>
+          <span className="muted" style={{ fontSize: 10.5 }}>{p.engine ?? p.sleeve}</span>
         </td>
         <td className="num">{p.price != null ? money(p.price) : "—"}</td>
         <td className="num">{p.fairValue != null ? money(p.fairValue) : "—"}</td>
@@ -61,6 +63,9 @@ function PlanRow({ p }: { p: any }) {
           {dev == null ? "—" : `${dev >= 0 ? "+" : ""}${dev.toFixed(1)}%`}
         </td>
         <td><VerdictBadge verdict={p.verdict} /></td>
+        <td className="num" style={{ whiteSpace: "nowrap" }}>
+          {p.score != null ? <><strong>{p.score}</strong><br /><span className="muted" style={{ fontSize: 10.5 }}>{p.signal}</span></> : "—"}
+        </td>
         <td className="num" style={{ whiteSpace: "nowrap" }}>
           {pct(p.weightPct)}
           <span className="muted"> → {pct(p.targetWeightPct)}</span>
@@ -73,13 +78,21 @@ function PlanRow({ p }: { p: any }) {
       </tr>
       {open && (
         <tr>
-          <td colSpan={8} style={{ background: "rgba(8,14,28,.45)" }}>
+          <td colSpan={9} style={{ background: "rgba(8,14,28,.45)" }}>
             <div style={{ display: "grid", gap: 10, padding: "4px 2px 8px" }}>
               <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 5 }}>
                 {p.reasons.map((r: string, i: number) => (
                   <li key={i} style={{ fontSize: 12.5, lineHeight: 1.55 }}>{r}</li>
                 ))}
               </ul>
+
+              {p.decidedBy && (
+                <div className="muted" style={{ fontSize: 11.5 }}>
+                  Decided at precedence level <strong>{p.decidedBy}</strong>
+                  {p.coveragePct != null && ` · ${p.coveragePct}% of the engine's inputs were available`}
+                  {p.blocks?.length > 0 && ` · blocks: ${p.blocks.join(", ")}`}
+                </div>
+              )}
 
               {p.guard && (
                 <div className="notice">
@@ -126,8 +139,9 @@ export default function ValuationDesk() {
       <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
         Prices every holding against its own history — the multiple the market has paid for its earnings, the yield
         it has paid on its distributions, and its long-run price trend — then sizes it against the 20% single-name
-        cap. A leading name still at or below fair value may sit up to 23% as <strong>WATCH</strong>, carrying a
-        trim trigger so the gain is capped rather than left open.
+        cap, then routes it through the two v4 engines — Momentum Growth (growth above 12% with price confirmation)
+        and High Dividend Growth (yield 5%+ with a durable, growing distribution). Valuation sizes an add; it does
+        not sell a winner.
       </p>
       <TeamPanel
         label="Run valuation review"
@@ -137,7 +151,7 @@ export default function ValuationDesk() {
           const count = (a: string) => plans.filter((p) => p.action === a).length;
           const addCash = plans.filter((p) => p.action === "ADD").reduce((s, p) => s + p.deltaValue, 0);
           const raiseCash = plans
-            .filter((p) => p.action === "TRIM" || p.action === "EXIT")
+            .filter((p) => p.action === "TRIM")
             .reduce((s, p) => s + Math.abs(p.deltaValue), 0);
 
           return (
@@ -159,9 +173,9 @@ export default function ValuationDesk() {
                   <div className="sub">overweight, let it run</div>
                 </div>
                 <div className="metric">
-                  <div className="label">Exit</div>
-                  <div className={cls("value", count("EXIT") ? "neg" : "pos")} style={{ fontSize: 18 }}>{count("EXIT")}</div>
-                  <div className="sub">{count("EXIT") ? "sell out entirely" : "none flagged"}</div>
+                  <div className="label">Exit review</div>
+                  <div className={cls("value", count("EXIT REVIEW") ? "neg" : "pos")} style={{ fontSize: 18 }}>{count("EXIT REVIEW")}</div>
+                  <div className="sub">{count("EXIT REVIEW") ? "thesis under review" : "none flagged"}</div>
                 </div>
                 <div className="metric">
                   <div className="label">Cash raised</div>
@@ -169,6 +183,15 @@ export default function ValuationDesk() {
                   <div className="sub">from trims and exits</div>
                 </div>
               </div>
+
+              {res.mix?.length > 0 && (
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
+                  {res.mix.map((m: any) => (
+                    <span key={m.engine} className="tag">{m.engine} {m.valuePct}%</span>
+                  ))}
+                  {res.rulesVersion && <span className="tag">Rules {res.rulesVersion}</span>}
+                </div>
+              )}
 
               {res.tilt && <ThematicTilt tilt={res.tilt} />}
 
@@ -181,6 +204,7 @@ export default function ValuationDesk() {
                       <th className="num">Fair value</th>
                       <th className="num">vs fair</th>
                       <th>Valuation</th>
+                      <th className="num">Score</th>
                       <th className="num">Weight → target</th>
                       <th>Action</th>
                       <th>Recommendation</th>
@@ -189,7 +213,7 @@ export default function ValuationDesk() {
                   <tbody>
                     {plans.map((p) => <PlanRow key={p.ticker} p={p} />)}
                     {plans.length === 0 && (
-                      <tr><td colSpan={8} className="muted">Nothing could be valued.</td></tr>
+                      <tr><td colSpan={9} className="muted">Nothing could be valued.</td></tr>
                     )}
                   </tbody>
                 </table>

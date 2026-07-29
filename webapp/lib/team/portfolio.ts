@@ -3,12 +3,54 @@
 
 export type Sleeve = "Growth/Momentum" | "Income/Dividend" | "Cash/Defensive";
 
-/** Published sleeve targets. */
+/**
+ * Team Rules v4 strategic allocation. Cash is a regime variable, not a
+ * standing 10% — see REGIME_ALLOCATION.
+ */
 export const SLEEVE_TARGETS: Record<Sleeve, number> = {
   "Growth/Momentum": 55,
-  "Income/Dividend": 30,
-  "Cash/Defensive": 13,
+  "Income/Dividend": 35,
+  "Cash/Defensive": 10,
 };
+
+/** Permitted ranges around the strategic targets (v4 §2). */
+export const SLEEVE_RANGES: Record<Sleeve, [number, number]> = {
+  "Growth/Momentum": [45, 65],
+  "Income/Dividend": [25, 45],
+  "Cash/Defensive": [5, 25],
+};
+
+/** v4 §2 — the allocation shifts with the regime rather than being held fixed. */
+export const REGIME_ALLOCATION: Record<string, Record<Sleeve, number>> = {
+  "Risk-On": { "Growth/Momentum": 60, "Income/Dividend": 35, "Cash/Defensive": 5 },
+  Neutral: { "Growth/Momentum": 50, "Income/Dividend": 35, "Cash/Defensive": 15 },
+  "Risk-Off": { "Growth/Momentum": 30, "Income/Dividend": 45, "Cash/Defensive": 25 },
+  Crisis: { "Growth/Momentum": 25, "Income/Dividend": 35, "Cash/Defensive": 40 },
+};
+
+/** Targets for the regime in force, falling back to the strategic mix. */
+export function allocationFor(regime: string | null | undefined): Record<Sleeve, number> {
+  return (regime && REGIME_ALLOCATION[regime]) || SLEEVE_TARGETS;
+}
+
+/**
+ * Where a regime allocation deliberately sits outside its strategic band.
+ *
+ * v4 §2 sets the Growth range at 45-65%, but the Risk-Off allocation is 30% —
+ * the tactical de-risk is meant to breach the strategic band, not respect it.
+ * Reporting the breach as intentional keeps the drift alert from firing on a
+ * position the rules explicitly ask for.
+ */
+export function tacticalBreaches(regime: string | null | undefined): { sleeve: Sleeve; target: number; band: [number, number] }[] {
+  const alloc = allocationFor(regime);
+  const out: { sleeve: Sleeve; target: number; band: [number, number] }[] = [];
+  for (const sleeve of Object.keys(alloc) as Sleeve[]) {
+    const [lo, hi] = SLEEVE_RANGES[sleeve];
+    const t = alloc[sleeve];
+    if (t < lo || t > hi) out.push({ sleeve, target: t, band: [lo, hi] });
+  }
+  return out;
+}
 
 /** Rule #7 — drift beyond this many points raises an alert. */
 export const DRIFT_ALERT_PCT = 5;

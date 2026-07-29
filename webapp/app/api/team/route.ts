@@ -8,10 +8,13 @@ import { buildBookReview } from "@/lib/team/book";
 import { scoreMomentumV3, atrStop } from "@/lib/team/scoring";
 import { runSAMP } from "@/lib/team/samp";
 import { assessRegime } from "@/lib/team/governance";
+import { assessValuation } from "@/lib/team/positionValuation";
 import {
-  assessValuation, buildPositionActions, gradeIncome, gradeMomentum,
-  type PositionInput, type Conviction,
-} from "@/lib/team/positionValuation";
+  readStructure, scoreEngineA, scoreEngineB, checkEntry, checkHybrid,
+  yieldTrapCheck, yieldBand,
+} from "@/lib/team/engines";
+import { buildPlansV4, type PositionV4 } from "@/lib/team/sizingV4";
+import { buildGrowthInput, bestGrowthPct } from "@/lib/team/growthInputs";
 import { classifySleeve } from "@/lib/team/portfolio";
 import {
   rankGroups, buildThematicTilt, themeForSector, THEME_PROXIES,
@@ -22,6 +25,7 @@ import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { computeBeta } from "@/lib/derive";
+import { pctReturn } from "@/lib/indicators";
 import { FUND } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
 
@@ -77,6 +81,13 @@ function distributionQuality(events: { date: string; amount: number }[], yieldPc
     // wobbles are rounding on a variable distribution, not a policy change.
     if (recent[i].amount < recent[i - 1].amount * 0.98) cuts++;
   }
+  let deepestCutPct: number | null = null;
+  for (let i = 1; i < recent.length; i++) {
+    if (recent[i - 1].amount > 0 && recent[i].amount < recent[i - 1].amount) {
+      const drop = ((recent[i - 1].amount - recent[i].amount) / recent[i - 1].amount) * 100;
+      if (deepestCutPct == null || drop > deepestCutPct) deepestCutPct = drop;
+    }
+  }
   const ttm = (from: number, to: number) => {
     const hi = new Date(Date.now() - from * 86400000).toISOString().slice(0, 10);
     const lo = new Date(Date.now() - to * 86400000).toISOString().slice(0, 10);
@@ -89,6 +100,7 @@ function distributionQuality(events: { date: string; amount: number }[], yieldPc
     distributionGrowthPct: prior > 0 ? ((now - prior) / prior) * 100 : null,
     cuts,
     payments: recent.length,
+    deepestCutPct,
   };
 }
 
@@ -192,7 +204,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ mode, review, fund: FUND, windowNote: "Return comparison uses the most recent ~1 month of common price history." });
     }
 
-    // ── Valuation desk: fair value + add / trim / exit sizing per holding ──
+    // ── Valuation desk (Team Rules v4) — two engines, then sizing ──
     if (mode === "valuation") {
       const holdings = await loadHoldings();
       if (!holdings.length) {
@@ -201,8 +213,7 @@ export async function POST(req: NextRequest) {
       const spy = await dailyCandles("SPY", 400).catch(() => [] as Candle[]);
       const regime = spy.length ? assessRegime(spy) : null;
 
-      // Theme leadership first — the watch band depends on whether a name is
-      // running with a group that is actually working.
+      // Theme leadership first — used to prioritise, not to permit.
       const proxyCandles: Record<string, Candle[]> = {};
       await Promise.all(
         THEME_PROXIES.map(async (t) => {
@@ -212,14 +223,13 @@ export async function POST(req: NextRequest) {
       );
       const ranked = spy.length ? rankGroups(proxyCandles, spy) : [];
 
-      const positions: PositionInput[] = [];
+      const positions: PositionV4[] = [];
       const failures: { ticker: string; error: string }[] = [];
       const sectorValue: Record<string, number> = {};
+      const diagnostics: any[] = [];
 
       for (const h of holdings) {
         try {
-          // 3 years of history so the yield and trend anchors have something
-          // to regress against.
           const candles = await dailyCandles(h.ticker, 780);
           if (candles.length < 60) throw new Error("insufficient price history");
           const q = await getLightQuote(h.ticker).catch(() => null);
@@ -232,13 +242,9 @@ export async function POST(req: NextRequest) {
             fullMarketData(h.ticker).catch(() => null),
           ]);
 
-          // A DCF only where the statements support one; it joins the blend as
-          // one anchor among several rather than standing alone.
           const dcf = md ? computeDcf(md, defaultAssumptions(md)) : null;
-
           const valuation = assessValuation({
-            candles,
-            price,
+            candles, price,
             annualEps: sec?.annualEps ?? [],
             epsTTM: sec?.epsTTM ?? null,
             dividends: divs,
@@ -247,26 +253,41 @@ export async function POST(req: NextRequest) {
               : null,
           });
 
-          const beta = spy.length ? computeBeta(candles, spy) : null;
-          const stop = atrStop(candles, price, 2)?.stop ?? null;
-          const yieldPct = await forwardYield(h.ticker, price);
-          const sleeve = classifySleeve(h.ticker, yieldPct, beta);
+          const structure = readStructure(candles, spy);
+          const isFund = sectorInfo?.isFund ?? false;
+          const growth = buildGrowthInput(sec, isFund);
+          const growthPct = bestGrowthPct(growth);
 
-          // Grade conviction on the model that fits the sleeve. Running an
-          // income ETF through a momentum model only measures that it does not
-          // trend, which is not a finding.
-          let conviction: Conviction;
-          if (sleeve === "Cash/Defensive" || valuation.cashLike) {
-            conviction = {
-              grade: "N/A", score: null, model: "Cash sleeve",
-              detail: "Held for liquidity against the regime cash floor, not for return — no conviction score applies.",
-              blocks: [],
-            };
-          } else if (sleeve === "Income/Dividend") {
-            conviction = gradeIncome(distributionQuality(divs, yieldPct));
-          } else {
-            conviction = gradeMomentum(scoreMomentumV3({ candles, benchmark: spy, beta }));
-          }
+          const dq = distributionQuality(divs, await forwardYield(h.ticker, price));
+          const yieldPct = dq.yieldPct;
+
+          const engineA = scoreEngineA({ growth, structure });
+          const engineB = scoreEngineB({
+            yieldPct,
+            distributionGrowthPct: dq.distributionGrowthPct,
+            cuts: dq.cuts,
+            payments: dq.payments,
+            deepestCutPct: dq.deepestCutPct,
+            fundamentalGrowthPct: growthPct,
+            structure,
+            valuation: valuation.verdict,
+            existingPosition: true,
+          });
+
+          // Which engine holds this position? The one it qualifies for; where
+          // it qualifies for both, the hybrid test decides priority.
+          const cashLike = valuation.cashLike === true;
+          const engine: PositionV4["engine"] = cashLike
+            ? "Cash/Defensive"
+            : (yieldPct ?? 0) >= 5
+            ? "High Dividend Growth"
+            : "Momentum Growth";
+
+          const hybrid = checkHybrid(engineA, engineB, {
+            growthPct, yieldPct,
+            distributionGrowthPct: dq.distributionGrowthPct,
+            above200: structure.above200,
+          });
 
           if (sectorInfo?.sector) {
             sectorValue[sectorInfo.sector] = (sectorValue[sectorInfo.sector] ?? 0) + price * h.shares;
@@ -277,11 +298,30 @@ export async function POST(req: NextRequest) {
             shares: h.shares,
             avgCost: h.avg_cost,
             price,
-            sleeve,
+            engineA, engineB, engine, hybrid, structure,
+            entry: checkEntry(structure),
             valuation,
-            conviction,
-            stop,
+            growthPct,
+            yieldPct,
+            distributionGrowthPct: dq.distributionGrowthPct,
+            stop: atrStop(candles, price, 2)?.stop ?? null,
             theme: themeForSector(ranked, sectorInfo?.sector ?? null),
+          });
+
+          diagnostics.push({
+            ticker: h.ticker,
+            engine,
+            isHybrid: hybrid.isHybrid,
+            hybridMissing: hybrid.missing,
+            growthPct,
+            growthDetail: engineA.lines.find((l) => l.label === "Revenue / EPS growth")?.detail ?? null,
+            yieldPct,
+            yieldBand: yieldBand(yieldPct),
+            yieldTrap: yieldTrapCheck(yieldPct, dq.distributionGrowthPct, pctReturn(candles, 252)),
+            distributionGrowthPct: dq.distributionGrowthPct,
+            engineA: { score: engineA.score, signal: engineA.signal, coverage: engineA.coveragePct, blocks: engineA.blocks, lines: engineA.lines },
+            engineB: { score: engineB.score, signal: engineB.signal, coverage: engineB.coveragePct, blocks: engineB.blocks, lines: engineB.lines },
+            entry: checkEntry(structure),
           });
         } catch (e: any) {
           failures.push({ ticker: h.ticker, error: e?.message ?? "failed" });
@@ -296,22 +336,32 @@ export async function POST(req: NextRequest) {
       const sectorWeights: Record<string, number> = {};
       for (const [k, v] of Object.entries(sectorValue)) sectorWeights[k] = nav > 0 ? (v / nav) * 100 : 0;
 
-      const result = buildPositionActions({ positions, nav, regime });
+      const result = buildPlansV4({ positions, nav, regime });
       const tilt = ranked.length ? buildThematicTilt(ranked, regime, sectorWeights) : null;
+
+      // Engine mix against the v4 strategic allocation.
+      const byEngine: Record<string, number> = {};
+      for (const p of positions) {
+        const v = (p.price ?? p.avgCost) * p.shares;
+        byEngine[p.engine] = (byEngine[p.engine] ?? 0) + v;
+      }
+      const mix = Object.entries(byEngine).map(([engine, v]) => ({
+        engine, valuePct: nav > 0 ? Math.round((v / nav) * 1000) / 10 : 0,
+      }));
 
       return NextResponse.json({
         mode,
+        rulesVersion: "v4.0",
         nav: Math.round(nav * 100) / 100,
-        regime,
-        tilt,
+        regime, tilt, mix, diagnostics,
         ...result,
         failures,
         fund: FUND,
         disclosures: [
-          "Fair value blends an earnings-multiple anchor, a dividend-yield anchor and a trend regression — only the anchors each instrument's data supports. Constant-NAV cash funds get no verdict at all.",
-          "The yield anchor assumes the distribution is sustainable; a cut invalidates it. The earnings anchor assumes the market re-rates back to its own median multiple.",
-          "Sizing is governed by the 20% single-name cap (Rule #3), a 20-23% watch band for leading names still at or below fair value, and the 1.5%-of-NAV trade risk limit (Rule #4).",
-          "Theme leadership is measured from proxy ETFs against SPY. A leading proxy does not mean every name inside the group is leading.",
+          "Team Rules v4.0 — Engine A requires growth above 12% with price confirmation; Engine B requires a yield of 5% or more with a durable, growing distribution.",
+          "Forward estimates and analyst revisions are not available from free, keyless sources. Those components are excluded from the score and the coverage percentage says how much of each model could be evaluated (Rule #5).",
+          "Valuation sizes an add; it does not sell a winner. A rich price forces a trim only when momentum is already weakening.",
+          "Position ladder: 15% normal maximum, 15-20% for high conviction, 20% hard maximum.",
           "For research and education only. Not investment advice.",
         ],
       });
