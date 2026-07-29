@@ -46,6 +46,7 @@ produce the same answer, and every number traces back to a published rule.
 | --- | --- |
 | Ticker Analysis | Full committee memo — macro regime, business quality, earnings trend, **Momentum Scoring v3.0**, catalyst/event risk, valuation, sizing & ATR stop, portfolio fit, the **nine pre-trade gates**, CIO verdict |
 | Portfolio | Sleeve balance vs the 55/30/13 targets, **Rule #7** drift alerts, **Rule #3** concentration zones, correlation flags, dual-objective scorecard, regime cash floor, prioritised action list |
+| Valuation Desk | Fair value per holding from up to three independent anchors, a cheap/fair/rich verdict, and the size change it implies — add *n* shares, trim *n* shares, or exit |
 | Watchlist | Every name scored and ranked through v3.0, with hard blocks applied |
 | Momentum Scanner | v3.0 score per candidate; names failing a hard block are listed separately with the rule that excluded them |
 
@@ -109,6 +110,42 @@ the earnings blackout, consensus estimates) are reported as such rather than inv
 Record holdings (shares, cost basis, personal target, rolling thesis), see live
 market value / unrealized P&L, and maintain a watchlist with alert levels and reasons.
 Persisted in Supabase; falls back to an in-memory store when Supabase isn't configured.
+
+#### 💰 Valuation Desk — fair value & position sizing
+Prices every holding against **its own history**, then turns the gap into an instruction.
+
+Up to three independent anchors are computed, and only the ones an instrument's data
+actually supports:
+
+| Anchor | What it asks | Works for |
+| --- | --- | --- |
+| Earnings multiple | What P/E has the market actually paid for these earnings? | Operating companies with an SEC EPS history |
+| Dividend yield | What yield has the market demanded from this distribution? | BDCs, REITs, income ETFs |
+| Trend regression | Where does price sit against its own long-run drift? | Anything with a year of prices, incl. broad ETFs |
+
+The blend is guarded rather than trusted. An anchor is discarded when the median multiple
+is implausible (a company whose EPS was near zero three years ago carries a "P/E" in the
+hundreds), when it implies a fair value outside 0.4–2.5× the market price, when a
+regression fits too poorly to define a trend, or when it sits more than 2.2× away from
+where the other methods agree. The **FAIR band widens as the surviving anchors disagree**,
+so an uncertain name is not labelled overvalued on a coin-flip — and with no usable anchor
+the desk returns no verdict instead of a guess.
+
+Verdicts are `DEEP VALUE · UNDERVALUED · FAIR · OVERVALUED · STRETCHED`, and the action
+follows the fund's own rules:
+
+- **Target weight** = each sleeve's budget split by conviction (momentum score raises it,
+  a rich price lowers it), capped at **20% per name (Rule #3)** — with the capped excess
+  redistributed to names that can still absorb it, not silently dropped.
+- **Adds are suppressed** into any hard block, into an overvalued price (with the buy limit
+  quoted), in a Crisis regime, and for growth names in a Risk-Off regime.
+- **Adds are capped** by the **1.5%-of-NAV trade risk limit (Rule #4)** against the ATR stop.
+- **Exit** fires on a broken 200-day SMA with no *fundamental* valuation support beneath it —
+  a trend regression calling the far side of a fall "cheap" does not count.
+- Sleeve budgets are renormalised over the sleeves actually held, so an unfilled cash sleeve
+  doesn't masquerade as a trim signal on every position.
+
+Every row expands to show its anchors, its confidence, and the reasoning behind the call.
 
 ### 3. 📡 Momentum Swing Scanner
 Ranks a universe by a **Momentum-Centric Alpha Score** (Momentum & RS 40% · Volume
@@ -209,6 +246,7 @@ lib/
   analysis.ts              # technicals, momentum score, DCF, signal
   analyze.ts               # buildAnalysis(): assembles the full research payload
   scan.ts                  # market regime + universe scan
+  team/positionValuation.ts # fair-value anchors + add/trim/exit sizing per holding
   workbook.ts              # 6-sheet exceljs builder (formulas + conditional formatting)
   supabase.ts / store.ts   # persistence + in-memory fallback
 supabase/schema.sql        # tables, triggers, RLS

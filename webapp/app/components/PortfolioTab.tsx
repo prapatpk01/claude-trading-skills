@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import { money, num, pct, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, Disclosures } from "./TeamPanel";
 import PortfolioAnalytics from "./PortfolioAnalytics";
+import ValuationDesk from "./ValuationDesk";
 import TickerInput from "./TickerInput";
 
 interface Holding {
@@ -219,6 +220,9 @@ export default function PortfolioTab() {
           }}
         />
       </div>
+
+      {/* Fair value per holding + the add / trim / exit size it implies */}
+      <ValuationDesk />
 
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
