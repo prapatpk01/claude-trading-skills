@@ -63,6 +63,91 @@ export const THEME_UNIVERSE: ThemeGroup[] = [
 
 export const THEME_PROXIES = THEME_UNIVERSE.map((g) => g.proxy);
 
+/**
+ * Liquid names inside each group, used to build a scan universe from whatever
+ * is actually leading rather than from a fixed list. Deliberately shallow —
+ * enough large, liquid constituents per theme to give the scanner something to
+ * rank, not an index reconstruction.
+ */
+export const THEME_MEMBERS: Record<string, string[]> = {
+  SMH: ["NVDA", "AVGO", "AMD", "MU", "ARM", "TSM", "LRCX", "AMAT", "KLAC", "MRVL"],
+  IGV: ["MSFT", "CRM", "NOW", "PLTR", "SNOW", "CRWD", "PANW", "DDOG", "ORCL", "ADBE"],
+  BOTZ: ["ISRG", "ABB", "ROK", "TER", "SYM", "PATH"],
+  XLK: ["AAPL", "MSFT", "NVDA", "AVGO", "CRM", "ORCL", "CSCO", "ACN", "AMD", "NOW"],
+  XLC: ["GOOGL", "META", "NFLX", "DIS", "TMUS", "EA", "WBD"],
+  XLY: ["AMZN", "TSLA", "HD", "MCD", "BKNG", "NKE", "SBUX", "TJX"],
+  XLI: ["GE", "CAT", "UNP", "HON", "BA", "DE", "UPS", "ETN"],
+  XLF: ["JPM", "BAC", "WFC", "GS", "MS", "SPGI", "BLK", "AXP"],
+  XLE: ["XOM", "CVX", "COP", "SLB", "EOG", "PSX", "MPC"],
+  XLB: ["LIN", "SHW", "FCX", "APD", "ECL", "NEM", "NUE"],
+  XLV: ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ISRG", "AMGN"],
+  XLP: ["PG", "COST", "WMT", "KO", "PEP", "PM", "MDLZ"],
+  XLU: ["NEE", "SO", "DUK", "CEG", "VST", "AEP", "SRE"],
+  XLRE: ["PLD", "AMT", "EQIX", "WELL", "SPG", "O", "DLR"],
+  ITA: ["RTX", "LMT", "GD", "NOC", "HWM", "LHX", "TDG"],
+  XBI: ["VRTX", "REGN", "ALNY", "INCY", "NBIX", "UTHR"],
+  KRE: ["PNC", "USB", "TFC", "FITB", "RF", "KEY", "CFG"],
+  XHB: ["DHI", "LEN", "PHM", "NVR", "BLDR", "MAS"],
+};
+
+export interface ThematicUniverse {
+  tickers: string[];
+  /** The groups the universe was drawn from, best first. */
+  groups: GroupRank[];
+  note: string;
+}
+
+/**
+ * Build a scan universe from the groups that are both leading on relative
+ * strength and permitted by the regime. A fixed list of last cycle's winners
+ * finds last cycle's trades; this follows the money.
+ */
+export function buildThematicUniverse(
+  ranked: GroupRank[],
+  playbook: Playbook,
+  maxTickers = 20
+): ThematicUniverse {
+  const eligible = ranked.filter((g) => isLeading(g) && playbook.allowed.includes(g.risk) && THEME_MEMBERS[g.proxy]);
+
+  if (!eligible.length) {
+    return {
+      tickers: [],
+      groups: [],
+      note:
+        playbook.allowed.length
+          ? "No group is both leading on relative strength and permitted by the current regime, so there is no thematic universe to scan. Waiting is the position."
+          : `The ${playbook.regime} regime permits no new deployment, so no scan universe is built. ${playbook.guidance}`,
+    };
+  }
+
+  // Round-robin across the leading groups so one hot theme cannot monopolise
+  // the universe and hide a setup in the second-best group.
+  const picked: string[] = [];
+  const seen = new Set<string>();
+  for (let depth = 0; picked.length < maxTickers; depth++) {
+    let addedThisPass = false;
+    for (const g of eligible) {
+      const members = THEME_MEMBERS[g.proxy];
+      if (depth >= members.length) continue;
+      const t = members[depth];
+      addedThisPass = true;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      picked.push(t);
+      if (picked.length >= maxTickers) break;
+    }
+    if (!addedThisPass) break;
+  }
+
+  return {
+    tickers: picked,
+    groups: eligible,
+    note: `Universe drawn from ${eligible.length} leading group${eligible.length === 1 ? "" : "s"} — ${eligible
+      .map((g) => `${g.label} (${g.rs3m != null && g.rs3m >= 0 ? "+" : ""}${g.rs3m?.toFixed(1)}% vs SPY)`)
+      .join(", ")} — filtered to the risk profiles the ${playbook.regime} regime permits.`,
+  };
+}
+
 export interface GroupRank extends ThemeGroup {
   price: number;
   /** Excess return over SPY, in percentage points. */

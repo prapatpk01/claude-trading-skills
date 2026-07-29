@@ -96,7 +96,9 @@ export default function ScannerTab() {
           </button>
         </div>
         <p className="notice" style={{ marginTop: 10 }}>
-          Powered by free Yahoo Finance data (no API key). Scans run sequentially over the universe — the default 16-name list takes a few seconds.
+          Powered by free Yahoo Finance data (no API key). Leave the ticker box empty and the scanner builds its own
+          universe from the sector and theme groups currently leading the market, filtered to the risk profiles the
+          regime permits — so it hunts where money is actually moving instead of down a fixed list.
         </p>
         {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
       </div>
@@ -111,6 +113,34 @@ export default function ScannerTab() {
             <div className="metric"><div className="label">Realized Vol (VIX proxy)</div><div className="value">{num(r.realizedVol, 1)}</div></div>
           </div>
           <p className="muted" style={{ fontSize: 12, marginTop: 12 }}>{r.note}</p>
+        </div>
+      )}
+
+      {result?.universeSource === "thematic" && (
+        <div className="card">
+          <h3 className="sub" style={{ marginTop: 0 }}>🧭 Thematic universe</h3>
+          {result.playbook && (
+            <p style={{ fontSize: 13.5, lineHeight: 1.6, margin: "0 0 8px" }}>
+              <strong>{result.playbook.regime} — {result.playbook.posture}.</strong> {result.playbook.guidance}
+            </p>
+          )}
+          {result.universeNote && (
+            <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.55, margin: "0 0 10px" }}>{result.universeNote}</p>
+          )}
+          {result.themes?.length > 0 && (
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10 }}>
+              {result.themes.map((g: any) => (
+                <span key={g.proxy} className="tag" title={g.note}>
+                  {g.label} · {g.proxy} {g.rs3m >= 0 ? "+" : ""}{g.rs3m?.toFixed(1)}% · {g.leadership}/100
+                </span>
+              ))}
+            </div>
+          )}
+          {result.universe?.length > 0 && (
+            <p className="muted" style={{ fontSize: 12 }}>
+              Scanned: {result.universe.join(", ")}
+            </p>
+          )}
         </div>
       )}
 
