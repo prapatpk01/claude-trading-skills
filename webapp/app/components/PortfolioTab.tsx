@@ -3,8 +3,14 @@ import { useEffect, useState, useCallback } from "react";
 import { money, num, pct, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, Disclosures } from "./TeamPanel";
 import PortfolioAnalytics from "./PortfolioAnalytics";
+import TickerInput from "./TickerInput";
 
-interface Holding { id: string; ticker: string; shares: number; avg_cost: number; thesis?: string; target_price?: number | null; }
+interface Holding {
+  id: string; ticker: string; shares: number; avg_cost: number;
+  thesis?: string | null; notes?: string | null; target_price?: number | null;
+  opened_at?: string | null; closed_at?: string | null; created_at?: string;
+}
+type Draft = Partial<Record<"ticker" | "shares" | "avg_cost" | "target_price" | "thesis" | "opened_at" | "closed_at", string>>;
 interface WatchItem { id: string; ticker: string; reason?: string; alert_price?: number | null; }
 
 export default function PortfolioTab() {
@@ -16,6 +22,10 @@ export default function PortfolioTab() {
   const [error, setError] = useState<string | null>(null);
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [failedQuotes, setFailedQuotes] = useState<string[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft>({});
+  const [savingRow, setSavingRow] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -213,11 +223,13 @@ export default function PortfolioTab() {
           </div>
         )}
         <HoldingForm onAdd={load} />
+        {rowError && <div className="notice" style={{ marginTop: 10 }}>{rowError}</div>}
         {loading ? <p className="muted">Loading…</p> : (
           <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
             <thead><tr>
               <th>Ticker</th><th className="num">Shares</th><th className="num">Avg Cost</th><th className="num">Price</th>
-              <th className="num">Mkt Value</th><th className="num">P/L</th><th className="num">Target</th><th>Thesis</th><th></th>
+              <th className="num">Mkt Value</th><th className="num">P/L</th><th className="num">Target</th>
+              <th>Opened / Closed</th><th>Thesis</th><th></th>
             </tr></thead>
             <tbody>
               {holdings.map((h) => {
@@ -225,6 +237,63 @@ export default function PortfolioTab() {
                 const mv = (price ?? h.avg_cost) * h.shares;
                 const pl = ((price ?? h.avg_cost) - h.avg_cost) * h.shares;
                 const plp = h.avg_cost ? (((price ?? h.avg_cost) - h.avg_cost) / h.avg_cost) * 100 : 0;
+                const editing = editingId === h.id;
+
+                if (editing) {
+                  const set = (k: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement>) =>
+                    setDraft((d) => ({ ...d, [k]: e.target.value }));
+                  return (
+                    <tr key={h.id} className="row-editing">
+                      <td style={{ minWidth: 130 }}>
+                        <TickerInput value={draft.ticker ?? ""} onChange={(v) => setDraft((d) => ({ ...d, ticker: v }))} />
+                      </td>
+                      <td><input className="edit-input" value={draft.shares ?? ""} onChange={set("shares")} inputMode="decimal" /></td>
+                      <td><input className="edit-input" value={draft.avg_cost ?? ""} onChange={set("avg_cost")} inputMode="decimal" /></td>
+                      <td className="num muted">{price != null ? money(price) : "—"}</td>
+                      <td className="num muted">{money(mv)}</td>
+                      <td className="num muted">{money(pl)}</td>
+                      <td><input className="edit-input" value={draft.target_price ?? ""} onChange={set("target_price")} inputMode="decimal" placeholder="—" /></td>
+                      <td style={{ minWidth: 150 }}>
+                        <input className="edit-input" type="date" value={draft.opened_at ?? ""} onChange={set("opened_at")} />
+                        <input className="edit-input" type="date" style={{ marginTop: 4 }} value={draft.closed_at ?? ""} onChange={set("closed_at")} />
+                      </td>
+                      <td style={{ minWidth: 180 }}>
+                        <input className="edit-input" value={draft.thesis ?? ""} onChange={set("thesis")} placeholder="Thesis / notes" />
+                      </td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <button
+                          className="btn sm"
+                          disabled={savingRow}
+                          onClick={async () => {
+                            setSavingRow(true);
+                            setRowError(null);
+                            try {
+                              const res = await fetch("/api/portfolio", {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ id: h.id, ...draft }),
+                              });
+                              const json = await res.json();
+                              if (!res.ok) throw new Error(json.error || "Could not save");
+                              if (json.warning) setRowError(json.warning);
+                              setEditingId(null);
+                              setDraft({});
+                              load();
+                            } catch (e: any) {
+                              setRowError(e.message);
+                            } finally {
+                              setSavingRow(false);
+                            }
+                          }}
+                        >
+                          {savingRow ? "…" : "Save"}
+                        </button>{" "}
+                        <button className="btn ghost sm" onClick={() => { setEditingId(null); setDraft({}); setRowError(null); }}>Cancel</button>
+                      </td>
+                    </tr>
+                  );
+                }
+
                 return (
                   <tr key={h.id}>
                     <td><strong>{h.ticker}</strong></td>
@@ -234,8 +303,38 @@ export default function PortfolioTab() {
                     <td className="num">{money(mv)}</td>
                     <td className={cls("num", pl >= 0 ? "pos" : "neg")}>{money(pl)}<br /><span style={{ fontSize: 11 }}>{plp >= 0 ? "+" : ""}{pct(plp)}</span></td>
                     <td className="num">{h.target_price ? money(h.target_price) : "—"}</td>
-                    <td className="muted" style={{ fontSize: 12, maxWidth: 220 }}>{h.thesis ?? "—"}</td>
-                    <td><button className="btn danger sm" onClick={async () => { await fetch(`/api/portfolio?id=${h.id}`, { method: "DELETE" }); load(); }}>✕</button></td>
+                    <td className="muted" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>
+                      {h.opened_at ?? (h.created_at ? h.created_at.slice(0, 10) : "—")}
+                      {h.closed_at && <><br /><span className="neg">closed {h.closed_at}</span></>}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12, maxWidth: 220 }}>{h.thesis || "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <button
+                        className="btn ghost sm"
+                        title="Edit this position"
+                        onClick={() => {
+                          setRowError(null);
+                          setEditingId(h.id);
+                          setDraft({
+                            ticker: h.ticker,
+                            shares: String(h.shares),
+                            avg_cost: String(h.avg_cost),
+                            target_price: h.target_price != null ? String(h.target_price) : "",
+                            thesis: h.thesis ?? "",
+                            opened_at: h.opened_at ?? (h.created_at ? h.created_at.slice(0, 10) : ""),
+                            closed_at: h.closed_at ?? "",
+                          });
+                        }}
+                      >
+                        ✎
+                      </button>{" "}
+                      <button
+                        className="btn danger sm"
+                        onClick={async () => { await fetch(`/api/portfolio?id=${h.id}`, { method: "DELETE" }); load(); }}
+                      >
+                        ✕
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -342,7 +441,7 @@ export default function PortfolioTab() {
 }
 
 function HoldingForm({ onAdd }: { onAdd: () => void }) {
-  const [f, setF] = useState({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "" });
+  const [f, setF] = useState({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "", opened_at: new Date().toISOString().slice(0, 10) });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   return (
@@ -363,7 +462,7 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
           });
           const json = await res.json();
           if (!res.ok) throw new Error(json.error || "Could not save the holding");
-          setF({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "" });
+          setF({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "", opened_at: new Date().toISOString().slice(0, 10) });
           onAdd();
         } catch (e: any) {
           setErr(e.message);
@@ -372,10 +471,11 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
         }
       }}
     >
-      <input className="input-ticker" placeholder="TICKER" value={f.ticker} onChange={(e) => setF({ ...f, ticker: e.target.value })} maxLength={10} />
+      <TickerInput value={f.ticker} onChange={(v) => setF({ ...f, ticker: v })} style={{ minWidth: 150 }} />
       <input placeholder="Shares" value={f.shares} onChange={(e) => setF({ ...f, shares: e.target.value })} style={{ width: 90 }} />
       <input placeholder="Avg cost" value={f.avg_cost} onChange={(e) => setF({ ...f, avg_cost: e.target.value })} style={{ width: 100 }} />
       <input placeholder="Target" value={f.target_price} onChange={(e) => setF({ ...f, target_price: e.target.value })} style={{ width: 90 }} />
+      <input type="date" title="Date opened" value={f.opened_at} onChange={(e) => setF({ ...f, opened_at: e.target.value })} style={{ width: 150 }} />
       <input placeholder="Thesis / notes" value={f.thesis} onChange={(e) => setF({ ...f, thesis: e.target.value })} style={{ flex: 1, minWidth: 160 }} />
       <button className="btn" disabled={busy}>{busy ? "…" : "Add holding"}</button>
     </form>
@@ -415,7 +515,7 @@ function WatchForm({ onAdd }: { onAdd: () => void }) {
         }
       }}
     >
-      <input className="input-ticker" placeholder="TICKER" value={f.ticker} onChange={(e) => setF({ ...f, ticker: e.target.value })} maxLength={10} />
+      <TickerInput value={f.ticker} onChange={(v) => setF({ ...f, ticker: v })} style={{ minWidth: 150 }} />
       <input placeholder="Alert price" value={f.alert_price} onChange={(e) => setF({ ...f, alert_price: e.target.value })} style={{ width: 110 }} />
       <input placeholder="Why watching?" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} style={{ flex: 1, minWidth: 160 }} />
       <button className="btn" disabled={busy}>{busy ? "…" : "Add"}</button>

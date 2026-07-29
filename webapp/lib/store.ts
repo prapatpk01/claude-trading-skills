@@ -7,9 +7,12 @@ export interface Holding {
   ticker: string;
   shares: number;
   avg_cost: number;
-  notes?: string;
-  thesis?: string;
+  notes?: string | null;
+  thesis?: string | null;
   target_price?: number | null;
+  /** Date the position was opened / exited (YYYY-MM-DD). */
+  opened_at?: string | null;
+  closed_at?: string | null;
   created_at: string;
   updated_at: string;
 }

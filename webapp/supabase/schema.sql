@@ -66,3 +66,16 @@ drop policy if exists "anon full access snapshots" on public.analysis_snapshots;
 create policy "anon full access holdings"  on public.holdings           for all using (true) with check (true);
 create policy "anon full access watchlist" on public.watchlist          for all using (true) with check (true);
 create policy "anon full access snapshots" on public.analysis_snapshots for all using (true) with check (true);
+
+-- ══════════════════════════════════════════════════════════════════════
+--  Migration — position dates (safe to run on an existing database)
+--  Adds when a position was opened and, if it has been exited, closed.
+-- ══════════════════════════════════════════════════════════════════════
+alter table public.holdings add column if not exists opened_at date;
+alter table public.holdings add column if not exists closed_at date;
+
+-- Backfill the open date for existing rows from when they were recorded.
+update public.holdings set opened_at = created_at::date where opened_at is null;
+
+-- PostgREST caches the schema; reload it so the new columns are visible.
+notify pgrst, 'reload schema';

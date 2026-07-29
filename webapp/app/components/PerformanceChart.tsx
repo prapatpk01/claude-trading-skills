@@ -232,15 +232,26 @@ export default function PerformanceChart({
 /** Monthly dividend income — columns, one series, so no legend box. */
 export function DividendBars({ data }: { data: { period: string; amount: number }[] }) {
   const [hover, setHover] = useState<number | null>(null);
-  const peak = Math.max(...data.map((d) => d.amount), 0.01);
-  const ticks = niceTicks(0, peak, 3);
-  const max = Math.max(ticks[ticks.length - 1], peak); // scale to the top tick
+  const peak = Math.max(...data.map((d) => d.amount), 0);
+  const empty = peak <= 0; // no dividend history at all
+  // With an all-zero series a computed axis degenerates to repeated "$0"
+  // labels, so use a plain 0-1 axis and say plainly that nothing was received.
+  const ticks = empty ? [0, 1] : niceTicks(0, peak, 3);
+  const max = Math.max(ticks[ticks.length - 1], peak, 1);
   const W = 720;
   const H = 170;
   const PAD = { top: 12, right: 12, bottom: 30, left: 52 };
   const AQUA = "#199e70"; // slot 3, validated
   const slot = (W - PAD.left - PAD.right) / data.length;
   const barW = Math.min(24, slot - 2); // cap thickness, 2px surface gap
+
+  if (empty) {
+    return (
+      <p className="muted" style={{ fontSize: 13, padding: "12px 0" }}>
+        No dividend payments recorded for these holdings over the window — nothing to chart.
+      </p>
+    );
+  }
 
   return (
     <div style={{ position: "relative" }}>
