@@ -79,3 +79,15 @@ update public.holdings set opened_at = created_at::date where opened_at is null;
 
 -- PostgREST caches the schema; reload it so the new columns are visible.
 notify pgrst, 'reload schema';
+
+-- ══════════════════════════════════════════════════════════════════════
+--  Migration — watchlist trade-idea tracking (safe on an existing database)
+--  Lets a scanner idea be saved with its levels so the app can later say
+--  whether the target was reached or the stop was taken out.
+-- ══════════════════════════════════════════════════════════════════════
+alter table public.watchlist add column if not exists target_price numeric;
+alter table public.watchlist add column if not exists stop_price   numeric;
+alter table public.watchlist add column if not exists entry_price  numeric;
+alter table public.watchlist add column if not exists source       text;
+
+notify pgrst, 'reload schema';

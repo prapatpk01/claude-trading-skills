@@ -412,6 +412,8 @@ export default function PortfolioTab() {
         />
       </div>
 
+      <IdeaTracker refreshKey={tickerKey} />
+
       <div className="card">
         <h2 className="section">⭐ Watchlist</h2>
         <WatchForm onAdd={load} />
@@ -522,5 +524,135 @@ function WatchForm({ onAdd }: { onAdd: () => void }) {
     </form>
     {err && <div className="err" style={{ marginTop: 10 }}>⚠ {err}</div>}
     </>
+  );
+}
+
+/**
+ * Outcome tracker for saved trade ideas.
+ * Replays the bars since each idea was added and reports whether the target
+ * was reached, the stop was taken out, or it is still working.
+ */
+function IdeaTracker({ refreshKey }: { refreshKey: string }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/watchlist/track");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Could not load tracking");
+      setData(json);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (refreshKey) load(); }, [load, refreshKey]);
+
+  if (!refreshKey) return null;
+  const rows = data?.rows ?? [];
+  const s = data?.summary;
+
+  const badge = (status: string) =>
+    status === "TARGET HIT" ? <span className="pill buy">🎯 Target hit</span>
+    : status === "STOPPED" ? <span className="pill sell">🛑 Stopped</span>
+    : status === "OPEN" ? <span className="pill hold">⏳ Open</span>
+    : <span className="muted" style={{ fontSize: 11 }}>{status === "NO LEVELS" ? "no target set" : "no data"}</span>;
+
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <h2 className="section" style={{ margin: 0 }}>🎯 Idea Tracking</h2>
+        <button className="btn ghost sm" onClick={load} disabled={loading}>
+          {loading ? <><span className="spinner" /> Checking…</> : "↻ Re-check"}
+        </button>
+      </div>
+      <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+        Ideas saved from the scanner keep their target and stop. Each is replayed against the bars since it was
+        added — a wick through the level counts as a touch, and a bar touching both is read as the stop first.
+      </p>
+
+      {err && <div className="err" style={{ marginTop: 12 }}>⚠ {err}</div>}
+      {loading && !data && <p className="muted" style={{ marginTop: 10 }}><span className="spinner" /> Replaying price history…</p>}
+
+      {s && (
+        <div className="grid cols-4" style={{ marginTop: 12 }}>
+          <div className="metric"><div className="label">Target hit</div><div className="value pos" style={{ fontSize: 19 }}>{s.hit}</div></div>
+          <div className="metric"><div className="label">Stopped</div><div className="value neg" style={{ fontSize: 19 }}>{s.stopped}</div></div>
+          <div className="metric"><div className="label">Still open</div><div className="value" style={{ fontSize: 19 }}>{s.open}</div></div>
+          <div className="metric">
+            <div className="label">Hit rate</div>
+            <div className="value" style={{ fontSize: 19 }}>{s.hitRatePct != null ? `${s.hitRatePct}%` : "—"}</div>
+            <div className="sub">of resolved</div>
+          </div>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 14 }}>
+          <table className="tbl">
+            <thead><tr>
+              <th>Ticker</th><th>Status</th><th className="num">Entry → Now</th><th className="num">Target</th>
+              <th className="num">Stop</th><th className="num">Progress</th><th>Detail</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r: any) => {
+                const o = r.outcome;
+                return (
+                  <tr key={r.id}>
+                    <td><strong>{r.ticker}</strong><br /><span className="muted" style={{ fontSize: 10.5 }}>added {r.addedOn}</span></td>
+                    <td>{badge(o.status)}</td>
+                    <td className="num">
+                      {o.entry != null ? money(o.entry) : "—"} → {o.currentPrice != null ? money(o.currentPrice) : "—"}
+                      {o.returnPct != null && (
+                        <><br /><span className={o.returnPct >= 0 ? "pos" : "neg"} style={{ fontSize: 11 }}>
+                          {o.returnPct >= 0 ? "+" : ""}{pct(o.returnPct)}
+                        </span></>
+                      )}
+                    </td>
+                    <td className="num">
+                      {o.target != null ? money(o.target) : "—"}
+                      {o.toTargetPct != null && o.status === "OPEN" && (
+                        <><br /><span className="muted" style={{ fontSize: 10.5 }}>{o.toTargetPct >= 0 ? "+" : ""}{pct(o.toTargetPct)} away</span></>
+                      )}
+                    </td>
+                    <td className="num">{o.stop != null ? money(o.stop) : "—"}</td>
+                    <td className="num" style={{ minWidth: 90 }}>
+                      {o.progressPct != null ? (
+                        <>
+                          {o.progressPct}%
+                          <div className="bar" style={{ marginTop: 4 }}><span style={{ width: `${o.progressPct}%` }} /></div>
+                        </>
+                      ) : "—"}
+                    </td>
+                    <td className="muted" style={{ fontSize: 11.5, maxWidth: 260 }}>
+                      {o.note}
+                      {o.maxFavourablePct != null && (
+                        <><br /><span style={{ fontSize: 10.5 }}>
+                          best {o.maxFavourablePct >= 0 ? "+" : ""}{pct(o.maxFavourablePct)} · worst {pct(o.maxAdversePct)}
+                        </span></>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rows.length === 0 && !loading && !err && (
+        <p className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+          Nothing tracked yet. Run the momentum scanner and use <strong>☆ Track target</strong> on a setup.
+        </p>
+      )}
+
+      {s?.note && <p className="notice" style={{ marginTop: 12 }}>{s.note}</p>}
+    </div>
   );
 }

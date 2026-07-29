@@ -92,6 +92,14 @@ clears the hard blocks, scores above the watch floor, has non-negative SAMP pres
 offers at least 1:3 reward:risk. Everything it rejected is listed with the rule that
 excluded it, and any of those names can be pushed straight to the watchlist.
 
+**Ideas are tracked to their outcome.** A setup saved from the scanner keeps its target,
+stop and entry. The app then replays the daily bars from the day it was added and reports
+what actually happened — target reached, stop taken out, or still working — with days held,
+maximum favourable and adverse excursion, and progress toward target. Levels are judged on
+intrabar extremes, and a bar that touches both is read as the stop first, since daily bars
+cannot say which came first. The aggregate hit rate is labelled a **Component Estimate**
+under Rule #6 until there are enough resolved trades to call it verified.
+
 **Rule #5 is enforced**: any input the free data feed cannot verify is flagged `[U]` and scores
 **zero** — it is never estimated. Items the feed genuinely cannot supply (scheduled FOMC/CPI dates,
 the earnings blackout, consensus estimates) are reported as such rather than invented, and

@@ -20,8 +20,13 @@ export interface Holding {
 export interface WatchItem {
   id: string;
   ticker: string;
-  reason?: string;
+  reason?: string | null;
   alert_price?: number | null;
+  /** Levels the idea was saved with, so its outcome can be judged later. */
+  target_price?: number | null;
+  stop_price?: number | null;
+  entry_price?: number | null;
+  source?: string | null;
   created_at: string;
 }
 

@@ -2,25 +2,40 @@
 import { useState } from "react";
 import { money, num, pct, cls } from "./format";
 
-/** Save a scanned name straight into the watchlist. */
-function WatchButton({ ticker, reason }: { ticker: string; reason: string }) {
+/**
+ * Save a scanned name into the watchlist together with the levels the setup
+ * was built on, so the app can later report whether the target was reached.
+ */
+function WatchButton({
+  ticker, reason, target, stop, entry, source,
+}: {
+  ticker: string; reason: string;
+  target?: number; stop?: number; entry?: number; source?: string;
+}) {
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [msg, setMsg] = useState("");
   return (
     <button
-      className={`btn ${state === "saved" ? "ghost" : "ghost"} sm`}
+      className="btn ghost sm"
       disabled={state === "saving" || state === "saved"}
-      title={state === "error" ? msg : `Add ${ticker} to the watchlist`}
+      title={state === "error" ? msg : target ? `Track ${ticker} to target ${target}` : `Add ${ticker} to the watchlist`}
       onClick={async () => {
         setState("saving");
         try {
           const res = await fetch("/api/watchlist", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ticker, reason }),
+            body: JSON.stringify({
+              ticker, reason,
+              target_price: target ?? null,
+              stop_price: stop ?? null,
+              entry_price: entry ?? null,
+              source: source ?? "momentum scan",
+            }),
           });
           const json = await res.json();
           if (!res.ok) throw new Error(json.error || "could not save");
+          if (json.warning) setMsg(json.warning);
           setState("saved");
         } catch (e: any) {
           setMsg(e.message);
@@ -28,7 +43,11 @@ function WatchButton({ ticker, reason }: { ticker: string; reason: string }) {
         }
       }}
     >
-      {state === "saved" ? "★ On watchlist" : state === "saving" ? "…" : state === "error" ? "⚠ Retry" : "☆ Watch"}
+      {state === "saved"
+        ? target ? "★ Tracking" : "★ On watchlist"
+        : state === "saving" ? "…"
+        : state === "error" ? "⚠ Retry"
+        : target ? "☆ Track target" : "☆ Watch"}
     </button>
   );
 }
@@ -158,7 +177,11 @@ export default function ScannerTab() {
                 <span className="tag">{s.setupType}</span>
                 <WatchButton
                   ticker={s.ticker}
-                  reason={`Scan ${new Date().toISOString().slice(0, 10)}: ${s.setupType}, score ${s.momentumScore}/100, entry ${s.entryLow}–${s.entryHigh}, stop ${s.stop}`}
+                  reason={`${s.setupType} · score ${s.momentumScore}/100 · entry ${s.entryLow}–${s.entryHigh} · target ${s.target} · stop ${s.stop} · R:R 1:${s.riskReward}`}
+                  target={s.target}
+                  stop={s.stop}
+                  entry={s.entryHigh}
+                  source={`Momentum scan ${new Date().toISOString().slice(0, 10)}`}
                 />
               </div>
             </div>
