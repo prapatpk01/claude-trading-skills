@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { money, num, pct, cls } from "./format";
 import AiPanel from "./AiPanel";
+import PortfolioAnalytics from "./PortfolioAnalytics";
 
 interface Holding { id: string; ticker: string; shares: number; avg_cost: number; thesis?: string; target_price?: number | null; }
 interface WatchItem { id: string; ticker: string; reason?: string; alert_price?: number | null; }
@@ -75,6 +76,11 @@ export default function PortfolioTab() {
         <div className="metric"><div className="label">Cost Basis</div><div className="value">{money(costBasis)}</div></div>
         <div className="metric"><div className="label">Unrealized P/L</div><div className={cls("value", pnl >= 0 ? "pos" : "neg")}>{money(pnl)}</div></div>
         <div className="metric"><div className="label">Return</div><div className={cls("value", pnlPct >= 0 ? "pos" : "neg")}>{pnlPct >= 0 ? "+" : ""}{pct(pnlPct)}</div></div>
+      </div>
+
+      {/* Performance chart + dividend income/calendar */}
+      <div style={{ marginTop: 18 }}>
+        <PortfolioAnalytics refreshKey={tickerKey} />
       </div>
 
       <div className="card ai-card" style={{ marginTop: 18 }}>
