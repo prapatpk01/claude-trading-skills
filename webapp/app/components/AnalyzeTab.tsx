@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { money, num, pct, bn, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, GateList, ScoreBreakdown, Disclosures } from "./TeamPanel";
+import TickerInput from "./TickerInput";
 
 export default function AnalyzeTab() {
   const [ticker, setTicker] = useState("");
@@ -9,9 +10,11 @@ export default function AnalyzeTab() {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function run(e?: React.FormEvent) {
+  // `override` is passed when a suggestion is picked — React state hasn't
+  // committed the new value yet at that point, so read it from the argument.
+  async function run(e?: React.FormEvent, override?: string) {
     e?.preventDefault();
-    const t = ticker.trim().toUpperCase();
+    const t = (override ?? ticker).trim().toUpperCase();
     if (!t) return;
     setLoading(true);
     setError(null);
@@ -38,12 +41,13 @@ export default function AnalyzeTab() {
       <div className="card">
         <h2 className="section">🔎 Analyze a Ticker</h2>
         <form className="searchbar" onSubmit={run}>
-          <input
-            className="input-ticker"
-            placeholder="NVDA"
+          <TickerInput
             value={ticker}
-            onChange={(e) => setTicker(e.target.value)}
-            maxLength={10}
+            onChange={setTicker}
+            placeholder="NVDA"
+            style={{ minWidth: 170 }}
+            // picking a suggestion runs the analysis straight away
+            onSubmitTicker={(t) => run(undefined, t)}
           />
           <button className="btn" type="submit" disabled={loading}>
             {loading ? <><span className="spinner" /> Analyzing…</> : "Analyze"}
