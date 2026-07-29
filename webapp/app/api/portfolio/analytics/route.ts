@@ -4,19 +4,29 @@ import { memStore } from "@/lib/store";
 import { buildPerformance } from "@/lib/performance";
 import { buildDividendSummary } from "@/lib/dividends";
 import { getLightQuote } from "@/lib/marketData";
+import { openOnly } from "@/lib/openPositions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/**
+ * Open positions only. Performance, dividends and the calendar all describe
+ * the book as it stands, so a sold position must not appear in them — it would
+ * promise income from shares nobody owns.
+ */
 async function loadHoldings(): Promise<{ ticker: string; shares: number; avg_cost: number }[]> {
   const sb = getSupabase();
   if (sb) {
-    const { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost");
+    let { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost,closed_at");
+    if (error && /closed_at/i.test(error.message)) {
+      // The date migration has not been run — every row is treated as open.
+      ({ data, error } = await sb.from("holdings").select("ticker,shares,avg_cost"));
+    }
     if (error) throw new Error(error.message);
-    return (data ?? []) as any[];
+    return openOnly((data ?? []) as any[]) as any[];
   }
-  return memStore.holdings.map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost }));
+  return openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost }));
 }
 
 export async function GET(req: NextRequest) {

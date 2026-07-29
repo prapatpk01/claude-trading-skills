@@ -6,6 +6,7 @@ import PortfolioAnalytics from "./PortfolioAnalytics";
 import ValuationDesk from "./ValuationDesk";
 import AllocationDonut from "./AllocationDonut";
 import TickerInput from "./TickerInput";
+import { openOnly, isOpen } from "@/lib/openPositions";
 
 interface Holding {
   id: string; ticker: string; shares: number; avg_cost: number;
@@ -68,7 +69,7 @@ export default function PortfolioTab() {
 
   // Key on the actual ticker list: keying on length alone missed refreshes when
   // one holding replaced another (count unchanged, symbols different).
-  const tickerKey = [...holdings.map((h) => h.ticker), ...watch.map((w) => w.ticker)].sort().join(",");
+  const tickerKey = [...holdings.filter(isOpen).map((h) => h.ticker), ...watch.map((w) => w.ticker)].sort().join(",");
   useEffect(() => { if (tickerKey) refreshQuotes(); }, [tickerKey]); // eslint-disable-line
 
   const startEdit = useCallback((h: Holding) => {
@@ -86,15 +87,19 @@ export default function PortfolioTab() {
   }, []);
 
   // ── totals ──
+  // Sold positions stay in the table as history but leave every figure that
+  // describes the book as it stands: counting them would overstate NAV and so
+  // understate every weight measured against it.
+  const open = openOnly(holdings);
+  const closedCount = holdings.length - open.length;
   let mktValue = 0, costBasis = 0;
-  for (const h of holdings) {
+  for (const h of open) {
     const price = quotes[h.ticker]?.price ?? h.avg_cost;
     mktValue += price * h.shares;
     costBasis += h.avg_cost * h.shares;
   }
   const pnl = mktValue - costBasis;
   const pnlPct = costBasis ? (pnl / costBasis) * 100 : 0;
-  const closedCount = holdings.filter((h) => h.closed_at).length;
 
   return (
     <div>
@@ -102,7 +107,10 @@ export default function PortfolioTab() {
         <div className="metric">
           <div className="label">Market Value</div>
           <div className="value">{money(mktValue)}</div>
-          <div className="sub">{holdings.length} position{holdings.length === 1 ? "" : "s"}</div>
+          <div className="sub">
+            {open.length} open position{open.length === 1 ? "" : "s"}
+            {closedCount > 0 && ` · ${closedCount} closed, excluded`}
+          </div>
         </div>
         <div className="metric"><div className="label">Cost Basis</div><div className="value">{money(costBasis)}</div></div>
         <div className="metric"><div className="label">Unrealized P/L</div><div className={cls("value", pnl >= 0 ? "pos" : "neg")}>{money(pnl)}</div></div>
@@ -116,10 +124,10 @@ export default function PortfolioTab() {
 
       {/* Allocation — built from the same holdings and quotes the table below
           renders, so the ring can never describe a different book. */}
-      {holdings.length > 0 && (
+      {open.length > 0 && (
         <div className="card">
           <h2 className="section">🍩 Allocation</h2>
-          <AllocationDonut holdings={holdings} quotes={quotes} />
+          <AllocationDonut holdings={open} quotes={quotes} />
         </div>
       )}
 
@@ -245,7 +253,7 @@ export default function PortfolioTab() {
             💼 Portfolio Holdings
             {holdings.length > 0 && (
               <span className="muted" style={{ fontWeight: 400, fontSize: 15, marginLeft: 8 }}>
-                {holdings.length} position{holdings.length === 1 ? "" : "s"}
+                {open.length} open
                 {closedCount > 0 && ` · ${closedCount} closed`}
               </span>
             )}
@@ -336,8 +344,11 @@ export default function PortfolioTab() {
                 }
 
                 return (
-                  <tr key={h.id}>
-                    <td><strong>{h.ticker}</strong></td>
+                  <tr key={h.id} style={h.closed_at ? { opacity: 0.55 } : undefined}>
+                    <td>
+                      <strong>{h.ticker}</strong>
+                      {h.closed_at && <><br /><span className="muted" style={{ fontSize: 10 }}>closed — excluded</span></>}
+                    </td>
                     <td className="num">{num(h.shares, 0)}</td>
                     <td className="num">{money(h.avg_cost)}</td>
                     <td className="num">{price != null ? money(price) : "—"}</td>

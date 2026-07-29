@@ -25,6 +25,7 @@ import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { computeBeta } from "@/lib/derive";
+import { openOnly } from "@/lib/openPositions";
 import { pctReturn } from "@/lib/indicators";
 import { FUND } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
@@ -33,14 +34,22 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/**
+ * Open positions only. Every desk reasons about the book as it stands: a sold
+ * position in NAV overstates the denominator and understates every weight
+ * measured against it.
+ */
 async function loadHoldings() {
   const sb = getSupabase();
   if (sb) {
-    const { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost");
+    let { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost,closed_at");
+    if (error && /closed_at/i.test(error.message)) {
+      ({ data, error } = await sb.from("holdings").select("ticker,shares,avg_cost"));
+    }
     if (error) throw new Error(error.message);
-    return (data ?? []) as { ticker: string; shares: number; avg_cost: number }[];
+    return openOnly((data ?? []) as any[]) as { ticker: string; shares: number; avg_cost: number }[];
   }
-  return memStore.holdings.map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost }));
+  return openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost }));
 }
 
 async function loadWatchlist() {
