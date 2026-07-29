@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import PerformanceChart, { DividendBars } from "./PerformanceChart";
+import AllocationDonut from "./AllocationDonut";
 import { money, num, pct, cls } from "./format";
 
 const RANGES = [
@@ -37,6 +38,7 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
 
   const perf = data?.performance;
   const div = data?.dividends;
+  const alloc = data?.allocation;
 
   return (
     <>
@@ -81,6 +83,14 @@ export default function PortfolioAnalytics({ refreshKey }: { refreshKey: string 
         )}
         {!loading && !perf && !error && <p className="muted" style={{ marginTop: 12 }}>Add a holding to see performance.</p>}
       </div>
+
+      {/* ── Allocation ──────────────────────────────── */}
+      {alloc && (
+        <div className="card">
+          <h2 className="section">🍩 Allocation</h2>
+          <AllocationDonut allocation={alloc} />
+        </div>
+      )}
 
       {/* ── Dividends ───────────────────────────────── */}
       {div && (

@@ -111,6 +111,31 @@ Record holdings (shares, cost basis, personal target, rolling thesis), see live
 market value / unrealized P&L, and maintain a watchlist with alert levels and reasons.
 Persisted in Supabase; falls back to an in-memory store when Supabase isn't configured.
 
+#### 🍩 Allocation donut — what you own, in what sector, at what weight
+A donut of the book by **sector** or **by holding**, with a breakdown table beside it giving
+each slice's value and weight.
+
+Sector comes from the **SEC's own SIC code** on each filer — same keyless, datacenter-friendly
+source as the rest of the fundamentals — folded onto the eleven GICS sectors people expect.
+SIC predates several of the industries it now has to describe, so the mapping carries explicit
+overrides where the filing code and the real sector part ways: computer equipment (357x) is
+technology rather than machinery, household products are staples rather than chemicals, managed
+care is health care rather than insurance, footwear is discretionary rather than rubber, and a
+short named list covers filers like Alphabet and Visa whose SIC code describes a business they
+have long since outgrown.
+
+**Funds are not looked through.** An ETF's SIC code describes the wrapper, not the holdings, so
+classifying SCHD as *Financials* because it registers as an investment office would be worse
+than useless. Known wrappers are labelled `Fund / ETF` and the chart says what share of the
+book that is, so you can read the ring knowing where it stops.
+
+Charting notes: the palette is the reference categorical order in dark steps, validated against
+this app's chart surface with the data-viz validator. Six slots pass on the adjacent pairlist
+but **not** all-pairs — the list that governs whenever a reader matches a legend swatch to a
+ring position — so identity never rests on colour: every slice is directly labelled, labels are
+de-collided vertically, and the table is ordered to match the ring. Slices cap at six plus
+`Other`, with a 2px surface gap between segments.
+
 #### 💰 Valuation Desk — fair value & position sizing
 Prices every holding against **its own history**, then turns the gap into an instruction.
 
@@ -247,6 +272,7 @@ lib/
   analyze.ts               # buildAnalysis(): assembles the full research payload
   scan.ts                  # market regime + universe scan
   team/positionValuation.ts # fair-value anchors + add/trim/exit sizing per holding
+  sectors.ts               # SIC -> GICS sector mapping + allocation weights
   workbook.ts              # 6-sheet exceljs builder (formulas + conditional formatting)
   supabase.ts / store.ts   # persistence + in-memory fallback
 supabase/schema.sql        # tables, triggers, RLS
