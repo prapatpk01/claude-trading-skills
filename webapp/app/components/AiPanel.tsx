@@ -31,7 +31,12 @@ export default function AiPanel({
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ text: string; modelLabel: string; provider?: string; tier?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<{ configured: boolean; models: { label: string; tier: string }[]; freeCount: number } | null>(null);
+  const [status, setStatus] = useState<{
+    configured: boolean;
+    models: { label: string; tier: string }[];
+    freeCount: number;
+    detectedKeys?: Record<string, boolean>;
+  } | null>(null);
 
   useEffect(() => {
     fetch("/api/ai").then((r) => r.json()).then(setStatus).catch(() => {});
@@ -73,7 +78,33 @@ export default function AiPanel({
           </span>
         ) : null}
       </div>
-      {error && <div className="err" style={{ marginTop: 10 }}>⚠ {error}</div>}
+      {/* When no key is configured, show what the server actually sees rather
+          than a long instruction blob — the useful question is whether the
+          running deployment can read the variable at all. */}
+      {status && !status.configured && status.detectedKeys ? (
+        <div className="notice" style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <strong>AI is off — no provider key visible to this deployment.</strong>
+          </div>
+          <div style={{ display: "grid", gap: 3, fontFamily: "ui-monospace, monospace", fontSize: 11.5, marginBottom: 10 }}>
+            {Object.entries(status.detectedKeys).map(([k, v]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span>{k}</span>
+                <span className={v ? "pos" : "muted"}>{v ? "✓ detected" : "— not set"}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+            Free keys: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Gemini</a>{" · "}
+            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Groq</a>.<br />
+            In Vercel: <strong>Settings → Environment Variables</strong> → add the name exactly as shown above,
+            tick <strong>Production</strong>, Save → then <strong>Deployments → ⋯ → Redeploy</strong>.
+            Environment changes only reach a <em>new</em> deployment.
+          </div>
+        </div>
+      ) : (
+        error && <div className="err" style={{ marginTop: 10 }}>⚠ {error}</div>
+      )}
       {result && (
         <div className="ai-body">
           {renderMarkdown(result.text)}
