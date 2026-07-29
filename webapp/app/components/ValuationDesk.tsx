@@ -17,11 +17,13 @@ const VERDICT_STYLE: Record<string, { color: string; bg: string; label: string }
   FAIR: { color: "var(--muted)", bg: "rgba(120,150,220,.12)", label: "Fair value" },
   OVERVALUED: { color: "var(--amber)", bg: "rgba(245,185,59,.14)", label: "Overvalued" },
   STRETCHED: { color: "var(--red)", bg: "rgba(255,93,108,.16)", label: "Stretched" },
+  "CASH EQUIVALENT": { color: "var(--cyan)", bg: "rgba(55,230,216,.12)", label: "Cash equivalent" },
 };
 
 const ACTION_CLASS: Record<string, string> = {
   ADD: "pill buy",
   HOLD: "pill hold",
+  WATCH: "pill hold",
   TRIM: "pill sell",
   EXIT: "pill sell",
 };
@@ -104,8 +106,10 @@ function PlanRow({ p }: { p: any }) {
 
               <div className="muted" style={{ fontSize: 11.5 }}>
                 Position {money(p.marketValue)} · {pct(p.weightPct)} of NAV · Rule&nbsp;#3 zone {p.zone.icon} {p.zone.zone}
-                {p.momentumScore != null && ` · momentum ${p.momentumScore}/100 (${p.signal})`}
+                {p.conviction?.score != null && ` · ${p.conviction.model} ${p.conviction.score}/100 (${p.conviction.grade})`}
                 {p.buyBelow != null && ` · add zone below ${money(p.buyBelow)}`}
+                {p.trimTrigger != null && ` · trim trigger ${money(p.trimTrigger)}`}
+                {p.theme && ` · ${p.theme.label} leading`}
               </div>
             </div>
           </td>
@@ -121,8 +125,9 @@ export default function ValuationDesk() {
       <h3 className="sub">💰 Valuation Desk — Fair Value &amp; Position Sizing</h3>
       <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
         Prices every holding against its own history — the multiple the market has paid for its earnings, the yield
-        it has paid on its distributions, and its long-run price trend — then converts the gap into a concrete
-        instruction: add this many shares, trim this many, or sell the position out.
+        it has paid on its distributions, and its long-run price trend — then sizes it against the 20% single-name
+        cap. A leading name still at or below fair value may sit up to 23% as <strong>WATCH</strong>, carrying a
+        trim trigger so the gain is capped rather than left open.
       </p>
       <TeamPanel
         label="Run valuation review"
@@ -146,7 +151,12 @@ export default function ValuationDesk() {
                 <div className="metric">
                   <div className="label">Trim</div>
                   <div className="value" style={{ fontSize: 18, color: "var(--amber)" }}>{count("TRIM")}</div>
-                  <div className="sub">positions above target</div>
+                  <div className="sub">rich, or over the cap</div>
+                </div>
+                <div className="metric">
+                  <div className="label">Watch</div>
+                  <div className="value" style={{ fontSize: 18, color: "var(--accent-2)" }}>{count("WATCH")}</div>
+                  <div className="sub">overweight, let it run</div>
                 </div>
                 <div className="metric">
                   <div className="label">Exit</div>
@@ -159,6 +169,8 @@ export default function ValuationDesk() {
                   <div className="sub">from trims and exits</div>
                 </div>
               </div>
+
+              {res.tilt && <ThematicTilt tilt={res.tilt} />}
 
               <div className="table-wrap">
                 <table className="tbl">
@@ -205,6 +217,78 @@ export default function ValuationDesk() {
           );
         }}
       />
+    </div>
+  );
+}
+
+/**
+ * Market posture and where leadership actually is. The regime decides which
+ * risk profiles new capital may go into; relative strength decides which groups
+ * within that permission are worth it.
+ */
+function ThematicTilt({ tilt }: { tilt: any }) {
+  const [open, setOpen] = useState(false);
+  const pb = tilt.playbook;
+  return (
+    <div style={{ margin: "0 0 16px", padding: "13px 15px", borderRadius: 13, background: "rgba(8,14,28,.5)", border: "1px solid var(--border-strong)" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 14 }}>{pb.regime} — {pb.posture}</strong>
+        <span className="muted" style={{ fontSize: 11.5 }}>cash floor {pb.cashMinPct}%</span>
+      </div>
+      <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.55, margin: "6px 0 10px" }}>{pb.guidance}</p>
+
+      {tilt.favoured.length > 0 && (
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10 }}>
+          {tilt.favoured.slice(0, 6).map((g: any) => (
+            <span key={g.proxy} className="tag" title={g.note}>
+              {g.label} · {g.proxy} {g.rs3m >= 0 ? "+" : ""}{g.rs3m?.toFixed(1)}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      {tilt.recommendations.length > 0 && (
+        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 5 }}>
+          {tilt.recommendations.map((r: string, i: number) => (
+            <li key={i} style={{ fontSize: 12.5, lineHeight: 1.55 }}>{r}</li>
+          ))}
+        </ul>
+      )}
+
+      <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => setOpen((o) => !o)}>
+        {open ? "Hide" : "Show"} the full leadership table
+      </button>
+      {open && (
+        <div className="table-wrap" style={{ marginTop: 10 }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Group</th><th>Proxy</th>
+                <th className="num">1M vs SPY</th><th className="num">3M</th><th className="num">6M</th>
+                <th className="num">Leadership</th><th>Trend</th><th>Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tilt.ranked.map((g: any) => (
+                <tr key={g.proxy}>
+                  <td><strong>{g.label}</strong><br /><span className="muted" style={{ fontSize: 11 }}>{g.note}</span></td>
+                  <td className="muted">{g.proxy}</td>
+                  {(["rs1m", "rs3m", "rs6m"] as const).map((k) => (
+                    <td key={k} className={cls("num", (g[k] ?? 0) >= 0 ? "pos" : "neg")}>
+                      {g[k] == null ? "—" : `${g[k] >= 0 ? "+" : ""}${g[k].toFixed(1)}%`}
+                    </td>
+                  ))}
+                  <td className="num"><strong>{g.leadership}</strong></td>
+                  <td className={g.trending ? "pos" : "neg"} style={{ fontSize: 12 }}>
+                    {g.trending ? "intact" : g.aboveSma200 === false ? "below 200d" : "weak"}
+                  </td>
+                  <td className="muted" style={{ fontSize: 11.5 }}>{g.risk}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

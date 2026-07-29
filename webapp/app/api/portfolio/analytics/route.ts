@@ -3,7 +3,6 @@ import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { buildPerformance } from "@/lib/performance";
 import { buildDividendSummary } from "@/lib/dividends";
-import { buildAllocation } from "@/lib/sectors";
 import { getLightQuote } from "@/lib/marketData";
 
 export const runtime = "nodejs";
@@ -37,13 +36,12 @@ export async function GET(req: NextRequest) {
       })
     );
 
-    const [performance, dividends, allocation] = await Promise.all([
+    const [performance, dividends] = await Promise.all([
       buildPerformance(holdings.map((h) => ({ ticker: h.ticker, shares: h.shares })), days).catch(() => null),
       buildDividendSummary(holdings, prices).catch(() => null),
-      buildAllocation(holdings, prices).catch(() => null),
     ]);
 
-    return NextResponse.json({ performance, dividends, allocation, prices, empty: false });
+    return NextResponse.json({ performance, dividends, prices, empty: false });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analytics failed" }, { status: 500 });
   }

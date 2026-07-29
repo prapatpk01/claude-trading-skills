@@ -4,6 +4,7 @@ import { money, num, pct, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, Disclosures } from "./TeamPanel";
 import PortfolioAnalytics from "./PortfolioAnalytics";
 import ValuationDesk from "./ValuationDesk";
+import AllocationDonut from "./AllocationDonut";
 import TickerInput from "./TickerInput";
 
 interface Holding {
@@ -107,6 +108,15 @@ export default function PortfolioTab() {
       <div style={{ marginTop: 18 }}>
         <PortfolioAnalytics refreshKey={tickerKey} />
       </div>
+
+      {/* Allocation — built from the same holdings and quotes the table below
+          renders, so the ring can never describe a different book. */}
+      {holdings.length > 0 && (
+        <div className="card">
+          <h2 className="section">🍩 Allocation</h2>
+          <AllocationDonut holdings={holdings} quotes={quotes} />
+        </div>
+      )}
 
       <div className="card ai-card" style={{ marginTop: 18 }}>
         <h3 className="sub">⚖️ Sentinel Committee — Portfolio Review</h3>

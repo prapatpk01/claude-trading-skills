@@ -221,21 +221,40 @@ export interface Allocation {
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
 
-export async function buildAllocation(
-  holdings: { ticker: string; shares: number; avg_cost: number }[],
-  prices: Record<string, number | null>
-): Promise<Allocation> {
-  const sectors = new Map<string, SectorInfo>();
+/** Look up several tickers at once, reusing the day cache. */
+export async function getSectors(tickers: string[]): Promise<Record<string, SectorInfo>> {
+  const out: Record<string, SectorInfo> = {};
   await Promise.all(
-    Array.from(new Set(holdings.map((h) => h.ticker.toUpperCase()))).map(async (t) => {
-      sectors.set(t, await getSector(t));
-    })
+    Array.from(new Set(tickers.map((t) => t.trim().toUpperCase())))
+      .filter(Boolean)
+      .map(async (t) => {
+        out[t] = await getSector(t);
+      })
   );
+  return out;
+}
 
+const UNKNOWN: SectorInfo = {
+  sector: "Unclassified", industry: null, sic: null, isFund: false, source: "unknown",
+};
+
+/**
+ * Weights and sector buckets from an already-resolved sector map.
+ *
+ * Kept free of any I/O so the client can compute the allocation from exactly
+ * the holdings and quotes the holdings table is rendering. Deriving it from a
+ * second, independently-loaded copy of the book is what let the donut drift out
+ * of sync with the positions it claimed to describe.
+ */
+export function computeAllocation(
+  holdings: { ticker: string; shares: number; avg_cost: number }[],
+  prices: Record<string, number | null>,
+  sectors: Record<string, SectorInfo>
+): Allocation {
   const valued = holdings.map((h) => {
-    const t = h.ticker.toUpperCase();
+    const t = h.ticker.trim().toUpperCase();
     const price = prices[h.ticker] ?? prices[t] ?? null;
-    return { h, t, price, value: (price ?? h.avg_cost) * h.shares, info: sectors.get(t)! };
+    return { h, t, price, value: (price ?? h.avg_cost) * h.shares, info: sectors[t] ?? UNKNOWN };
   });
   const nav = valued.reduce((s, v) => s + v.value, 0);
   const weight = (v: number) => (nav > 0 ? (v / nav) * 100 : 0);
@@ -276,4 +295,13 @@ export async function buildAllocation(
     fundPct: round2(bySector.filter((s) => s.sector === "Fund / ETF").reduce((s, r) => s + r.weightPct, 0)),
     unclassifiedPct: round2(bySector.filter((s) => s.sector === "Unclassified").reduce((s, r) => s + r.weightPct, 0)),
   };
+}
+
+/** Server-side convenience: resolve sectors, then compute the allocation. */
+export async function buildAllocation(
+  holdings: { ticker: string; shares: number; avg_cost: number }[],
+  prices: Record<string, number | null>
+): Promise<Allocation> {
+  const sectors = await getSectors(holdings.map((h) => h.ticker));
+  return computeAllocation(holdings, prices, sectors);
 }

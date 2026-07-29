@@ -26,12 +26,14 @@ import type { DividendEvent } from "../dividends";
 import type { MomentumScoreV3 } from "./scoring";
 import type { RegimeAssessment } from "./governance";
 import type { Sleeve } from "./portfolio";
-import { SLEEVE_TARGETS } from "./portfolio";
 import { assessPositionZone, type ZoneAssessment } from "./risk";
 import { multipleScenarios } from "../valuation";
 
-export type ValuationVerdict = "DEEP VALUE" | "UNDERVALUED" | "FAIR" | "OVERVALUED" | "STRETCHED";
-export type PositionAction = "ADD" | "HOLD" | "TRIM" | "EXIT";
+export type ValuationVerdict =
+  | "DEEP VALUE" | "UNDERVALUED" | "FAIR" | "OVERVALUED" | "STRETCHED"
+  /** Constant-NAV instrument: its price is its value, so no verdict applies. */
+  | "CASH EQUIVALENT";
+export type PositionAction = "ADD" | "HOLD" | "WATCH" | "TRIM" | "EXIT";
 
 export interface FairValueAnchor {
   method: string;
@@ -52,6 +54,8 @@ export interface ValuationRead {
   confidence: "high" | "medium" | "low";
   /** Price at the top of the FAIR band — the level an add becomes defensible. */
   buyBelow: number | null;
+  /** True for constant-NAV instruments, where no verdict is meaningful. */
+  cashLike?: boolean;
   note: string;
 }
 
@@ -200,8 +204,59 @@ export interface ValuationInput {
   dividends?: DividendEvent[];
 }
 
+/**
+ * Constant-NAV instruments — T-bill and ultra-short funds like SGOV, BIL and
+ * JAAA — hold a pinned price and pass through whatever short rates pay. Every
+ * anchor here misreads them: capitalising a floating distribution at a
+ * historical median yield says SGOV is "20% overvalued" the moment rates rise,
+ * and a trend regression through a sawtooth of ex-dividend drops is noise. For
+ * these the price *is* the value, so the desk withholds a verdict rather than
+ * inventing one.
+ */
+function cashLike(candles: Candle[]): { isCash: boolean; detail: string } {
+  const win = candles.slice(-252);
+  if (win.length < 60) return { isCash: false, detail: "" };
+  const closes = win.map((c) => c.close).filter((c) => c > 0);
+  if (closes.length < 60) return { isCash: false, detail: "" };
+
+  const hi = Math.max(...closes);
+  const lo = Math.min(...closes);
+  const mid = (hi + lo) / 2;
+  const rangePct = mid > 0 ? ((hi - lo) / mid) * 100 : 100;
+
+  const rets: number[] = [];
+  for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const m = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, rets.length - 1);
+  const vol = Math.sqrt(variance) * Math.sqrt(252) * 100;
+
+  const isCash = rangePct < 8 && vol < 4;
+  return {
+    isCash,
+    detail: isCash
+      ? `Constant-NAV instrument — ${rangePct.toFixed(1)}% price range and ${vol.toFixed(1)}% realized volatility over the past year. Its price is its value; the distribution floats with short rates, so no fair-value verdict applies.`
+      : "",
+  };
+}
+
 export function assessValuation(input: ValuationInput): ValuationRead {
   const { candles, price } = input;
+
+  const cash = cashLike(candles);
+  if (cash.isCash && price > 0) {
+    return {
+      fairValue: round2(price),
+      deviationPct: 0,
+      verdict: "CASH EQUIVALENT",
+      fairBandPct: 8,
+      anchors: [],
+      confidence: "high",
+      buyBelow: null,
+      cashLike: true,
+      note: cash.detail,
+    };
+  }
+
   const anchors: FairValueAnchor[] = [];
 
   const eA = input.annualEps?.length
@@ -238,6 +293,7 @@ export function assessValuation(input: ValuationInput): ValuationRead {
       anchors,
       confidence: "low",
       buyBelow: null,
+      cashLike: false,
       note: "No usable valuation anchor — needs either an EPS history, a distribution history, or a year of prices.",
     };
   }
@@ -284,7 +340,137 @@ export function assessValuation(input: ValuationInput): ValuationRead {
   };
 }
 
-// ── Target weight & action ───────────────────────────────────────────────
+// ── Sizing & action ──────────────────────────────────────────────────────
+//
+// Sizing is governed by the position cap, not by a modelled "ideal" weight.
+//
+// An earlier version split each sleeve's budget across its names by conviction
+// and called the result a target. With a ten-name book that produced targets of
+// 2-6% and therefore a TRIM on every single position, including names the same
+// engine had just scored STRONG BUY — an instruction nobody would follow and no
+// rule actually required. The desk now starts from the position the investor
+// holds and only moves it when a rule says to:
+//
+//   > 23%  mandatory trim back to the 20% cap (Rule #3).
+//   20-23% permitted, as WATCH, but only while the price is still at or below
+//          fair value and the name is running with a leading theme. That is a
+//          deliberate, temporary overweight to let a winner run; it carries a
+//          trim trigger so the gain is capped rather than left open.
+//   ≤ 20%  hold by default. Adds need a positive reason; trims need a negative
+//          one. Neither is manufactured out of a weight arithmetic.
+
+/** Rule #3 — the standing single-name cap. */
+export const NAME_CAP_PCT = 20;
+/** The overweight a leading, still-cheap name may hold under WATCH. */
+export const WATCH_CAP_PCT = 23;
+/** Below this weight, a valuation-only trim is noise rather than risk control. */
+const MIN_TRIM_WEIGHT_PCT = 5;
+
+export type ConvictionGrade = "STRONG" | "ADEQUATE" | "WEAK" | "BROKEN" | "N/A";
+
+/**
+ * Conviction, scored on the model that fits the instrument.
+ *
+ * Momentum Scoring v3.0 asks whether a name is trending hard enough to carry a
+ * swing trade. Applied to an income ETF it answers a question nobody asked:
+ * BALI scored 17/100 with three hard blocks, which says only that a covered-call
+ * fund does not trend — not that the position is bad. Each sleeve is therefore
+ * graded on its own terms.
+ */
+export interface Conviction {
+  grade: ConvictionGrade;
+  /** 0-100 within the sleeve's own model, or null where none applies. */
+  score: number | null;
+  model: string;
+  detail: string;
+  /** Structural failures that forbid an add regardless of valuation. */
+  blocks: string[];
+}
+
+export interface IncomeQuality {
+  /** Forward distribution yield, percent. */
+  yieldPct: number | null;
+  /** Current TTM distribution against the one a year earlier. */
+  distributionGrowthPct: number | null;
+  /** Payments in the last 3 years that came in below the prior payment. */
+  cuts: number;
+  payments: number;
+}
+
+/** Distribution durability, for the income sleeve. */
+export function gradeIncome(q: IncomeQuality): Conviction {
+  const blocks: string[] = [];
+  if (q.payments < 4) {
+    return {
+      grade: "N/A", score: null, model: "Distribution quality",
+      detail: "Fewer than four distributions on record — not enough history to grade.",
+      blocks: [],
+    };
+  }
+
+  let score = 50;
+  const bits: string[] = [];
+
+  if (q.yieldPct != null) {
+    // The fund's income objective is a 5% blended yield.
+    if (q.yieldPct >= 7) { score += 20; bits.push(`${q.yieldPct.toFixed(1)}% yield, well above the 5% objective`); }
+    else if (q.yieldPct >= 5) { score += 15; bits.push(`${q.yieldPct.toFixed(1)}% yield, at or above the 5% objective`); }
+    else if (q.yieldPct >= 3) { score += 6; bits.push(`${q.yieldPct.toFixed(1)}% yield, below the 5% objective`); }
+    else { bits.push(`${q.yieldPct.toFixed(1)}% yield — thin for an income sleeve position`); }
+  }
+
+  if (q.distributionGrowthPct != null) {
+    const g = q.distributionGrowthPct;
+    if (g >= 5) { score += 20; bits.push(`distribution up ${g.toFixed(1)}% year on year`); }
+    else if (g >= 0) { score += 12; bits.push(`distribution flat to +${g.toFixed(1)}%`); }
+    else if (g >= -10) { score -= 5; bits.push(`distribution down ${Math.abs(g).toFixed(1)}%`); }
+    else {
+      score -= 25;
+      bits.push(`distribution down ${Math.abs(g).toFixed(1)}% year on year`);
+      blocks.push(`Distribution cut ${Math.abs(g).toFixed(1)}% over the past year — the income thesis is impaired`);
+    }
+  }
+
+  const cutRate = q.payments > 0 ? q.cuts / q.payments : 0;
+  if (cutRate <= 0.1) { score += 15; bits.push(`${q.cuts} cut${q.cuts === 1 ? "" : "s"} in ${q.payments} payments — steady`); }
+  else if (cutRate <= 0.3) { score += 5; bits.push(`${q.cuts} of ${q.payments} payments below the prior one — variable`); }
+  else { score -= 10; bits.push(`${q.cuts} of ${q.payments} payments below the prior one — erratic`); }
+
+  score = Math.max(0, Math.min(100, score));
+  let grade: ConvictionGrade =
+    blocks.length ? "BROKEN" : score >= 75 ? "STRONG" : score >= 55 ? "ADEQUATE" : "WEAK";
+
+  // Stability alone must not carry a thin payer to a strong grade. A perfectly
+  // steady 1.2% distribution scores well on every consistency term and would
+  // otherwise grade STRONG, which says nothing about whether it belongs in an
+  // income sleeve underwritten to a 5% blended yield.
+  if (grade !== "BROKEN" && q.yieldPct != null) {
+    if (q.yieldPct < 3 && grade !== "WEAK") {
+      grade = "WEAK";
+      bits.push(`grade capped at WEAK — a ${q.yieldPct.toFixed(1)}% yield does not carry an income-sleeve position however steady it is`);
+    } else if (q.yieldPct < 5 && grade === "STRONG") {
+      grade = "ADEQUATE";
+      bits.push(`grade capped at ADEQUATE — the yield is below the fund's 5% objective`);
+    }
+  }
+
+  return { grade, score, model: "Distribution quality", detail: bits.join("; ") + ".", blocks };
+}
+
+/** Momentum v3.0, for the growth sleeve. */
+export function gradeMomentum(score: MomentumScoreV3): Conviction {
+  const blocks = score.hardBlocks.map((b) => b.reason);
+  const grade: ConvictionGrade =
+    score.signal === "STRONG BUY" ? "STRONG"
+    : score.signal === "BUY" ? "ADEQUATE"
+    : score.hardBlocks.some((b) => b.code === "BELOW_200SMA") ? "BROKEN"
+    : "WEAK";
+  return {
+    grade, score: score.total, model: "Momentum Scoring v3.0",
+    detail: `${score.total}/100 — ${score.signal}. ${score.signalReason}`,
+    blocks,
+  };
+}
 
 export interface PositionInput {
   ticker: string;
@@ -293,9 +479,11 @@ export interface PositionInput {
   price: number | null;
   sleeve: Sleeve;
   valuation: ValuationRead;
-  score: MomentumScoreV3 | null;
+  conviction: Conviction;
   /** ATR stop, used to cap an add against the 1.5%-of-NAV trade risk limit. */
   stop?: number | null;
+  /** Set when the name sits in a theme currently leading the market. */
+  theme?: { label: string; rsPct: number } | null;
 }
 
 export interface PositionPlan {
@@ -304,6 +492,7 @@ export interface PositionPlan {
   price: number | null;
   marketValue: number;
   weightPct: number;
+  /** Weight the position would carry after the recommended action. */
   targetWeightPct: number;
   fairValue: number | null;
   deviationPct: number | null;
@@ -312,16 +501,17 @@ export interface PositionPlan {
   buyBelow: number | null;
   anchors: FairValueAnchor[];
   valuationNote: string;
-  momentumScore: number | null;
-  signal: string | null;
+  conviction: Conviction;
+  theme: { label: string; rsPct: number } | null;
   zone: ZoneAssessment;
   action: PositionAction;
   /** Positive = buy, negative = sell. */
   deltaShares: number;
   deltaValue: number;
+  /** Price at which a WATCH overweight must be trimmed back to the cap. */
+  trimTrigger: number | null;
   headline: string;
   reasons: string[];
-  /** Policy condition that must be satisfied before acting. */
   guard: string | null;
   priority: number;
 }
@@ -330,234 +520,168 @@ export interface BookActionInput {
   positions: PositionInput[];
   nav: number;
   regime: RegimeAssessment | null;
-  cashPct?: number;
 }
 
 export interface BookActionResult {
   plans: PositionPlan[];
-  /** Sleeve targets after renormalising over the sleeves actually held. */
-  sleeveBudget: { sleeve: Sleeve; budgetPct: number; heldPct: number }[];
   notes: string[];
 }
 
-/** Rule #3 — no single name may be targeted above this share of NAV. */
-const NAME_CAP_PCT = 20;
-
-/**
- * Split a sleeve's budget across its names by conviction tilt, then hand
- * whatever the single-name cap shaves off a high-conviction name to the names
- * that can still absorb it. Without this pass the capped excess would simply
- * vanish, under-targeting every other name in the sleeve and manufacturing
- * trim instructions that no rule actually calls for.
- */
-function allocateSleeve(members: { ticker: string; tilt: number }[], budgetPct: number): Map<string, number> {
-  const target = new Map<string, number>(members.map((m) => [m.ticker, 0]));
-  let remaining = budgetPct;
-  let open = members.slice();
-
-  for (let pass = 0; pass < 10 && open.length && remaining > 0.01; pass++) {
-    const tiltSum = open.reduce((s, m) => s + m.tilt, 0);
-    if (tiltSum <= 0) break;
-    const pot = remaining;
-    const nextOpen: typeof open = [];
-    for (const m of open) {
-      const current = target.get(m.ticker) ?? 0;
-      const give = Math.min(NAME_CAP_PCT, current + (pot * m.tilt) / tiltSum);
-      remaining -= give - current;
-      target.set(m.ticker, give);
-      if (give < NAME_CAP_PCT - 1e-9) nextOpen.push(m);
-    }
-    open = nextOpen;
-  }
-  return target;
-}
-
-/** Conviction tilt: momentum raises the target weight, rich valuation cuts it. */
-function convictionTilt(p: PositionInput): number {
-  let tilt = 1;
-
-  if (p.score) {
-    tilt += clamp((p.score.total - 55) / 45, -1, 1) * 0.25;
-    if (p.score.signal === "REJECT") tilt *= 0.5;
-    else if (p.score.hardBlocks.length) tilt *= 0.75;
-  }
-
-  const dev = p.valuation.deviationPct;
-  if (dev != null) tilt -= clamp(dev / 40, -1, 1) * 0.3;
-
-  return clamp(tilt, 0.35, 1.7);
+/** How much of NAV an add may put to work, before the risk cap trims it. */
+function addBudgetPct(p: PositionInput, regime: RegimeAssessment | null): number {
+  let base = p.conviction.grade === "STRONG" ? 5 : p.conviction.grade === "ADEQUATE" ? 3 : 0;
+  // A cheaper price buys a bigger step.
+  if (p.valuation.verdict === "DEEP VALUE") base *= 1.5;
+  // The regime governs how much of a plan may be deployed at all.
+  if (regime?.regime === "Neutral") base *= 0.75;
+  else if (regime?.regime === "Risk-Off") base *= p.sleeve === "Growth/Momentum" ? 0 : 0.33;
+  else if (regime?.regime === "Crisis") base = 0;
+  return base;
 }
 
 export function buildPositionActions(input: BookActionInput): BookActionResult {
   const { positions, nav, regime } = input;
   const notes: string[] = [];
 
-  const valueOf = (p: PositionInput) => (p.price ?? p.avgCost) * p.shares;
-
-  // Sleeve budgets renormalised over the sleeves actually populated. Without
-  // this, a book holding no cash instrument would show every name as a large
-  // TRIM purely because the 13% cash sleeve is unfilled — a structural gap the
-  // sleeve-drift alert already reports, and one that would drown out the
-  // per-name valuation signal this desk exists to give.
-  const held = new Set(positions.map((p) => p.sleeve));
-  const budgetBase = [...held].reduce((s, sl) => s + SLEEVE_TARGETS[sl], 0);
-  const budget = new Map<Sleeve, number>();
-  for (const sl of held) {
-    budget.set(sl, budgetBase > 0 ? (SLEEVE_TARGETS[sl] / budgetBase) * 100 : 0);
-  }
-  if (!held.has("Cash/Defensive")) {
-    notes.push(
-      `Sleeve budgets are renormalised across the sleeves actually held, so the ${SLEEVE_TARGETS["Cash/Defensive"]}% cash sleeve is not charged against individual names. Raising cash is a separate allocation decision — see the sleeve drift alerts.`
-    );
-  }
-
-  // Target weights: sleeve budget split by conviction tilt, capped at Rule #3.
-  const tilts = new Map<string, number>();
-  positions.forEach((p) => tilts.set(p.ticker, convictionTilt(p)));
-
-  const targetWeight = new Map<string, number>();
-  for (const sl of held) {
-    const members = positions
-      .filter((p) => p.sleeve === sl)
-      .map((p) => ({ ticker: p.ticker, tilt: tilts.get(p.ticker) ?? 1 }));
-    for (const [ticker, w] of allocateSleeve(members, budget.get(sl) ?? 0)) {
-      targetWeight.set(ticker, w);
-    }
-  }
-  const unallocated = 100 - [...targetWeight.values()].reduce((s, w) => s + w, 0);
-  if (unallocated > 1) {
-    notes.push(
-      `${unallocated.toFixed(1)}% of NAV has no target: every name that could take more is already at the ${NAME_CAP_PCT}% single-name cap (Rule #3). That share belongs in a new position, not in a larger existing one.`
-    );
-  }
-
   const plans: PositionPlan[] = positions.map((p) => {
     const price = p.price;
-    const mv = valueOf(p);
+    const mv = (price ?? p.avgCost) * p.shares;
     const weightPct = nav > 0 ? (mv / nav) * 100 : 0;
     const zone = assessPositionZone(weightPct, mv, nav);
 
-    const targetWeightPct = targetWeight.get(p.ticker) ?? 0;
-
     const v = p.valuation;
     const dev = v.deviationPct;
-    const blocks = p.score?.hardBlocks ?? [];
-    const brokenTrend = blocks.some((b) => b.code === "BELOW_200SMA");
+    const cheap = v.verdict === "DEEP VALUE" || v.verdict === "UNDERVALUED";
+    const rich = v.verdict === "OVERVALUED" || v.verdict === "STRETCHED";
+    const cashLike = v.verdict === "CASH EQUIVALENT";
+    const leading = p.theme != null;
 
     const reasons: string[] = [];
     let guard: string | null = null;
+    let trimTrigger: number | null = null;
     let action: PositionAction = "HOLD";
     let deltaValue = 0;
 
-    if (v.verdict) {
+    if (cashLike) {
+      reasons.push(`Cash equivalent — ${v.note}`);
+    } else if (v.verdict) {
       reasons.push(
         `${v.verdict} — $${price?.toFixed(2) ?? "n/a"} against fair value $${v.fairValue?.toFixed(2)} (${dev != null && dev >= 0 ? "+" : ""}${dev?.toFixed(1)}%, ${v.confidence} confidence).`
       );
     } else {
       reasons.push(v.note);
     }
-    if (p.score) {
-      reasons.push(`Momentum ${p.score.total}/100 — ${p.score.signal}. ${p.score.signalReason}`);
+    if (p.conviction.grade !== "N/A") {
+      reasons.push(`${p.conviction.model}: ${p.conviction.detail}`);
+    }
+    if (p.theme) {
+      reasons.push(`Running with ${p.theme.label}, ${p.theme.rsPct >= 0 ? "+" : ""}${p.theme.rsPct.toFixed(1)}% relative to SPY over 3 months.`);
     }
 
-    // 1 ── Exit conditions take precedence over everything else.
-    //
-    // Only a fundamental anchor counts as valuation support under a broken
-    // trend. A trend regression fitted through a round trip will always call
-    // the far side of the fall "cheap" — that is the regression describing the
-    // decline, not a reason to keep owning it.
+    // 1 ── Exit: a broken structure with no fundamental support beneath it.
     const hasFundamentalAnchor = v.anchors.some((a) => a.method !== TREND_METHOD);
-    const valuationSupport =
-      (v.verdict === "DEEP VALUE" || v.verdict === "UNDERVALUED") &&
-      hasFundamentalAnchor &&
-      v.confidence !== "low";
+    const valuationSupport = cheap && hasFundamentalAnchor && v.confidence !== "low";
+    const structurallyBroken = p.conviction.grade === "BROKEN";
 
-    const exitReasons: string[] = [];
-    if (brokenTrend && !valuationSupport) {
-      exitReasons.push(
-        hasFundamentalAnchor
-          ? "price below the 200-day SMA with no valuation support beneath it"
-          : "price below the 200-day SMA, and the only fair-value read available is its own price trend — which offers no support"
-      );
-    }
-    if (blocks.length >= 2 && (v.verdict === "OVERVALUED" || v.verdict === "STRETCHED")) {
-      exitReasons.push(`${blocks.length} hard blocks on a name still priced above fair value`);
-    }
-    if (v.verdict === "STRETCHED" && p.score && p.score.total < 42) {
-      exitReasons.push("stretched valuation with momentum already below the 42 floor");
-    }
-
-    if (exitReasons.length && p.shares > 0) {
+    if (structurallyBroken && !valuationSupport && !cashLike && p.shares > 0) {
       action = "EXIT";
       deltaValue = -mv;
-      reasons.push(`Exit: ${exitReasons.join("; ")}.`);
+      reasons.push(
+        `Exit: ${p.conviction.blocks.join("; ")}${hasFundamentalAnchor ? "" : ", and the only fair-value read available is its own price trend, which offers no support"}.`
+      );
       guard = "Rule #4 — exit on the stop or into strength, not at the open on a gap.";
-    } else if (zone.zone === "EMERGENCY" || zone.zone === "TRIM") {
-      // 2 ── Rule #3 concentration overrides the valuation-driven size.
+    }
+    // 2 ── Above the WATCH ceiling: trim back to the cap, no exceptions.
+    else if (weightPct > WATCH_CAP_PCT) {
       action = "TRIM";
-      deltaValue = -(zone.trimToTarget ?? 0);
-      reasons.push(`Rule #3 ${zone.zone} zone at ${weightPct.toFixed(1)}% of NAV — ${zone.action}.`);
-      if (zone.zone === "TRIM") guard = "Research must identify a replacement before the trim (Rule #3).";
-    } else {
-      // 3 ── Otherwise size to the conviction-weighted target.
-      const deltaPct = targetWeightPct - weightPct;
-      deltaValue = (deltaPct / 100) * nav;
-      const minTrade = Math.max(nav * 0.0075, 200);
-
-      if (Math.abs(deltaValue) < minTrade) {
-        action = "HOLD";
-        deltaValue = 0;
+      deltaValue = -((weightPct - NAME_CAP_PCT) / 100) * nav;
+      reasons.push(
+        `${weightPct.toFixed(1)}% of NAV is beyond the ${WATCH_CAP_PCT}% ceiling — trim to the ${NAME_CAP_PCT}% cap (Rule #3). No valuation argument overrides this.`
+      );
+    }
+    // 3 ── The 20-23% band: a permitted overweight, on conditions.
+    else if (weightPct > NAME_CAP_PCT) {
+      const priceSupportsIt = cheap || v.verdict === "FAIR" || cashLike;
+      if (priceSupportsIt && (leading || cashLike)) {
+        action = "WATCH";
+        trimTrigger = v.buyBelow != null ? round2(v.buyBelow * 1.12) : null;
         reasons.push(
-          `Weight ${weightPct.toFixed(1)}% is within a trade's-worth of the ${targetWeightPct.toFixed(1)}% target — no action.`
+          `${weightPct.toFixed(1)}% is over the ${NAME_CAP_PCT}% cap but inside the ${WATCH_CAP_PCT}% watch band: the price is still ${cashLike ? "at par" : "at or below fair value"}${leading ? ` and the name is running with ${p.theme!.label}` : ""}. Hold the overweight to capture the move rather than trimming a winner early.`
         );
-      } else if (deltaValue > 0) {
-        action = "ADD";
-        reasons.push(`Underweight: ${weightPct.toFixed(1)}% against a ${targetWeightPct.toFixed(1)}% conviction target.`);
+        guard = trimTrigger
+          ? `Trim back to ${NAME_CAP_PCT}% once the price clears $${trimTrigger.toFixed(2)}, or immediately if the weight passes ${WATCH_CAP_PCT}%.`
+          : `Trim back to ${NAME_CAP_PCT}% as soon as the valuation stops supporting the overweight, or if the weight passes ${WATCH_CAP_PCT}%.`;
+      } else {
+        action = "TRIM";
+        deltaValue = -((weightPct - NAME_CAP_PCT) / 100) * nav;
+        reasons.push(
+          rich
+            ? `${weightPct.toFixed(1)}% is over the ${NAME_CAP_PCT}% cap and the price is above fair value — the watch band is not available. Trim to the cap.`
+            : `${weightPct.toFixed(1)}% is over the ${NAME_CAP_PCT}% cap and the name is not leading a theme — the watch band requires both. Trim to the cap.`
+        );
+      }
+    }
+    // 4 ── Inside the cap: hold unless there is a reason to move.
+    else if (rich && weightPct >= MIN_TRIM_WEIGHT_PCT) {
+      const fraction = v.verdict === "STRETCHED" ? 0.33 : 0.2;
+      action = "TRIM";
+      deltaValue = -mv * fraction;
+      reasons.push(
+        `Inside the cap, but ${dev?.toFixed(1)}% above fair value — take ${Math.round(fraction * 100)}% off and keep the rest. Revisit below $${v.buyBelow?.toFixed(2)}.`
+      );
+    } else if (cheap && !cashLike) {
+      const budget = addBudgetPct(p, regime);
+      const room = Math.max(0, NAME_CAP_PCT - weightPct);
+      let addPct = Math.min(budget, room);
 
-        // Add suppressors — conviction may justify the weight while the price does not.
-        if (blocks.length) {
-          action = "HOLD";
-          deltaValue = 0;
-          reasons.push(`Add suppressed — ${blocks.map((b) => b.reason).join("; ")}.`);
-        } else if (v.verdict === "OVERVALUED" || v.verdict === "STRETCHED") {
-          action = "HOLD";
-          deltaValue = 0;
-          reasons.push(
-            `Add suppressed — the weight is justified but the price is not. Revisit below $${v.buyBelow?.toFixed(2)}.`
-          );
-          guard = v.buyBelow ? `Buy limit $${v.buyBelow.toFixed(2)} — top of the fair band.` : null;
-        } else if (regime?.regime === "Crisis") {
-          action = "HOLD";
-          deltaValue = 0;
-          reasons.push("Add suppressed — Crisis regime, no new capital deployed.");
-        } else if (regime?.regime === "Risk-Off" && p.sleeve === "Growth/Momentum") {
-          action = "HOLD";
-          deltaValue = 0;
-          reasons.push("Add suppressed — Risk-Off regime permits adds only to income and defensive sleeves.");
-        } else if (price && p.stop != null && p.stop > 0 && p.stop < price) {
-          // Rule #4 — cap the add so the incremental trade risks ≤ 1.5% of NAV.
+      if (p.conviction.blocks.length) {
+        reasons.push(`No add — ${p.conviction.blocks.join("; ")}.`);
+      } else if (addPct <= 0) {
+        reasons.push(
+          budget <= 0
+            ? `No add — ${regime ? `the ${regime.regime} regime permits none for this sleeve (${regime.deployRule.toLowerCase()})` : "conviction is not strong enough to justify one"}.`
+            : `Already at the ${NAME_CAP_PCT}% cap — no room to add.`
+        );
+      } else {
+        action = "ADD";
+        deltaValue = (addPct / 100) * nav;
+        reasons.push(
+          `Cheap against fair value with ${p.conviction.grade.toLowerCase()} conviction and room under the cap — step in with ${addPct.toFixed(1)}% of NAV.`
+        );
+        // Rule #4 — the incremental trade may not risk more than 1.5% of NAV.
+        if (price && p.stop != null && p.stop > 0 && p.stop < price) {
           const maxShares = Math.floor((nav * 0.015) / (price - p.stop));
           const maxValue = maxShares * price;
           if (maxValue < deltaValue) {
+            deltaValue = maxValue;
             reasons.push(
               `Add capped at ${maxShares} shares by the 1.5%-of-NAV trade risk limit (stop $${p.stop.toFixed(2)}, $${(price - p.stop).toFixed(2)}/share at risk).`
             );
-            deltaValue = maxValue;
             guard = `Stop $${p.stop.toFixed(2)} must be live before adding (Rule #4).`;
           }
         }
-        if (action === "ADD" && deltaValue < minTrade) {
-          action = "HOLD";
-          deltaValue = 0;
-          reasons.push("Remaining add is below the minimum trade size — hold.");
-        }
-      } else {
-        action = "TRIM";
-        reasons.push(`Overweight: ${weightPct.toFixed(1)}% against a ${targetWeightPct.toFixed(1)}% conviction target.`);
       }
+    } else if (rich) {
+      reasons.push(
+        `${dev?.toFixed(1)}% above fair value, but at ${weightPct.toFixed(1)}% of NAV a trim would be noise rather than risk control — hold and revisit below $${v.buyBelow?.toFixed(2)}.`
+      );
+    } else {
+      reasons.push(
+        cashLike
+          ? `Held as the cash sleeve at ${weightPct.toFixed(1)}% of NAV${regime ? `, against a ${regime.cashMinPct}% floor for the ${regime.regime} regime` : ""}.`
+          : `Fairly priced at ${weightPct.toFixed(1)}% of NAV, inside the ${NAME_CAP_PCT}% cap — nothing to do.`
+      );
     }
 
-    // Convert to whole shares, never selling more than is held.
+    // Minimum trade size: never recommend a trade too small to be worth the spread.
+    const minTrade = Math.max(nav * 0.0075, 200);
+    if (action !== "EXIT" && action !== "WATCH" && Math.abs(deltaValue) > 0 && Math.abs(deltaValue) < minTrade) {
+      reasons.push(`Sized at ${money(Math.abs(deltaValue))}, below the minimum worth trading — hold.`);
+      action = "HOLD";
+      deltaValue = 0;
+    }
+
+    // Whole shares, never selling more than is held.
     let deltaShares = 0;
     if (price && price > 0) {
       if (action === "EXIT") deltaShares = -p.shares;
@@ -565,30 +689,33 @@ export function buildPositionActions(input: BookActionInput): BookActionResult {
         deltaShares = Math.trunc(deltaValue / price);
         if (deltaShares < 0) deltaShares = Math.max(deltaShares, -p.shares);
       }
-      if (action !== "EXIT" && deltaShares === 0) {
+      if (action !== "EXIT" && action !== "WATCH" && action !== "HOLD" && deltaShares === 0) {
+        reasons.push("Rounds to zero shares at the current price — hold.");
         action = "HOLD";
         deltaValue = 0;
-        reasons.push("Rounds to zero shares at the current price — hold.");
-      } else {
+      } else if (action !== "EXIT") {
         deltaValue = deltaShares * price;
       }
-    } else {
+    } else if (action !== "HOLD") {
+      reasons.push("No live price — sizing cannot be computed.");
       action = "HOLD";
       deltaValue = 0;
       deltaShares = 0;
-      reasons.push("No live price — sizing cannot be computed.");
     }
 
+    const targetWeightPct = nav > 0 ? ((mv + deltaValue) / nav) * 100 : 0;
+
     const headline =
-      action === "EXIT" ? `Sell all ${p.shares} shares (≈$${Math.abs(deltaValue).toFixed(0)})`
-      : action === "TRIM" ? `Trim ${Math.abs(deltaShares)} shares (≈$${Math.abs(deltaValue).toFixed(0)})`
-      : action === "ADD" ? `Add ${deltaShares} shares (≈$${deltaValue.toFixed(0)})`
+      action === "EXIT" ? `Sell all ${p.shares} shares (≈${money(Math.abs(deltaValue || mv))})`
+      : action === "TRIM" ? `Trim ${Math.abs(deltaShares)} shares (≈${money(Math.abs(deltaValue))})`
+      : action === "ADD" ? `Add ${deltaShares} shares (≈${money(deltaValue)})`
+      : action === "WATCH" ? `Hold the overweight — trim${trimTrigger ? ` above ${money(trimTrigger)}` : " on the trigger"}`
       : "Hold — no change";
 
     const priority =
       action === "EXIT" ? 0
-      : zone.zone === "EMERGENCY" ? 1
-      : action === "TRIM" ? 2
+      : action === "TRIM" ? 1
+      : action === "WATCH" ? 2
       : action === "ADD" ? 3
       : 4;
 
@@ -606,12 +733,13 @@ export function buildPositionActions(input: BookActionInput): BookActionResult {
       buyBelow: v.buyBelow,
       anchors: v.anchors,
       valuationNote: v.note,
-      momentumScore: p.score?.total ?? null,
-      signal: p.score?.signal ?? null,
+      conviction: p.conviction,
+      theme: p.theme ?? null,
       zone,
       action,
       deltaShares,
       deltaValue: round2(deltaValue),
+      trimTrigger,
       headline,
       reasons,
       guard,
@@ -621,20 +749,19 @@ export function buildPositionActions(input: BookActionInput): BookActionResult {
 
   plans.sort((a, b) => a.priority - b.priority || Math.abs(b.deltaValue) - Math.abs(a.deltaValue));
 
-  const sleeveBudget = [...held].map((sleeve) => ({
-    sleeve,
-    budgetPct: round2(budget.get(sleeve) ?? 0),
-    heldPct: round2(
-      positions.filter((p) => p.sleeve === sleeve).reduce((s, p) => s + valueOf(p), 0) / (nav || 1) * 100
-    ),
-  }));
-
-  if (regime) {
-    notes.push(`${regime.icon} ${regime.regime} regime (${regime.score}/100) — ${regime.deployRule}`);
-  }
   notes.push(
-    "Target weights split each sleeve budget by conviction: momentum score raises the target, a rich price lowers it, and Rule #3 caps any single name at 20% of NAV."
+    `Sizing is governed by the ${NAME_CAP_PCT}% single-name cap (Rule #3). A position may sit between ${NAME_CAP_PCT}% and ${WATCH_CAP_PCT}% as WATCH only while it is still at or below fair value and running with a leading theme; that overweight carries a trim trigger so the gain is capped rather than left open.`
   );
+  notes.push(
+    "Inside the cap the desk holds by default. An add needs a cheap price, sleeve-appropriate conviction and a regime that permits deployment; a trim needs a rich price and a position large enough for the trim to matter."
+  );
+  if (regime) {
+    notes.push(`${regime.icon} ${regime.regime} regime (${regime.score}/100) — ${regime.deployRule}. Cash floor ${regime.cashMinPct}%.`);
+  }
 
-  return { plans, sleeveBudget, notes };
+  return { plans, notes };
+}
+
+function money(v: number): string {
+  return `$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }

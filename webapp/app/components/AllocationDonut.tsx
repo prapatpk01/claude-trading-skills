@@ -1,5 +1,6 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { computeAllocation, type SectorInfo } from "@/lib/sectors";
 import { money, pct } from "./format";
 
 /**
@@ -84,9 +85,46 @@ function toSlices(items: Omit<Slice, "color">[]): Slice[] {
   ];
 }
 
-export default function AllocationDonut({ allocation }: { allocation: any }) {
+interface HoldingLike { ticker: string; shares: number; avg_cost: number }
+
+export default function AllocationDonut({
+  holdings,
+  quotes,
+}: {
+  holdings: HoldingLike[];
+  quotes: Record<string, { price: number } | null>;
+}) {
   const [mode, setMode] = useState<"sector" | "holding">("sector");
   const [hover, setHover] = useState<string | null>(null);
+  const [sectors, setSectors] = useState<Record<string, SectorInfo>>({});
+  const [sectorsLoading, setSectorsLoading] = useState(false);
+
+  // Sector is the only thing the server is asked for. Weights are computed
+  // here from the very holdings and quotes the table is rendering, so the ring
+  // cannot describe a different book.
+  const tickerKey = useMemo(
+    () => Array.from(new Set(holdings.map((h) => h.ticker.trim().toUpperCase()))).sort().join(","),
+    [holdings]
+  );
+
+  useEffect(() => {
+    if (!tickerKey) { setSectors({}); return; }
+    let cancelled = false;
+    setSectorsLoading(true);
+    fetch(`/api/sectors?tickers=${encodeURIComponent(tickerKey)}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled) setSectors(j.sectors ?? {}); })
+      .catch(() => { if (!cancelled) setSectors({}); })
+      .finally(() => { if (!cancelled) setSectorsLoading(false); });
+    return () => { cancelled = true; };
+  }, [tickerKey]);
+
+  const allocation = useMemo(() => {
+    if (!holdings.length) return null;
+    const prices: Record<string, number | null> = {};
+    for (const h of holdings) prices[h.ticker] = quotes[h.ticker]?.price ?? null;
+    return computeAllocation(holdings, prices, sectors);
+  }, [holdings, quotes, sectors]);
 
   const slices = useMemo<Slice[]>(() => {
     if (!allocation) return [];
@@ -178,6 +216,7 @@ export default function AllocationDonut({ allocation }: { allocation: any }) {
           {mode === "sector"
             ? `${allocation.bySector.length} sector${allocation.bySector.length === 1 ? "" : "s"} across ${allocation.holdings.length} position${allocation.holdings.length === 1 ? "" : "s"}`
             : `${allocation.holdings.length} position${allocation.holdings.length === 1 ? "" : "s"}`}
+          {sectorsLoading && <> · <span className="spinner" /> classifying…</>}
         </span>
         <div className="tabs" style={{ padding: 4 }}>
           {(["sector", "holding"] as const).map((m) => (
