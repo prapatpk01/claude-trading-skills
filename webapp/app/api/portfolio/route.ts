@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
+import { mergeLot, findOpenLot } from "@/lib/mergeLot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,6 +72,32 @@ export async function POST(req: NextRequest) {
 
   const sb = getSupabase();
   if (sb) {
+    // Buying more of something already held blends into that position rather
+    // than creating a second row for the same ticker. Two rows split the
+    // weight, and every downstream figure — the single-name cap, the
+    // allocation ring, the valuation desk's sizing — would then see half a
+    // position twice and understate the real concentration.
+    const { data: openRows } = await sb
+      .from("holdings").select("*").eq("ticker", ticker);
+    const existing = openRows ? findOpenLot(openRows as any[], ticker) : undefined;
+    if (existing) {
+      const merged = mergeLot(existing as any, row);
+      const patch: Record<string, any> = {
+        shares: merged.shares,
+        avg_cost: merged.avg_cost,
+        target_price: merged.target_price,
+        thesis: merged.thesis,
+        notes: merged.notes,
+        opened_at: merged.opened_at,
+      };
+      let { data, error } = await sb.from("holdings").update(patch).eq("id", (existing as any).id).select().single();
+      if (error && isMissingColumn(error.message)) {
+        ({ data, error } = await sb.from("holdings").update(withoutOptional(patch)).eq("id", (existing as any).id).select().single());
+      }
+      if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
+      return NextResponse.json({ holding: data, merged: true, mergeSummary: merged.summary });
+    }
+
     let { data, error } = await sb.from("holdings").insert(row).select().single();
     if (error && isMissingColumn(error.message)) {
       // The date migration hasn't been run yet — save what the table supports.
@@ -85,6 +112,19 @@ export async function POST(req: NextRequest) {
     }
     if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
     return NextResponse.json({ holding: data });
+  }
+  const existingMem = findOpenLot(memStore.holdings, ticker);
+  if (existingMem) {
+    const merged = mergeLot(existingMem, row);
+    const updated = memStore.updateHolding(existingMem.id, {
+      shares: merged.shares,
+      avg_cost: merged.avg_cost,
+      target_price: merged.target_price,
+      thesis: merged.thesis,
+      notes: merged.notes,
+      opened_at: merged.opened_at,
+    });
+    return NextResponse.json({ holding: updated, merged: true, mergeSummary: merged.summary, backend: "memory" });
   }
   return NextResponse.json({ holding: memStore.addHolding(row), backend: "memory" });
 }

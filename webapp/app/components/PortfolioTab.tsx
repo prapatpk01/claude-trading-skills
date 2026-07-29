@@ -94,11 +94,16 @@ export default function PortfolioTab() {
   }
   const pnl = mktValue - costBasis;
   const pnlPct = costBasis ? (pnl / costBasis) * 100 : 0;
+  const closedCount = holdings.filter((h) => h.closed_at).length;
 
   return (
     <div>
       <div className="grid cols-4">
-        <div className="metric"><div className="label">Market Value</div><div className="value">{money(mktValue)}</div></div>
+        <div className="metric">
+          <div className="label">Market Value</div>
+          <div className="value">{money(mktValue)}</div>
+          <div className="sub">{holdings.length} position{holdings.length === 1 ? "" : "s"}</div>
+        </div>
         <div className="metric"><div className="label">Cost Basis</div><div className="value">{money(costBasis)}</div></div>
         <div className="metric"><div className="label">Unrealized P/L</div><div className={cls("value", pnl >= 0 ? "pos" : "neg")}>{money(pnl)}</div></div>
         <div className="metric"><div className="label">Return</div><div className={cls("value", pnlPct >= 0 ? "pos" : "neg")}>{pnlPct >= 0 ? "+" : ""}{pct(pnlPct)}</div></div>
@@ -236,7 +241,15 @@ export default function PortfolioTab() {
 
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 className="section" style={{ margin: 0 }}>💼 Portfolio Holdings</h2>
+          <h2 className="section" style={{ margin: 0 }}>
+            💼 Portfolio Holdings
+            {holdings.length > 0 && (
+              <span className="muted" style={{ fontWeight: 400, fontSize: 15, marginLeft: 8 }}>
+                {holdings.length} position{holdings.length === 1 ? "" : "s"}
+                {closedCount > 0 && ` · ${closedCount} closed`}
+              </span>
+            )}
+          </h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span className="tag">store: {backend || "…"}</span>
             <button className="btn ghost sm" onClick={refreshQuotes} disabled={quotesLoading}>
@@ -458,6 +471,7 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
   const [f, setF] = useState({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "", opened_at: new Date().toISOString().slice(0, 10) });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [merged, setMerged] = useState<string | null>(null);
   return (
     <>
     <form
@@ -468,6 +482,7 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
         if (!f.ticker) return;
         setBusy(true);
         setErr(null);
+        setMerged(null);
         try {
           const res = await fetch("/api/portfolio", {
             method: "POST",
@@ -476,6 +491,7 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
           });
           const json = await res.json();
           if (!res.ok) throw new Error(json.error || "Could not save the holding");
+          setMerged(json.merged ? `${f.ticker.toUpperCase()} — ${json.mergeSummary}` : null);
           setF({ ticker: "", shares: "", avg_cost: "", target_price: "", thesis: "", opened_at: new Date().toISOString().slice(0, 10) });
           onAdd();
         } catch (e: any) {
@@ -494,6 +510,7 @@ function HoldingForm({ onAdd }: { onAdd: () => void }) {
       <button className="btn" disabled={busy}>{busy ? "…" : "Add holding"}</button>
     </form>
     {err && <div className="err" style={{ marginTop: 10 }}>⚠ {err}</div>}
+    {merged && <div className="notice" style={{ marginTop: 10 }}>➕ {merged}</div>}
     </>
   );
 }
@@ -502,6 +519,7 @@ function WatchForm({ onAdd }: { onAdd: () => void }) {
   const [f, setF] = useState({ ticker: "", alert_price: "", reason: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [merged, setMerged] = useState<string | null>(null);
   return (
     <>
     <form
