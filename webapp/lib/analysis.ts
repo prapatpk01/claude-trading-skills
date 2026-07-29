@@ -223,7 +223,12 @@ export function defaultAssumptions(data: MarketData): DcfAssumptions {
     const capex = Math.abs(Number(cf.capitalExpenditures) || 0);
     fcfMargin = clamp(((ocf - capex) / rev0) * 100, 3, 40) / 100;
   }
-  return { revenueGrowth, fcfMargin, wacc, terminalGrowth: 0.025 };
+  // Terminal growth must sit well below the discount rate. As g approaches
+  // WACC the perpetuity denominator collapses and the terminal value — already
+  // the majority of any DCF — runs away. Long-run nominal GDP is the ceiling;
+  // a 4-point spread to WACC is the binding floor.
+  const terminalGrowth = Math.min(0.025, Math.max(0.01, wacc - 0.04));
+  return { revenueGrowth, fcfMargin, wacc, terminalGrowth };
 }
 
 export function computeDcf(data: MarketData, a: DcfAssumptions): DcfResult | null {
@@ -256,9 +261,17 @@ export function computeDcf(data: MarketData, a: DcfAssumptions): DcfResult | nul
   const equityValue = enterpriseValue - debt + cash;
   const fairValue = equityValue / shares;
 
+  // How much of the answer is the terminal value? Past ~80% the model is a
+  // perpetuity guess wearing a five-year projection, and the number deserves
+  // far less weight than its precision suggests.
+  const terminalSharePct =
+    enterpriseValue > 0 ? round2((pvTerminal / enterpriseValue) * 100) : 100;
+
   return {
     wacc: a.wacc,
     terminalGrowth: a.terminalGrowth,
+    terminalSharePct,
+    reliable: terminalSharePct <= 80 && fairValue > 0,
     fairValue: round2(fairValue),
     upsidePct: price ? round2(((fairValue - price) / price) * 100) : 0,
     projectedFcf,

@@ -156,6 +156,10 @@ export interface SwingSetup {
 export interface DcfResult {
   wacc: number;
   terminalGrowth: number;
+  /** Share of enterprise value contributed by the terminal value, percent. */
+  terminalSharePct: number;
+  /** False when the terminal value dominates — treat the output as indicative. */
+  reliable: boolean;
   fairValue: number;
   upsidePct: number;
   projectedFcf: number[];

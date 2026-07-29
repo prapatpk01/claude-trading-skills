@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/analyze";
+import { defaultAssumptions, computeDcf } from "@/lib/analysis";
+import { getMarketData as fullMarketData } from "@/lib/marketData";
 import { getMarketData, dailyCandles, getLightQuote } from "@/lib/marketData";
 import { buildTickerMemo } from "@/lib/team/memo";
 import { buildBookReview } from "@/lib/team/book";
@@ -223,11 +225,16 @@ export async function POST(req: NextRequest) {
           const q = await getLightQuote(h.ticker).catch(() => null);
           const price = q?.price ?? candles[candles.length - 1].close;
 
-          const [sec, divs, sectorInfo] = await Promise.all([
+          const [sec, divs, sectorInfo, md] = await Promise.all([
             getSecFundamentals(h.ticker).catch(() => null),
             fetchDividends(h.ticker, 5).then((d) => d.events).catch(() => []),
             getSector(h.ticker).catch(() => null),
+            fullMarketData(h.ticker).catch(() => null),
           ]);
+
+          // A DCF only where the statements support one; it joins the blend as
+          // one anchor among several rather than standing alone.
+          const dcf = md ? computeDcf(md, defaultAssumptions(md)) : null;
 
           const valuation = assessValuation({
             candles,
@@ -235,6 +242,9 @@ export async function POST(req: NextRequest) {
             annualEps: sec?.annualEps ?? [],
             epsTTM: sec?.epsTTM ?? null,
             dividends: divs,
+            dcf: dcf
+              ? { fairValue: dcf.fairValue, wacc: dcf.wacc, terminalSharePct: dcf.terminalSharePct, reliable: dcf.reliable }
+              : null,
           });
 
           const beta = spy.length ? computeBeta(candles, spy) : null;

@@ -202,6 +202,34 @@ export interface ValuationInput {
   annualEps?: AnnualEps[];
   epsTTM?: number | null;
   dividends?: DividendEvent[];
+  /** Discounted-cash-flow output, when one could be computed. */
+  dcf?: { fairValue: number; wacc: number; terminalSharePct: number; reliable: boolean } | null;
+}
+
+/**
+ * The DCF as one voice rather than the verdict.
+ *
+ * A standalone DCF is the easiest way to print a nonsense fair value: the
+ * terminal value is usually most of the answer, and small changes in WACC or
+ * the growth taper move it enormously. Here it enters on the same terms as
+ * every other anchor — subject to the plausibility gate and to outlier
+ * rejection — and is weighted down when the terminal value dominates, so a
+ * runaway perpetuity gets outvoted by the multiple and yield anchors instead
+ * of overruling them.
+ */
+function dcfAnchor(
+  dcf: NonNullable<ValuationInput["dcf"]>,
+  price: number
+): FairValueAnchor | null {
+  if (!(dcf.fairValue > 0) || !(price > 0)) return null;
+  const ratio = dcf.fairValue / price;
+  if (!(ratio >= 0.4 && ratio <= 2.5)) return null;
+  return {
+    method: "Discounted cash flow",
+    fairValue: round2(dcf.fairValue),
+    weight: dcf.reliable ? 1.5 : 0.75,
+    detail: `5-year FCF at a ${(dcf.wacc * 100).toFixed(1)}% WACC; ${dcf.terminalSharePct.toFixed(0)}% of the value is the terminal value${dcf.reliable ? "" : " — above the 80% line, so the model is weighted down as a perpetuity guess"}`,
+  };
 }
 
 /**
@@ -269,6 +297,9 @@ export function assessValuation(input: ValuationInput): ValuationRead {
 
   const tA = trendAnchor(candles);
   if (tA) anchors.push(tA);
+
+  const dA = input.dcf ? dcfAnchor(input.dcf, price) : null;
+  if (dA) anchors.push(dA);
 
   // Three independent methods should land in the same neighbourhood. When one
   // sits more than 2.2× away from where the others agree, it is measuring a
