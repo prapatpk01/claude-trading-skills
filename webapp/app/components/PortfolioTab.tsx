@@ -4,6 +4,7 @@ import { money, num, pct, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, Disclosures } from "./TeamPanel";
 import PortfolioAnalytics from "./PortfolioAnalytics";
 import ValuationDesk from "./ValuationDesk";
+import MacroDesk from "./MacroDesk";
 import AllocationDonut from "./AllocationDonut";
 import TickerInput from "./TickerInput";
 import { openOnly, isOpen } from "@/lib/openPositions";
@@ -130,6 +131,9 @@ export default function PortfolioTab() {
           <AllocationDonut holdings={open} quotes={quotes} />
         </div>
       )}
+
+      {/* Regime + sentiment set the allocation frame the rest works inside */}
+      <MacroDesk />
 
       <div className="card ai-card" style={{ marginTop: 18 }}>
         <h3 className="sub">⚖️ Sentinel Committee — Portfolio Review</h3>

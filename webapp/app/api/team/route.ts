@@ -19,7 +19,10 @@ import { classifySleeve } from "@/lib/team/portfolio";
 import {
   rankGroups, buildThematicTilt, themeForSector, THEME_PROXIES,
 } from "@/lib/team/thematic";
-import { getSector } from "@/lib/sectors";
+import { getSector, getSectors } from "@/lib/sectors";
+import { readFearGreed } from "@/lib/team/fearGreed";
+import { buildMacroPlan } from "@/lib/team/macroPlan";
+import { classifySleeve as sleeveOf } from "@/lib/team/portfolio";
 import { getSecFundamentals } from "@/lib/sec";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { getSupabase } from "@/lib/supabase";
@@ -376,6 +379,75 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // ── Macro desk: regime + sentiment → concrete sleeve and group targets ──
+    if (mode === "macro") {
+      const holdings = await loadHoldings().catch(() => []);
+      const spy = await dailyCandles("SPY", 400).catch(() => [] as Candle[]);
+      const regime = spy.length ? assessRegime(spy) : null;
+
+      // Sentiment inputs and the theme proxies, fetched together.
+      const extra: Record<string, Candle[]> = {};
+      await Promise.all(
+        ["^VIX", "TLT", "HYG", "LQD", "RSP", ...THEME_PROXIES].map(async (t) => {
+          const c = await dailyCandles(t, 300).catch(() => [] as Candle[]);
+          if (c.length) extra[t] = c;
+        })
+      );
+      const ranked = spy.length ? rankGroups(extra, spy) : [];
+
+      const fearGreed = await readFearGreed({
+        spy,
+        vix: extra["^VIX"],
+        tlt: extra["TLT"],
+        hyg: extra["HYG"],
+        lqd: extra["LQD"],
+        rsp: extra["RSP"],
+        sectors: THEME_PROXIES.map((t) => extra[t]).filter(Boolean),
+      });
+
+      // Where the book actually sits, by sleeve and by sector.
+      const prices: Record<string, number | null> = {};
+      await Promise.all(
+        Array.from(new Set(holdings.map((h) => h.ticker))).map(async (t) => {
+          const q = await getLightQuote(t).catch(() => null);
+          prices[t] = q?.price ?? null;
+        })
+      );
+      const sectorMap = holdings.length ? await getSectors(holdings.map((h) => h.ticker)).catch(() => ({})) : {};
+      const nav = holdings.reduce((s, h) => s + (prices[h.ticker] ?? h.avg_cost) * h.shares, 0);
+
+      const sleeveValue: Record<string, number> = {};
+      const sectorValue: Record<string, number> = {};
+      for (const h of holdings) {
+        const v = (prices[h.ticker] ?? h.avg_cost) * h.shares;
+        const yieldPct = await forwardYield(h.ticker, prices[h.ticker] ?? null);
+        const sleeve = sleeveOf(h.ticker, yieldPct, null);
+        sleeveValue[sleeve] = (sleeveValue[sleeve] ?? 0) + v;
+        const sec = (sectorMap as any)[h.ticker.toUpperCase()]?.sector;
+        if (sec) sectorValue[sec] = (sectorValue[sec] ?? 0) + v;
+      }
+      const pctOf = (m: Record<string, number>) =>
+        Object.fromEntries(Object.entries(m).map(([k, v]) => [k, nav > 0 ? (v / nav) * 100 : 0]));
+
+      const plan = buildMacroPlan({
+        regime, fearGreed, ranked, nav,
+        currentSleevePct: pctOf(sleeveValue),
+        currentSectorPct: pctOf(sectorValue),
+      });
+
+      return NextResponse.json({
+        mode, nav: Math.round(nav * 100) / 100, plan, themes: ranked, fund: FUND,
+        disclosures: [
+          "The regime score and the sentiment reading are separate inputs: the regime measures where the market is, sentiment measures how crowded that position is. Sentiment tilts the allocation; it never changes the regime score.",
+          fearGreed.source === "CNN Fear & Greed Index"
+            ? "Sentiment is CNN's published Fear & Greed Index."
+            : "Sentiment is a proxy computed from free price feeds — CNN's index was unreachable. It is not a reconstruction of that index; two of its components have no free source and are absent rather than estimated.",
+          "Group targets are derived from proxy-ETF relative strength. A leading proxy does not mean every name inside the group is leading.",
+          "For research and education only. Not investment advice.",
+        ],
+      });
+    }
+
     // ── Watchlist: rank every name through the scoring model ──
     if (mode === "watchlist") {
       const watch = await loadWatchlist();
@@ -437,7 +509,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ mode, regime, rows, fund: FUND });
     }
 
-    return NextResponse.json({ error: "Unknown mode. Expected ticker | portfolio | valuation | watchlist." }, { status: 400 });
+    return NextResponse.json({ error: "Unknown mode. Expected ticker | portfolio | valuation | macro | watchlist." }, { status: 400 });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Team analysis failed" }, { status: 500 });
   }
