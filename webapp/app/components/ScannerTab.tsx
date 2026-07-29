@@ -64,6 +64,30 @@ export default function ScannerTab() {
         </div>
       )}
 
+      {result?.rejected?.length > 0 && (
+        <div className="card">
+          <h3 className="sub" style={{ marginTop: 0 }}>⚖️ Excluded by hard block (Sentinel v3.0)</h3>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead><tr><th>Ticker</th><th className="num">Score</th><th>Blocking rule</th></tr></thead>
+              <tbody>
+                {result.rejected.map((r: any) => (
+                  <tr key={r.ticker}>
+                    <td><strong>{r.ticker}</strong></td>
+                    <td className="num muted">{r.score}/100</td>
+                    <td className="neg" style={{ fontSize: 12 }}>{r.blocks.join(" · ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="notice" style={{ marginTop: 10 }}>
+            A hard block overrides any score — ADX below 20, price under the 200-SMA, distribution on rising price,
+            weak RSI without MA confirmation, or under $10M daily dollar volume.
+          </p>
+        </div>
+      )}
+
       {result?.setups?.map((s: any, i: number) => (
         <div className="card setup-card" key={s.ticker}>
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -73,7 +97,14 @@ export default function ScannerTab() {
             </div>
             <div style={{ textAlign: "right" }}>
               <div className="badge-score">{s.momentumScore}</div>
-              <div className="muted" style={{ fontSize: 11 }}>Momentum Score /100</div>
+              <div className="muted" style={{ fontSize: 11 }}>Sentinel v3.0 /100</div>
+              {result.sentinel?.[s.ticker] && (
+                <div style={{ marginTop: 4 }}>
+                  <span className={cls("pill", result.sentinel[s.ticker].signal.includes("WATCH") ? "hold" : result.sentinel[s.ticker].signal === "REJECT" ? "sell" : "buy")}>
+                    {result.sentinel[s.ticker].signal}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 

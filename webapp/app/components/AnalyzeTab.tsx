@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { money, num, pct, bn, cls } from "./format";
-import AiPanel from "./AiPanel";
+import TeamPanel, { DeskNotes, SignalBadge, GateList, ScoreBreakdown, Disclosures } from "./TeamPanel";
 
 export default function AnalyzeTab() {
   const [ticker, setTicker] = useState("");
@@ -92,11 +92,62 @@ export default function AnalyzeTab() {
           </div>
 
           <div className="card ai-card">
-            <h3 className="sub">✨ AI Second Opinion</h3>
+            <h3 className="sub">⚖️ Sentinel Investment Committee</h3>
             <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
-              Multi-model analysis of {data.ticker}: verdict, bull/bear points, valuation read &amp; what to watch. Auto-switches between models if one is busy.
+              Runs the fund&apos;s own framework on {data.ticker}: Momentum Scoring v3.0, hard blocks, the nine
+              pre-trade gates, Rule&nbsp;#3 sizing and the Rule&nbsp;#4 ATR stop — each section attributed to the desk that owns it.
             </p>
-            <AiPanel label={`Analyze ${data.ticker} with AI`} buildBody={() => ({ mode: "research", analysis: data })} />
+            <TeamPanel
+              label={`Convene committee on ${data.ticker}`}
+              buildBody={() => ({ mode: "ticker", ticker: data.ticker, analysis: data })}
+              render={(res) => {
+                const m = res.memo;
+                return (
+                  <>
+                    <div className="grid cols-4" style={{ marginBottom: 14 }}>
+                      <div className="metric">
+                        <div className="label">Momentum v3.0</div>
+                        <div className="value">{m.score.total}<span className="muted" style={{ fontSize: 13 }}>/100</span></div>
+                        <div className="sub"><SignalBadge signal={m.score.signal} /></div>
+                      </div>
+                      <div className="metric">
+                        <div className="label">Macro regime</div>
+                        <div className="value" style={{ fontSize: 18 }}>{m.regime.icon} {m.regime.score}</div>
+                        <div className="sub">{m.regime.regime} · cash ≥ {m.regime.cashMinPct}%</div>
+                      </div>
+                      <div className="metric">
+                        <div className="label">Pre-trade gates</div>
+                        <div className={cls("value", m.gates.cleared ? "pos" : "neg")} style={{ fontSize: 18 }}>
+                          {m.gates.passed}/{m.gates.evaluated}
+                        </div>
+                        <div className="sub">{m.gates.cleared ? "clear" : "hold"}</div>
+                      </div>
+                      <div className="metric">
+                        <div className="label">Rule #4 stop</div>
+                        <div className="value" style={{ fontSize: 18 }}>{m.stop ? money(m.stop.stop) : "—"}</div>
+                        <div className="sub">{m.stop ? `2 × ATR ${m.stop.atr}` : "ATR unavailable"}</div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(79,140,255,.09)", border: "1px solid var(--border-strong)" }}>
+                      <strong>{m.desks[m.desks.length - 1].heading}</strong>
+                      <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>{m.verdict.detail}</div>
+                    </div>
+
+                    <h3 className="sub" style={{ marginTop: 0 }}>Desk notes</h3>
+                    <DeskNotes desks={m.desks} />
+
+                    <h3 className="sub">Score breakdown — {res.fund.scoringVersion}</h3>
+                    <ScoreBreakdown score={m.score} />
+
+                    <h3 className="sub">Pre-trade checklist</h3>
+                    <GateList gates={m.gates.gates} />
+
+                    <Disclosures items={m.disclosures} />
+                  </>
+                );
+              }}
+            />
           </div>
 
           <div className="grid cols-2">

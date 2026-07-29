@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { money, num, pct, cls } from "./format";
-import AiPanel from "./AiPanel";
+import TeamPanel, { DeskNotes, SignalBadge, Disclosures } from "./TeamPanel";
 import PortfolioAnalytics from "./PortfolioAnalytics";
 
 interface Holding { id: string; ticker: string; shares: number; avg_cost: number; thesis?: string; target_price?: number | null; }
@@ -84,23 +84,115 @@ export default function PortfolioTab() {
       </div>
 
       <div className="card ai-card" style={{ marginTop: 18 }}>
-        <h3 className="sub">✨ AI Portfolio Review</h3>
+        <h3 className="sub">⚖️ Sentinel Committee — Portfolio Review</h3>
         <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
-          Multi-model read on concentration, risk, position notes &amp; watchlist priorities. Auto-switches models if one hits its limit.
+          Sleeve balance against the 55/30/13 targets, Rule&nbsp;#7 drift alerts, Rule&nbsp;#3 concentration zones,
+          correlation flags, the dual-objective scorecard and the regime cash floor.
         </p>
-        <AiPanel
-          label="Review my portfolio with AI"
-          buildBody={() => ({
-            mode: "portfolio",
-            portfolio: {
-              holdings: holdings.map((h) => ({ ...h, price: quotes[h.ticker]?.price ?? null })),
-              watchlist: watch,
-              mktValue: Math.round(mktValue),
-              costBasis: Math.round(costBasis),
-              pnl: Math.round(pnl),
-              pnlPct: Number(pnlPct.toFixed(1)),
-            },
-          })}
+        <TeamPanel
+          label="Convene portfolio committee"
+          buildBody={() => ({ mode: "portfolio" })}
+          render={(res) => {
+            const r = res.review;
+            return (
+              <>
+                <div className="grid cols-4" style={{ marginBottom: 14 }}>
+                  <div className="metric">
+                    <div className="label">NAV</div>
+                    <div className="value" style={{ fontSize: 18 }}>{money(r.nav)}</div>
+                  </div>
+                  <div className="metric">
+                    <div className="label">Blended yield</div>
+                    <div className={cls("value", (r.blendedYieldPct ?? 0) >= 5 ? "pos" : "neg")} style={{ fontSize: 18 }}>
+                      {r.blendedYieldPct != null ? pct(r.blendedYieldPct) : "—"}
+                    </div>
+                    <div className="sub">target ≥ 5%</div>
+                  </div>
+                  <div className="metric">
+                    <div className="label">Cash sleeve</div>
+                    <div className={cls("value", r.cashRequiredPct != null && r.cashPct < r.cashRequiredPct ? "neg" : "pos")} style={{ fontSize: 18 }}>
+                      {pct(r.cashPct)}
+                    </div>
+                    <div className="sub">{r.cashRequiredPct != null ? `floor ${r.cashRequiredPct}%` : ""}</div>
+                  </div>
+                  <div className="metric">
+                    <div className="label">Actions</div>
+                    <div className={cls("value", r.actions.length ? "neg" : "pos")} style={{ fontSize: 18 }}>{r.actions.length}</div>
+                    <div className="sub">{r.actions.length ? "outstanding" : "book in policy"}</div>
+                  </div>
+                </div>
+
+                {r.actions.length > 0 && (
+                  <>
+                    <h3 className="sub" style={{ marginTop: 0 }}>Action list</h3>
+                    <ul style={{ margin: "0 0 14px", paddingLeft: 18, display: "grid", gap: 6 }}>
+                      {r.actions.map((a: string, i: number) => (
+                        <li key={i} style={{ fontSize: 13, lineHeight: 1.5 }}>{a}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                <h3 className="sub" style={{ marginTop: 0 }}>Sleeve balance</h3>
+                <div className="table-wrap">
+                  <table className="tbl">
+                    <thead><tr><th>Sleeve</th><th className="num">Actual</th><th className="num">Target</th><th className="num">Drift</th><th>Holdings</th></tr></thead>
+                    <tbody>
+                      {r.sleeves.map((s: any) => (
+                        <tr key={s.sleeve}>
+                          <td>{s.alert ? "🔔 " : ""}<strong>{s.sleeve}</strong></td>
+                          <td className="num">{pct(s.actualPct)}</td>
+                          <td className="num muted">{s.targetPct}%</td>
+                          <td className={cls("num", s.alert ? "neg" : "muted")}>{s.driftPct >= 0 ? "+" : ""}{s.driftPct.toFixed(2)}</td>
+                          <td className="muted" style={{ fontSize: 12 }}>{s.tickers.join(", ") || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <h3 className="sub">Concentration zones (Rule #3)</h3>
+                <div className="table-wrap">
+                  <table className="tbl">
+                    <thead><tr><th>Ticker</th><th className="num">Weight</th><th>Zone</th><th>Action</th></tr></thead>
+                    <tbody>
+                      {r.zones.map((z: any) => (
+                        <tr key={z.ticker}>
+                          <td><strong>{z.ticker}</strong></td>
+                          <td className="num">{pct(z.weightPct)}</td>
+                          <td>{z.icon} {z.zone}</td>
+                          <td className="muted" style={{ fontSize: 12 }}>{z.action}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <h3 className="sub">Dual objectives</h3>
+                <div className="table-wrap">
+                  <table className="tbl">
+                    <thead><tr><th>Objective</th><th className="num">Actual</th><th className="num">Target</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {r.objectives.map((o: any) => (
+                        <tr key={o.label}>
+                          <td>{o.label}<br /><span className="muted" style={{ fontSize: 11 }}>{o.note}</span></td>
+                          <td className="num">{o.actual}</td>
+                          <td className="num muted">{o.target}</td>
+                          <td className={o.pass === true ? "pos" : o.pass === false ? "neg" : "muted"}>
+                            {o.pass === true ? "✅ Pass" : o.pass === false ? "❌ Behind" : "⏸ n/a"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <h3 className="sub">Desk notes</h3>
+                <DeskNotes desks={r.desks} />
+                <Disclosures items={r.disclosures} />
+              </>
+            );
+          }}
         />
       </div>
 
@@ -151,6 +243,60 @@ export default function PortfolioTab() {
             </tbody>
           </table></div>
         )}
+      </div>
+
+      <div className="card ai-card">
+        <h3 className="sub">⚖️ Sentinel Committee — Watchlist Ranking</h3>
+        <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
+          Scores every watchlist name through Momentum Scoring v3.0 and ranks them, applying the hard blocks
+          so a name that fails ADX, the 200-SMA or liquidity is flagged rather than promoted.
+        </p>
+        <TeamPanel
+          label="Rank my watchlist"
+          buildBody={() => ({ mode: "watchlist" })}
+          render={(res) => (
+            <>
+              {res.regime && (
+                <p className="notice" style={{ marginBottom: 12 }}>
+                  Regime {res.regime.icon} <strong>{res.regime.regime}</strong> — {res.regime.score}/100. {res.regime.deployRule}.
+                </p>
+              )}
+              <div className="table-wrap">
+                <table className="tbl">
+                  <thead><tr>
+                    <th>#</th><th>Ticker</th><th className="num">Price</th><th className="num">Score</th>
+                    <th>Signal</th><th className="num">Stop</th><th>Notes</th>
+                  </tr></thead>
+                  <tbody>
+                    {res.rows.map((row: any, i: number) => (
+                      <tr key={row.ticker}>
+                        <td className="muted">{row.error ? "—" : i + 1}</td>
+                        <td><strong>{row.ticker}</strong></td>
+                        <td className="num">{row.price != null ? money(row.price) : "—"}</td>
+                        <td className="num">{row.score != null ? `${row.score}/100` : "—"}</td>
+                        <td>{row.signal ? <SignalBadge signal={row.signal} /> : <span className="muted">n/a</span>}</td>
+                        <td className="num">{row.stop != null ? money(row.stop) : "—"}</td>
+                        <td className="muted" style={{ fontSize: 11.5, maxWidth: 260 }}>
+                          {row.error
+                            ? row.error
+                            : (row.hardBlocks?.length
+                                ? `❌ ${row.hardBlocks.map((b: any) => b.code).join(", ")}`
+                                : row.signalReason)}
+                          {row.distanceToAlert != null && (
+                            <> · {row.distanceToAlert >= 0 ? "+" : ""}{pct(row.distanceToAlert)} vs alert</>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="notice" style={{ marginTop: 12 }}>
+                Scores are computed from price and volume data only — a name with no verified catalyst is not credited for one (Rule #5).
+              </p>
+            </>
+          )}
+        />
       </div>
 
       <div className="card">

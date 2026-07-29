@@ -1,6 +1,8 @@
 import { dailyCandles } from "./marketData";
 import { computeTechnicals, computeMomentumScore, buildSwingSetup } from "./analysis";
 import { ema, pctReturn, sma } from "./indicators";
+import { scoreMomentumV3, type MomentumScoreV3 } from "./team/scoring";
+import { computeBeta } from "./derive";
 import type { MarketData, SwingSetup, Candle } from "./types";
 
 // A pragmatic default liquid, high-beta momentum universe.
@@ -54,6 +56,10 @@ export function assessRegime(spy: Candle[]): MarketRegime {
 export interface ScanResult {
   regime: MarketRegime;
   setups: SwingSetup[];
+  /** Sentinel v3.0 score for each setup, keyed by ticker. */
+  sentinel: Record<string, MomentumScoreV3>;
+  /** Names excluded by a hard block, with the reason. */
+  rejected: { ticker: string; score: number; blocks: string[] }[];
   scanned: number;
   warnings: string[];
   asOf: string;
@@ -100,11 +106,14 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
   const regime = assessRegime(spy);
 
   const candidates: SwingSetup[] = [];
+  const sentinel: Record<string, MomentumScoreV3> = {};
+  const rejected: { ticker: string; score: number; blocks: string[] }[] = [];
   let scanned = 0;
   // sequential to stay polite to the data provider
   for (const ticker of universe) {
     try {
-      const candles = await dailyCandles(ticker, 150);
+      // 400 bars so the 200-SMA hard block and ADX can actually be evaluated
+      const candles = await dailyCandles(ticker, 400);
       if (candles.length < 30) {
         warnings.push(`${ticker}: insufficient price history`);
         continue;
@@ -113,8 +122,20 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
       const md = lightMarketData(ticker, candles, spy);
       const tech = computeTechnicals(md);
       const score = computeMomentumScore(tech, false);
+
+      // Sentinel Momentum Scoring v3.0 — the fund's own model, including the
+      // hard blocks that override any score.
+      const beta = spy.length ? computeBeta(candles, spy) : null;
+      const v3 = scoreMomentumV3({ candles, benchmark: spy, beta });
+      sentinel[ticker] = v3;
+
+      if (v3.signal === "REJECT" && v3.hardBlocks.length) {
+        rejected.push({ ticker, score: v3.total, blocks: v3.hardBlocks.map((b) => b.reason) });
+        continue; // a hard block bars the name from the shortlist
+      }
+
       const setup = buildSwingSetup(md, tech, score, "Trend persistence / sector momentum (scan-derived).");
-      if (setup) candidates.push(setup);
+      if (setup) candidates.push({ ...setup, momentumScore: v3.total });
     } catch (e: any) {
       warnings.push(`${ticker}: ${e?.message ?? "failed"}`);
     }
@@ -124,5 +145,5 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
     .sort((a, b) => b.momentumScore - a.momentumScore)
     .slice(0, topN);
 
-  return { regime, setups, scanned, warnings, asOf: new Date().toISOString() };
+  return { regime, setups, sentinel, rejected, scanned, warnings, asOf: new Date().toISOString() };
 }

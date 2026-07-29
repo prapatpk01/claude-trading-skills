@@ -37,29 +37,31 @@ The 3-statement model and DCF are **linked with real Excel formulas** — edit t
 assumption cells (growth, margins, WACC, terminal growth) and every downstream number,
 including the sensitivity table, recalculates in Excel.
 
-### ✨ AI analysis (multi-provider, auto-rotation)
-The Research and Portfolio tabs each have an **AI** button producing a second-opinion
-analysis — verdict, bull/bear points, valuation read, portfolio risk, next steps.
+### ⚖️ Sentinel Investment Committee (built in — no API key)
+Every section has a **Generate** button that runs the *Sentinel Global Fund* framework
+locally over real market data. There is no external model call: the same inputs always
+produce the same answer, and every number traces back to a published rule.
 
-**Add as many provider keys as you want** (all optional). The app builds a fallback chain
-across every provider you configured, tries **free tiers first**, and automatically
-switches to the next model when one is rate-limited or out of credit.
+| Where | What it runs |
+| --- | --- |
+| Ticker Analysis | Full committee memo — macro regime, business quality, earnings trend, **Momentum Scoring v3.0**, catalyst/event risk, valuation, sizing & ATR stop, portfolio fit, the **nine pre-trade gates**, CIO verdict |
+| Portfolio | Sleeve balance vs the 55/30/13 targets, **Rule #7** drift alerts, **Rule #3** concentration zones, correlation flags, dual-objective scorecard, regime cash floor, prioritised action list |
+| Watchlist | Every name scored and ranked through v3.0, with hard blocks applied |
+| Momentum Scanner | v3.0 score per candidate; names failing a hard block are listed separately with the rule that excluded them |
 
-| Provider | Env var | Free API tier? | Get a key |
-| --- | --- | --- | --- |
-| Google Gemini | `GEMINI_API_KEY` | ✅ generous | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| Groq | `GROQ_API_KEY` | ✅ | [console.groq.com/keys](https://console.groq.com/keys) |
-| Cerebras | `CEREBRAS_API_KEY` | ✅ | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
-| Mistral | `MISTRAL_API_KEY` | ✅ | [console.mistral.ai](https://console.mistral.ai/api-keys) |
-| OpenRouter | `OPENROUTER_API_KEY` | ✅ `:free` models | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| Anthropic (Claude) | `ANTHROPIC_API_KEY` | ❌ pay-per-token | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
-| OpenAI (GPT) | `OPENAI_API_KEY` | ❌ pay-per-token | [platform.openai.com](https://platform.openai.com/api-keys) |
+**Momentum Scoring v3.0** (100 pts): 3A Momentum 35 (RSI · MACD · ADX · RS) · 3B Volume &
+Flow 25 (OBV+MFI · volume expansion) · 3C Structure 15 (MA stack · pattern) · 3D High-Beta 10
+(ATR% · beta×liquidity) · 3E Trend Maturity 8 (Bollinger position · bars since 20-EMA cross) ·
+3F Volatility 7 (ATR expansion · Bollinger state).
 
-> Claude and GPT have **no free API tier** — those keys sit at the end of the chain and are
-> only reached after every free model is exhausted. For a zero-cost setup, add the free
-> providers only. Override the whole chain with `AI_MODELS` (`provider:model|Label`, comma-separated).
+**Hard blocks** override any score: ADX < 20 · price below the 200-SMA · OBV distribution while
+price rises · RSI < 45 without MA confirmation · dollar volume under $10M. **Rule #1** downgrades
+a single block to WATCH when the score exceeds 80; two or more blocks always reject.
 
-The panel shows how many models are live and which one answered.
+**Rule #5 is enforced**: any input the free data feed cannot verify is flagged `[U]` and scores
+**zero** — it is never estimated. Items the feed genuinely cannot supply (scheduled FOMC/CPI dates,
+the earnings blackout, consensus estimates) are reported as such rather than invented, and
+**Gate 9 (CIO sign-off) is always manual** — the system prepares a decision, it never approves one.
 
 ### 2. 💼 Portfolio & Watchlist
 Record holdings (shares, cost basis, personal target, rolling thesis), see live
