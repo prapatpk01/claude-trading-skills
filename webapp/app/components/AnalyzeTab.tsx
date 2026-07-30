@@ -3,6 +3,8 @@ import { useState } from "react";
 import { money, num, pct, bn, cls } from "./format";
 import TeamPanel, { DeskNotes, SignalBadge, GateList, ScoreBreakdown, Disclosures } from "./TeamPanel";
 import TickerInput from "./TickerInput";
+import { MoveStack } from "./PriceMove";
+import ResearchPanel from "./ResearchPanel";
 
 export default function AnalyzeTab() {
   const [ticker, setTicker] = useState("");
@@ -80,9 +82,12 @@ export default function AnalyzeTab() {
                 <div className="muted" style={{ fontSize: 13 }}>{ov?.sector ?? "—"} · {ov?.industry ?? "—"}</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 28, fontWeight: 900 }}>{money(q?.price)}</div>
-                <div className={cls(q?.changePercent >= 0 ? "pos" : "neg")} style={{ fontWeight: 700 }}>
-                  {q?.changePercent >= 0 ? "▲" : "▼"} {pct(Math.abs(q?.changePercent))}
+                <div style={{ fontSize: 28, fontWeight: 900 }}>{money(data.moves?.price ?? q?.price)}</div>
+                {/* Three windows, and any extended-hours trade. The stack falls
+                    back to the quote's own day change when the price-moves read
+                    was unavailable. */}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <MoveStack m={data.moves ?? { changePercent: q?.changePercent }} />
                 </div>
               </div>
             </div>
@@ -94,6 +99,8 @@ export default function AnalyzeTab() {
               <Metric label="DCF Fair Value" value={money(dcf?.fairValue)} sub={dcf ? `${dcf.upsidePct >= 0 ? "+" : ""}${pct(dcf.upsidePct)}` : "n/a"} />
             </div>
           </div>
+
+          <ResearchPanel research={data.research} />
 
           <div className="card ai-card">
             <h3 className="sub">⚖️ Sentinel Investment Committee</h3>

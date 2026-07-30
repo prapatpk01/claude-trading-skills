@@ -104,16 +104,41 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
   ws.getCell("A2").font = { italic: true, color: { argb: GREY } };
   ws.mergeCells("A2:E2");
 
+  // Three windows, not one. A null stays "n/a": a 0.00% change and "we could
+  // not measure the change" are different facts.
+  const mv = a.moves;
+  const pctOrNa = (v: number | null | undefined) => (v == null ? "n/a" : v / 100);
+  const toneOf = (v: number | null | undefined) => (v == null ? GREY : v >= 0 ? GREEN : RED);
+
   sectionHeader(ws, "A4:B4", "Current Snapshot");
   labelValue(ws, 5, "Price", price, { fmt: "$#,##0.00" });
-  labelValue(ws, 6, "Day Change %", (a.data.quote?.changePercent ?? 0) / 100, { fmt: "0.00%", color: (a.data.quote?.changePercent ?? 0) >= 0 ? GREEN : RED });
-  labelValue(ws, 7, "Market Cap ($M)", n(ov?.marketCap) / M, { fmt: "#,##0" });
-  labelValue(ws, 8, "P/E (TTM)", orNA(ov?.peRatio), { fmt: "0.0" });
-  labelValue(ws, 9, "Forward P/E", orNA(ov?.forwardPE), { fmt: "0.0" });
-  labelValue(ws, 10, "EPS (TTM)", orNA(ov?.eps), { fmt: "$0.00" });
-  labelValue(ws, 11, "Beta", orNA(ov?.beta), { fmt: "0.00" });
-  labelValue(ws, 12, "52-wk Range", `${orNA(ov?.week52Low)} – ${orNA(ov?.week52High)}`);
-  bandRows(ws, 5, 12, 2);
+  labelValue(ws, 6, "1-Day Change", pctOrNa(mv?.changePct1D ?? a.data.quote?.changePercent), {
+    fmt: "0.00%", color: toneOf(mv?.changePct1D ?? a.data.quote?.changePercent),
+  });
+  labelValue(ws, 7, `1-Week Change${mv?.weekSessions != null && mv.weekSessions < 5 ? ` (${mv.weekSessions}d)` : ""}`,
+    pctOrNa(mv?.changePct1W), { fmt: "0.00%", color: toneOf(mv?.changePct1W) });
+  labelValue(
+    ws, 8,
+    mv?.extended ? (mv.extended.session === "pre" ? "Pre-market" : "After hours") : "Pre / after hours",
+    mv?.extended ? mv.extended.changePct / 100 : "none",
+    { fmt: "0.00%", color: toneOf(mv?.extended?.changePct) }
+  );
+  labelValue(ws, 9, "Market Cap ($M)", n(ov?.marketCap) / M, { fmt: "#,##0" });
+  labelValue(ws, 10, "P/E (TTM)", orNA(ov?.peRatio), { fmt: "0.0" });
+  labelValue(ws, 11, "EPS (TTM)", orNA(ov?.eps), { fmt: "$0.00" });
+  labelValue(ws, 12, "Beta", orNA(ov?.beta), { fmt: "0.00" });
+  labelValue(ws, 13, "52-wk Range", `${orNA(ov?.week52Low)} – ${orNA(ov?.week52High)}`);
+  bandRows(ws, 5, 13, 2);
+  if (mv?.extended) {
+    ws.getCell("A14").value =
+      `Extended-hours reading: $${mv.extended.price.toFixed(2)} at ` +
+      `${new Date(mv.extended.asOf).toISOString().slice(11, 16)} UTC, against the ` +
+      `${mv.extended.session === "pre" ? "previous" : "regular-session"} close of $${mv.extended.fromClose.toFixed(2)}.`;
+    ws.mergeCells("A14:B14");
+    ws.getCell("A14").font = { size: 8.5, italic: true, color: { argb: GREY } };
+    ws.getCell("A14").alignment = { wrapText: true, vertical: "top", indent: 1 };
+    ws.getRow(14).height = 24;
+  }
 
   sectionHeader(ws, "D4:E4", "Valuation & Signal");
   labelValue(ws, 5, "Blended Target Price", a.targetPrice, { fmt: "$#,##0.00", col: 4, color: BLUE });
@@ -132,11 +157,21 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
   sig.alignment = { horizontal: "right" };
   labelValue(ws, 11, "WACC", a.dcf ? a.dcf.wacc : "n/a", { fmt: "0.0%", col: 4 });
   labelValue(ws, 12, "Terminal Growth", a.assumptions.terminalGrowth, { fmt: "0.0%", col: 4 });
-  bandRows(ws, 5, 12, 5);
+  // ROIC against the cost of capital, and the moat rating that follows from the
+  // evidence on sheet 2 — the two lines a reader checks before the target price.
+  labelValue(ws, 13, "ROIC − WACC",
+    a.research?.returns.spreadPct != null ? a.research.returns.spreadPct / 100 : "n/a",
+    { fmt: "0.0%", col: 4, color: (a.research?.returns.spreadPct ?? 0) > 0 ? GREEN : RED });
+  labelValue(ws, 14, "Moat (evidence-scored)", a.research?.moat.overall ?? "n/a", { col: 4 })
+    .alignment = { horizontal: "right" };
+  labelValue(ws, 15, "Expected return (weighted)",
+    a.expectedReturnPct != null ? a.expectedReturnPct / 100 : "n/a",
+    { fmt: "0.0%", col: 4, color: (a.expectedReturnPct ?? 0) >= 0 ? GREEN : RED });
+  bandRows(ws, 5, 15, 5);
 
-  sectionHeader(ws, "A14:E14", "Quick Thesis");
+  sectionHeader(ws, "A17:E17", "Quick Thesis");
   const scenarios = a.thesis.map((s) => `${s.label} (${s.probability}%, PT $${s.targetPrice}): ${s.narrative}`);
-  let r = 15;
+  let r = 18;
   for (const s of scenarios) {
     ws.mergeCells(`A${r}:E${r + 1}`);
     const c = ws.getCell(`A${r}`);
@@ -161,97 +196,205 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
 // ── Sheet 2: Industry & Competition ───────────────────────────────────
 function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
   const ws = wb.addWorksheet("2. Industry & Competition", { views: [{ showGridLines: false }] });
-  ws.columns = [{ width: 28 }, { width: 20 }, { width: 20 }, { width: 20 }, { width: 20 }];
+  ws.columns = [
+    { width: 30 }, { width: 15 }, { width: 19 }, { width: 16 },
+    { width: 12 }, { width: 14 }, { width: 13 }, { width: 12 },
+  ];
   const ov = a.data.overview;
-  titleCell(ws, "A1:E1", "Industry & Competitive Landscape");
+  titleCell(ws, "A1:H1", "Industry & Competitive Landscape");
 
-  sectionHeader(ws, "A3:E3", `Sector: ${ov?.sector ?? "n/a"} — ${ov?.industry ?? "n/a"}`);
-  ws.mergeCells("A4:E7");
+  sectionHeader(ws, "A3:H3", `Sector: ${ov?.sector ?? "n/a"} — ${ov?.industry ?? "n/a"}`);
+  ws.mergeCells("A4:H7");
   const desc = ws.getCell("A4");
   desc.value = ov?.description || "Company description unavailable from data provider.";
   desc.alignment = { wrapText: true, vertical: "top" };
   desc.font = { size: 10 };
 
-  sectionHeader(ws, "A9:E9", "Market Sizing (analyst inputs — edit as needed)");
-  headerRow(ws, 10, ["Metric", "Value", "Note"]);
-  const tamRows: [string, any, string][] = [
-    ["TAM (est. $B)", "—", "Fill from sector research"],
-    ["Sector CAGR (5y)", "—", "Fill from sector research"],
-    ["Company Revenue TTM ($M)", n(ov?.revenueTTM) / M, "Alpha Vantage"],
-    ["Implied Market Share", { formula: "B13/(B11*1000)", result: 0 }, "Revenue / TAM (edit TAM)"],
-  ];
-  tamRows.forEach((row, i) => {
-    const r = 11 + i;
-    ws.getCell(r, 1).value = row[0];
+  const rp = a.research;
+  let r = 9;
+
+  // ── Market sizing, measured from filings rather than asked for ──
+  sectionHeader(ws, `A${r}:E${r}`, "Market sizing — measured peer-set revenue pool");
+  r++;
+  if (rp) {
+    ws.mergeCells(`A${r}:E${r + 1}`);
+    const def = ws.getCell(`A${r}`);
+    def.value = rp.sizing.definition;
+    def.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    def.font = { size: 9, italic: true, color: { argb: GREY } };
+    ws.getRow(r).height = 26;
+    r += 2;
+
+    headerRow(ws, r, ["Metric", "Value", "Basis"]);
+    r++;
+    const poolRow = r;
+    const sizeRows: [string, any, string, string][] = [
+      ["Peer-set revenue pool ($M)", rp.sizing.peerPoolRevenue != null ? rp.sizing.peerPoolRevenue / M : "n/a", "#,##0",
+        `Sum of TTM revenue across ${rp.sizing.contributors} readable filers in the ${rp.peerSet.group} group`],
+      ["Subject revenue TTM ($M)", n(ov?.revenueTTM) / M || (rp.peers.find((p) => p.isSubject)?.revenueTTM ?? 0) / M, "#,##0",
+        "SEC XBRL, subject's own filing"],
+      ["Share of readable pool", rp.sizing.subjectSharePct != null ? rp.sizing.subjectSharePct / 100 : "n/a", "0.0%",
+        "Live formula below — recalculates if you edit either figure"],
+      ["Pool revenue CAGR", rp.sizing.poolCagrPct != null ? rp.sizing.poolCagrPct / 100 : "n/a", "0.0%",
+        "Revenue-weighted across the same filers, from their annual filings"],
+      ["TAM ($B) — your input", "", "#,##0",
+        "No free verifiable source exists for TAM. Enter one you trust and the share below computes."],
+      ["Share of your TAM", { formula: `IF(B${r + 4}="","enter TAM above",B${r + 1}/(B${r + 4}*1000))` }, "0.00%",
+        "Subject revenue ÷ your TAM"],
+    ];
+    sizeRows.forEach((row, i) => {
+      const rr = r + i;
+      ws.getCell(rr, 1).value = row[0];
+      ws.getCell(rr, 1).alignment = { indent: 1 };
+      const c = ws.getCell(rr, 2);
+      c.value = row[1] as any;
+      c.numFmt = row[2];
+      c.alignment = { horizontal: "right" };
+      c.font = { bold: true };
+      // The TAM cell is an input: mark it as one.
+      if (i === 4) {
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } };
+        c.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
+      }
+      ws.mergeCells(`C${rr}:E${rr}`);
+      ws.getCell(rr, 3).value = row[3];
+      ws.getCell(rr, 3).font = { italic: true, size: 9, color: { argb: GREY } };
+      ws.getCell(rr, 3).alignment = { wrapText: true, vertical: "middle" };
+    });
+    // Make the pool share a live formula rather than a frozen number.
+    ws.getCell(r + 2, 2).value = { formula: `IF(B${poolRow}=0,"",B${poolRow + 1}/B${poolRow})` };
+    bandRows(ws, r, r + sizeRows.length - 1, 2);
+    r += sizeRows.length + 1;
+
+    for (const lim of rp.sizing.limits) {
+      ws.mergeCells(`A${r}:E${r}`);
+      const c = ws.getCell(`A${r}`);
+      c.value = "• " + lim;
+      c.alignment = { wrapText: true, vertical: "top", indent: 1 };
+      c.font = { size: 9, color: { argb: GREY } };
+      ws.getRow(r).height = 24;
+      r++;
+    }
+    r++;
+
+    // ── The peer table, every column measured the same way for every name ──
+    sectionHeader(ws, `A${r}:H${r}`, `Competitive positioning — ${rp.peerSet.group} peer set`);
+    r++;
+    ws.mergeCells(`A${r}:H${r}`);
+    const basis = ws.getCell(`A${r}`);
+    basis.value = rp.peerSet.basis;
+    basis.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    basis.font = { size: 9, italic: true, color: { argb: GREY } };
+    r++;
+    headerRow(ws, r, ["Company", "Price", "Revenue TTM ($M)", "Mkt Cap ($M)", "P/E (TTM)", "Gross margin", "Net margin", "Rev CAGR"]);
+    r++;
+    const peerStart = r;
+    for (const p of rp.peers) {
+      ws.getCell(r, 1).value = p.isSubject ? `${p.ticker} (subject)` : p.ticker;
+      ws.getCell(r, 1).font = { bold: p.isSubject, color: { argb: p.isSubject ? BLUE : "FF111111" } };
+      ws.getCell(r, 1).alignment = { indent: 1 };
+      const cells: [number, any, string][] = [
+        [2, p.price ?? "n/a", "$#,##0.00"],
+        [3, p.revenueTTM != null ? p.revenueTTM / M : "n/a", "#,##0"],
+        [4, p.marketCap != null ? p.marketCap / M : "n/a", "#,##0"],
+        [5, p.peTTM ?? "n/a", "0.0"],
+        [6, p.grossMargin != null ? p.grossMargin / 100 : "n/a", "0.0%"],
+        [7, p.netMargin != null ? p.netMargin / 100 : "n/a", "0.0%"],
+        [8, p.revenueCagrPct != null ? p.revenueCagrPct / 100 : "n/a", "0.0%"],
+      ];
+      for (const [col, val, fmt] of cells) {
+        const c = ws.getCell(r, col);
+        c.value = val;
+        c.numFmt = fmt;
+        c.alignment = { horizontal: "right" };
+        if (val === "n/a") c.font = { color: { argb: GREY }, italic: true };
+      }
+      r++;
+    }
+    // Peer medians, as live formulas so the reader can add a name and see it move.
+    ws.getCell(r, 1).value = "Peer median (excl. subject)";
+    ws.getCell(r, 1).font = { bold: true, italic: true };
     ws.getCell(r, 1).alignment = { indent: 1 };
-    const c = ws.getCell(r, 2);
-    c.value = row[1] as any;
-    c.numFmt = i === 1 ? "0.0%" : i === 3 ? "0.00%" : "#,##0";
-    c.alignment = { horizontal: "right" };
-    ws.getCell(r, 3).value = row[2];
-    ws.getCell(r, 3).font = { italic: true, color: { argb: GREY } };
-  });
-  bandRows(ws, 11, 14, 3);
+    for (const col of ["E", "F", "G", "H"]) {
+      const c = ws.getCell(`${col}${r}`);
+      c.value = { formula: `IFERROR(MEDIAN(${col}${peerStart + 1}:${col}${r - 1}),"")` };
+      c.numFmt = col === "E" ? "0.0" : "0.0%";
+      c.font = { bold: true, italic: true };
+      c.alignment = { horizontal: "right" };
+    }
+    bandRows(ws, peerStart, r - 1, 8);
+    // Colour the margin and growth columns so an outlier is visible at a glance.
+    for (const col of ["F", "G", "H"]) {
+      ws.addConditionalFormatting({
+        ref: `${col}${peerStart}:${col}${r - 1}`,
+        rules: [{
+          type: "colorScale",
+          cfvo: [{ type: "min" }, { type: "percentile", value: 50 }, { type: "max" }],
+          color: [{ argb: "FFF8696B" }, { argb: "FFFFEB84" }, { argb: "FF63BE7B" }],
+        } as any],
+      });
+    }
+    r += 2;
 
-  sectionHeader(ws, "A16:E16", "Growth Drivers");
-  const drivers = [
-    "Secular demand in " + (ov?.sector ?? "the sector") + " (structural adoption curve).",
-    "Operating leverage as scale improves unit economics.",
-    "Product/portfolio expansion into adjacent markets.",
-    "Pricing power from differentiated technology or brand.",
-  ];
-  drivers.forEach((d, i) => {
-    const r = 17 + i;
-    ws.getCell(r, 1).value = "▸ " + d;
-    ws.mergeCells(`A${r}:E${r}`);
-    ws.getCell(r, 1).font = { size: 10 };
-  });
+    const gapped = rp.peers.filter((p) => p.gaps.length);
+    if (gapped.length) {
+      ws.mergeCells(`A${r}:H${r}`);
+      const g = ws.getCell(`A${r}`);
+      g.value =
+        "Reading gaps: " +
+        gapped.map((p) => `${p.ticker} — ${p.gaps.join(" ")}`).join("  |  ") +
+        "  A blank is a figure that could not be read from the filing, not a zero.";
+      g.alignment = { wrapText: true, vertical: "top", indent: 1 };
+      g.font = { size: 9, color: { argb: GREY } };
+      ws.getRow(r).height = 30;
+      r += 2;
+    }
 
-  sectionHeader(ws, "A22:E22", "Competitive Positioning & Moat");
-  headerRow(ws, 23, ["Company", "Mkt Cap ($M)", "P/E", "Op Margin", "Notes"]);
-  const selfRow = 24;
-  ws.getCell(selfRow, 1).value = a.ticker + " (subject)";
-  ws.getCell(selfRow, 1).font = { bold: true };
-  ws.getCell(selfRow, 2).value = n(ov?.marketCap) / M;
-  ws.getCell(selfRow, 2).numFmt = "#,##0";
-  ws.getCell(selfRow, 3).value = orNA(ov?.peRatio);
-  ws.getCell(selfRow, 3).numFmt = "0.0";
-  ws.getCell(selfRow, 4).value = ov?.operatingMargin ?? 0;
-  ws.getCell(selfRow, 4).numFmt = "0.0%";
-  ws.getCell(selfRow, 5).value = "Subject company";
-  for (let i = 0; i < 3; i++) {
-    const r = 25 + i;
-    ws.getCell(r, 1).value = `Peer ${i + 1}`;
-    ws.getCell(r, 1).font = { color: { argb: GREY } };
-    ws.getCell(r, 5).value = "Add comparable";
-    ws.getCell(r, 5).font = { italic: true, color: { argb: GREY } };
+    // ── Moat, each rating carrying its measurement ──
+    sectionHeader(ws, `A${r}:H${r}`, `Moat assessment — overall: ${rp.moat.overall}`);
+    r++;
+    ws.mergeCells(`A${r}:H${r}`);
+    const mn = ws.getCell(`A${r}`);
+    mn.value = rp.moat.note;
+    mn.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    mn.font = { size: 9, italic: true, color: { argb: GREY } };
+    ws.getRow(r).height = 26;
+    r++;
+    headerRow(ws, r, ["Moat source", "Rating", "Evidence"]);
+    r++;
+    const moatStart = r;
+    for (const m of rp.moat.sources) {
+      ws.getCell(r, 1).value = m.source;
+      ws.getCell(r, 1).alignment = { indent: 1 };
+      const rating = ws.getCell(r, 2);
+      rating.value = m.strength;
+      rating.alignment = { horizontal: "center" };
+      rating.font = {
+        bold: true,
+        color: { argb: m.strength === "Wide" ? GREEN : m.strength === "Narrow" ? "FFB8860B" : m.strength === "None" ? RED : GREY },
+      };
+      ws.mergeCells(`C${r}:H${r}`);
+      const ev = ws.getCell(r, 3);
+      ev.value = m.evidence;
+      ev.alignment = { wrapText: true, vertical: "top" };
+      ev.font = { size: 9.5 };
+      ws.getRow(r).height = 30;
+      r++;
+    }
+    bandRows(ws, moatStart, r - 1, 2);
+    r += 1;
+  } else {
+    ws.mergeCells(`A${r}:E${r + 2}`);
+    const c = ws.getCell(`A${r}`);
+    c.value =
+      "The peer set, market sizing and moat assessment could not be built — the SEC filings behind them were unreachable on this run. " +
+      "Rather than print empty tables that look like findings, this section is left blank. Re-run to retry.";
+    c.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    c.font = { size: 10, color: { argb: RED } };
+    r += 4;
   }
-  bandRows(ws, 24, 27, 5);
-  ws.addConditionalFormatting({
-    ref: "D24:D27",
-    rules: [{ type: "dataBar", cfvo: [{ type: "min" }, { type: "max" }], color: { argb: GREEN } } as any],
-  });
 
-  sectionHeader(ws, "A29:E29", "Moat Assessment");
-  const moats = [
-    ["Switching Costs", "Medium", "Integration depth raises replacement friction."],
-    ["Network Effects", "—", "Assess per business model."],
-    ["Scale / Cost Advantage", "Medium", "Volume-driven unit economics."],
-    ["Intangibles / Brand / IP", "—", "Patents, brand, regulatory approvals."],
-  ];
-  headerRow(ws, 30, ["Moat Source", "Strength", "Rationale"]);
-  moats.forEach((m, i) => {
-    const r = 31 + i;
-    ws.getCell(r, 1).value = m[0];
-    ws.getCell(r, 1).alignment = { indent: 1 };
-    ws.getCell(r, 2).value = m[1];
-    ws.getCell(r, 2).alignment = { horizontal: "center" };
-    ws.mergeCells(`C${r}:E${r}`);
-    ws.getCell(r, 3).value = m[2];
-    ws.getCell(r, 3).font = { size: 10 };
-  });
-  bandRows(ws, 31, 34, 5);
-  footer(ws, "A36", a);
+  footer(ws, `A${r + 1}`, a);
 }
 
 // ── Sheet 3: Financials & Earnings ────────────────────────────────────
@@ -349,6 +492,86 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
   bandRows(ws, r, r + metrics.length - 1, 2);
   r += metrics.length + 1;
 
+  // ── Return on invested capital ──
+  //
+  // The metric that decides whether growth is worth paying for. ROE flatters a
+  // levered balance sheet and ROA punishes an asset-light one; ROIC against the
+  // cost of capital answers the only question that matters — does reinvestment
+  // create value or consume it.
+  const rp = a.research;
+  if (rp) {
+    const rt = rp.returns;
+    sectionHeader(ws, `A${r}:F${r}`, "Return on invested capital — does growth create value?");
+    r++;
+    headerRow(ws, r, ["Component", "Value", "How it was derived"]);
+    r++;
+    const roicStart = r;
+    const roicRows: [string, any, string, string][] = [
+      ["EBIT / operating income ($M)", n(inc[0]?.operatingIncome) / M || "n/a", "#,##0", "SEC XBRL, most recent fiscal year"],
+      ["Effective tax rate", rt.effectiveTaxRatePct != null ? rt.effectiveTaxRatePct / 100 : "n/a", "0.0%",
+        rt.taxRateSource === "filed" ? "Tax expense ÷ pre-tax income, as filed" : "21% US statutory rate assumed — the filed rate was unusable or absent"],
+      ["NOPAT ($M)", rt.nopat != null ? rt.nopat / M : "n/a", "#,##0", "Live formula: EBIT × (1 − tax rate)"],
+      ["Invested capital ($M)", rt.investedCapital != null ? rt.investedCapital / M : "n/a", "#,##0", "Total debt + shareholder equity − cash"],
+      ["ROIC", rt.roicPct != null ? rt.roicPct / 100 : "n/a", "0.0%", "Live formula: NOPAT ÷ invested capital"],
+      ["WACC", a.dcf ? a.dcf.wacc : "n/a", "0.0%", "From the DCF on sheet 6 — CAPM cost of equity, after-tax cost of debt"],
+      ["ROIC − WACC spread", rt.spreadPct != null ? rt.spreadPct / 100 : "n/a", "0.0%", "Live formula. Positive means each reinvested dollar creates value"],
+    ];
+    roicRows.forEach((row, i) => {
+      const rr = r + i;
+      ws.getCell(rr, 1).value = row[0];
+      ws.getCell(rr, 1).alignment = { indent: 1 };
+      const c = ws.getCell(rr, 2);
+      c.value = row[1] as any;
+      c.numFmt = row[2];
+      c.alignment = { horizontal: "right" };
+      c.font = { bold: true };
+      ws.mergeCells(`C${rr}:F${rr}`);
+      ws.getCell(rr, 3).value = row[3];
+      ws.getCell(rr, 3).font = { italic: true, size: 9, color: { argb: GREY } };
+    });
+    // Make the derived lines live so an edited tax rate or capital base flows through.
+    const ebitR = roicStart, taxR = roicStart + 1, nopatR = roicStart + 2;
+    const icR = roicStart + 3, roicR = roicStart + 4, waccR = roicStart + 5, spreadR = roicStart + 6;
+    ws.getCell(nopatR, 2).value = { formula: `IF(OR(B${ebitR}="n/a",B${taxR}="n/a"),"n/a",B${ebitR}*(1-B${taxR}))` };
+    ws.getCell(roicR, 2).value = { formula: `IF(OR(B${nopatR}="n/a",B${icR}="n/a",B${icR}<=0),"n/a",B${nopatR}/B${icR})` };
+    ws.getCell(spreadR, 2).value = { formula: `IF(OR(B${roicR}="n/a",B${waccR}="n/a"),"n/a",B${roicR}-B${waccR})` };
+    ws.getCell(spreadR, 2).font = {
+      bold: true,
+      color: { argb: (rt.spreadPct ?? 0) > 0 ? GREEN : RED },
+    };
+    bandRows(ws, roicStart, r + roicRows.length - 1, 2);
+    r += roicRows.length;
+
+    // ROIC by year, so the direction is visible and not just the level.
+    if (rt.roicHistory.length >= 2) {
+      r++;
+      headerRow(ws, r, ["ROIC by fiscal year", ...rt.roicHistory.map((h) => h.year)]);
+      r++;
+      ws.getCell(r, 1).value = "ROIC";
+      ws.getCell(r, 1).alignment = { indent: 1 };
+      rt.roicHistory.forEach((h, i) => {
+        const c = ws.getCell(r, 2 + i);
+        c.value = h.roicPct / 100;
+        c.numFmt = "0.0%";
+        c.alignment = { horizontal: "right" };
+      });
+      ws.addConditionalFormatting({
+        ref: `B${r}:${String.fromCharCode(65 + rt.roicHistory.length)}${r}`,
+        rules: [{ type: "dataBar", cfvo: [{ type: "min" }, { type: "max" }], color: { argb: BLUE } } as any],
+      });
+      r++;
+    }
+
+    r++;
+    ws.mergeCells(`A${r}:F${r + 1}`);
+    const vd = ws.getCell(`A${r}`);
+    vd.value = rt.verdict + (rt.gaps.length ? "  Gaps: " + rt.gaps.join(" ") : "");
+    vd.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    vd.font = { size: 10 };
+    ws.getRow(r).height = 30;
+    r += 3;
+  }
+
   // ── Quarterly results (SEC 10-Q/10-K derived) ──
   const quarters = a.data.quarters ?? [];
   if (quarters.length) {
@@ -426,7 +649,7 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
 // ── Sheet 4: Thesis, Catalysts & Risks ────────────────────────────────
 function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
   const ws = wb.addWorksheet("4. Thesis, Catalysts & Risks", { views: [{ showGridLines: false }] });
-  ws.columns = [{ width: 16 }, { width: 14 }, { width: 16 }, { width: 60 }];
+  ws.columns = [{ width: 22 }, { width: 14 }, { width: 30 }, { width: 62 }];
   titleCell(ws, "A1:D1", "Thesis, Catalysts & Risks");
 
   sectionHeader(ws, "A3:D3", "Scenario Analysis (probability-weighted)");
@@ -470,24 +693,78 @@ function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
   bandRows(ws, first, r - 1, 4);
   r += 2;
 
-  sectionHeader(ws, `A${r}:D${r}`, "12-Month Catalyst Timeline");
-  r++;
-  headerRow(ws, r, ["Horizon", "Event", "", "Impact"]);
-  ws.mergeCells(`B${r}:C${r}`);
-  r++;
-  const catStart = r;
-  a.catalysts.forEach((c) => {
-    ws.getCell(r, 1).value = c.horizon;
+  // Probability-weighted expected return — the number the scenario table is for.
+  if (a.expectedReturnPct != null) {
+    ws.getCell(r, 1).value = "Expected return";
     ws.getCell(r, 1).font = { bold: true };
-    ws.mergeCells(`B${r}:C${r}`);
-    ws.getCell(r, 2).value = c.event;
-    ws.getCell(r, 4).value = c.impact;
+    const er = ws.getCell(r, 3);
+    er.value = { formula: `IF(B5=0,"",(C${r - 1}-${a.data.quote?.price ?? 0})/${a.data.quote?.price ?? 1})`, result: a.expectedReturnPct / 100 };
+    er.numFmt = "0.0%";
+    er.font = { bold: true, color: { argb: a.expectedReturnPct >= 0 ? GREEN : RED } };
+    er.alignment = { horizontal: "right" };
+    ws.mergeCells(`D${r}:D${r}`);
+    ws.getCell(r, 4).value = `Probability-weighted against the spot price of $${(a.data.quote?.price ?? 0).toFixed(2)}. This, not the bull case, is the number that should drive sizing.`;
+    ws.getCell(r, 4).font = { size: 9, italic: true, color: { argb: GREY } };
     ws.getCell(r, 4).alignment = { wrapText: true, vertical: "top" };
-    ws.getCell(r, 4).font = { size: 10 };
-    ws.getRow(r).height = 32;
+    r += 2;
+  }
+
+  // ── The dated timeline ──
+  //
+  // Dates rather than "0–3 months", because a horizon bucket cannot be planned
+  // around. Everything projected is marked [E] and carries the rule that
+  // produced it, so a projection is never mistaken for an announced date.
+  const timeline = a.research?.timeline ?? [];
+  sectionHeader(ws, `A${r}:D${r}`, "12-month catalyst timeline");
+  r++;
+  if (timeline.length) {
+    headerRow(ws, r, ["Date", "Type", "Event", "Why it matters / how the date was set"]);
     r++;
-  });
-  bandRows(ws, catStart, r - 1, 4);
+    const catStart = r;
+    for (const c of timeline) {
+      ws.getCell(r, 1).value = c.window;
+      ws.getCell(r, 1).font = { bold: true, size: 10 };
+      ws.getCell(r, 1).alignment = { indent: 1 };
+      const kind = ws.getCell(r, 2);
+      kind.value = c.kind;
+      kind.font = {
+        size: 9, bold: true,
+        color: { argb: c.kind === "Earnings" ? RED : c.kind === "Macro" ? BLUE : c.kind === "Distribution" ? GREEN : GREY },
+      };
+      ws.getCell(r, 3).value = c.event;
+      ws.getCell(r, 3).font = { size: 10 };
+      ws.getCell(r, 3).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(r, 4).value = `${c.impact}\n${c.basis}`;
+      ws.getCell(r, 4).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(r, 4).font = { size: 9 };
+      ws.getRow(r).height = 46;
+      r++;
+    }
+    bandRows(ws, catStart, r - 1, 4);
+  } else {
+    // Fall back to the thematic list, and say that is what happened.
+    headerRow(ws, r, ["Horizon", "Event", "", "Impact"]);
+    ws.mergeCells(`B${r}:C${r}`);
+    r++;
+    const catStart = r;
+    a.catalysts.forEach((c) => {
+      ws.getCell(r, 1).value = c.horizon;
+      ws.getCell(r, 1).font = { bold: true };
+      ws.mergeCells(`B${r}:C${r}`);
+      ws.getCell(r, 2).value = c.event;
+      ws.getCell(r, 4).value = c.impact;
+      ws.getCell(r, 4).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(r, 4).font = { size: 10 };
+      ws.getRow(r).height = 32;
+      r++;
+    });
+    bandRows(ws, catStart, r - 1, 4);
+    ws.mergeCells(`A${r}:D${r}`);
+    ws.getCell(`A${r}`).value =
+      "No dated timeline could be built — reporting history was insufficient to project the next results. The horizons above are thematic, not scheduled.";
+    ws.getCell(`A${r}`).font = { size: 9, italic: true, color: { argb: RED } };
+    r++;
+  }
   r += 1;
 
   sectionHeader(ws, `A${r}:D${r}`, "Key Risk Factors");
@@ -834,11 +1111,15 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
 // ── shared footer with sources ────────────────────────────────────────
 function footer(ws: ExcelJS.Worksheet, anchor: string, a: AnalysisResult) {
   const c = ws.getCell(anchor);
-  const sources = a.data.sources.join("; ") || "n/a";
-  c.value = `Sources: ${sources}. Generated ${new Date(a.asOf).toUTCString()} by Equity Research Web. Not investment advice — for research only.`;
+  const sources = [...a.data.sources, ...(a.research?.sources ?? [])];
+  const list = sources.length ? sources.join("  ") : "n/a";
+  c.value =
+    `Sources: ${list}\n` +
+    `Every figure is either read from a filing or computed from one; where a figure had no free verifiable source it is marked n/a and the reason given, never estimated silently. Projected dates carry [E].\n` +
+    `Generated ${new Date(a.asOf).toUTCString()} by Equity Research Web. For research and education only — not investment advice.`;
   c.font = { italic: true, size: 8, color: { argb: GREY } };
   const startRow = parseInt(anchor.match(/\d+/)![0], 10);
-  ws.mergeCells(`${anchor}:G${startRow}`);
-  ws.getCell(anchor).alignment = { wrapText: true };
-  ws.getRow(startRow).height = 24;
+  ws.mergeCells(`${anchor}:H${startRow}`);
+  ws.getCell(anchor).alignment = { wrapText: true, vertical: "top" };
+  ws.getRow(startRow).height = 66;
 }

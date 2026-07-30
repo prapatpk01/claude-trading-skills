@@ -7,6 +7,7 @@ import { buildGrowthInput, bestGrowthPct } from "./team/growthInputs";
 import { getSecFundamentals } from "./sec";
 import { runSAMP, type SampResult } from "./team/samp";
 import { computeBeta } from "./derive";
+import { movesFromCandles, extendedHours, type PriceMoves } from "./priceMoves";
 import type { MarketData, SwingSetup, Candle } from "./types";
 
 /** Score floor to be presented at all — below this the model says REJECT. */
@@ -71,6 +72,15 @@ export interface ScanResult {
   engines: Record<string, any>;
   /** SAMP 3-layer read per setup (Priya's desk), keyed by ticker. */
   samp: Record<string, Pick<SampResult, "direction" | "strength" | "acceleration" | "regime" | "state" | "strongBull" | "strongBear" | "earlyBull" | "watchLong" | "lastSignal" | "barsSinceLastSignal">>;
+  /**
+   * 1-day / 1-week change and any extended-hours trade, keyed by ticker.
+   *
+   * The daily windows come free from the candles the scan already fetched. The
+   * extended-hours read costs a request per symbol, so it is only taken for the
+   * names that actually qualified — fetching it for the whole universe would
+   * multiply the scan's request count for data nobody will look at.
+   */
+  moves: Record<string, PriceMoves>;
   /** Names excluded, with the rule that excluded them. */
   rejected: { ticker: string; score: number; signal: string; blocks: string[]; reason: string }[];
   scanned: number;
@@ -128,6 +138,7 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
   const engines: Record<string, any> = {};
   const samp: ScanResult["samp"] = {};
   const rejected: ScanResult["rejected"] = [];
+  const dailyMoves: Record<string, PriceMoves> = {};
   let scanned = 0;
   // sequential to stay polite to the data provider
   for (const ticker of universe) {
@@ -139,6 +150,9 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
         continue;
       }
       scanned++;
+      // The daily windows are already paid for — these are the same closes the
+      // technicals are computed from.
+      dailyMoves[ticker] = { ticker, ...movesFromCandles(candles), extended: null };
       const md = lightMarketData(ticker, candles, spy);
       const tech = computeTechnicals(md);
       const score = computeMomentumScore(tech, false);
@@ -255,6 +269,17 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
     .sort((a, b) => b.momentumScore - a.momentumScore)
     .slice(0, topN);
 
+  // Extended hours only for the qualifiers. A pre-market move matters most on a
+  // name you are about to buy, and this keeps the cost proportional to that.
+  const moves: Record<string, PriceMoves> = { ...dailyMoves };
+  await Promise.all(
+    setups.map(async (s) => {
+      const ext = await extendedHours(s.ticker).catch(() => null);
+      const base = moves[s.ticker];
+      if (base) moves[s.ticker] = { ...base, extended: ext };
+    })
+  );
+
   const noQualifiers = setups.length === 0
     ? `No name cleared the bar out of ${scanned} scanned. ${rejected.filter((r) => r.blocks.length).length} were hard-blocked, ` +
       `${rejected.filter((r) => !r.blocks.length).length} failed on the 12% growth gate, the 65 engine score, the entry layer, pressure or reward:risk. ` +
@@ -262,7 +287,7 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
     : null;
 
   return {
-    regime, setups, sentinel, engines, samp, rejected, scanned, warnings,
+    regime, setups, sentinel, engines, samp, moves, rejected, scanned, warnings,
     asOf: new Date().toISOString(), noQualifiers, minRiskReward: MIN_RR,
     rulesVersion: "v4.0",
   };

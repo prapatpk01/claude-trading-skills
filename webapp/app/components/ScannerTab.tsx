@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { money, num, pct, cls } from "./format";
+import { MoveStack } from "./PriceMove";
 
 /**
  * Save a scanned name into the watchlist together with the levels the setup
@@ -210,6 +211,13 @@ export default function ScannerTab() {
                     <span className="tag">Growth {result.engines[s.ticker].growthPct.toFixed(1)}%</span>
                   )}
                   <span className="tag">{result.engines[s.ticker].coveragePct}% model coverage</span>
+                </div>
+              )}
+              {/* Where the price has been over the two windows that matter for
+                  timing an entry, plus any extended-hours move. */}
+              {result.moves?.[s.ticker] && (
+                <div style={{ margin: "6px 0" }}>
+                  <MoveStack m={result.moves[s.ticker]} />
                 </div>
               )}
               <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

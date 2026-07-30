@@ -71,6 +71,18 @@ export async function yahooQuote(ticker: string): Promise<Quote | null> {
   return toQuote(await rawQuote(ticker), ticker);
 }
 
+/**
+ * Raw chart response, exposed so callers that need more than closes — the
+ * exchange's trading-period bounds, extended-hours bars — can read it without
+ * standing up a second client with its own configuration.
+ */
+export async function yahooChartRaw(
+  ticker: string,
+  opts: { period1: Date; interval?: string; includePrePost?: boolean }
+): Promise<any> {
+  return retry<any>(() => yf.chart(ticker, opts as any));
+}
+
 // ── Candles (daily) — public chart endpoint, most reliable on cloud ───
 export async function yahooCandles(ticker: string, days = 400): Promise<Candle[]> {
   const period1 = new Date(Date.now() - days * 24 * 60 * 60 * 1000);

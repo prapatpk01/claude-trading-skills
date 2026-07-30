@@ -7,6 +7,7 @@ import ValuationDesk from "./ValuationDesk";
 import MacroDesk from "./MacroDesk";
 import AllocationDonut from "./AllocationDonut";
 import TickerInput from "./TickerInput";
+import { MOVE_HEADERS, MoveCells, type Moves } from "./PriceMove";
 import { openOnly, isOpen } from "@/lib/openPositions";
 
 interface Holding {
@@ -20,7 +21,7 @@ interface WatchItem { id: string; ticker: string; reason?: string; alert_price?:
 export default function PortfolioTab() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [watch, setWatch] = useState<WatchItem[]>([]);
-  const [quotes, setQuotes] = useState<Record<string, { price: number; changePercent: number } | null>>({});
+  const [quotes, setQuotes] = useState<Record<string, ({ price: number } & Moves) | null>>({});
   const [backend, setBackend] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -293,12 +294,14 @@ export default function PortfolioTab() {
           <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
             <thead><tr>
               <th>Ticker</th><th className="num">Shares</th><th className="num">Avg Cost</th><th className="num">Price</th>
+              {MOVE_HEADERS}
               <th className="num">Mkt Value</th><th className="num">P/L</th><th className="num">Target</th>
               <th>Opened / Closed</th><th>Thesis</th><th></th>
             </tr></thead>
             <tbody>
               {holdings.map((h) => {
-                const price = quotes[h.ticker]?.price;
+                const q = quotes[h.ticker];
+                const price = q?.price;
                 const mv = (price ?? h.avg_cost) * h.shares;
                 const pl = ((price ?? h.avg_cost) - h.avg_cost) * h.shares;
                 const plp = h.avg_cost ? (((price ?? h.avg_cost) - h.avg_cost) / h.avg_cost) * 100 : 0;
@@ -315,6 +318,7 @@ export default function PortfolioTab() {
                       <td><input className="edit-input" value={draft.shares ?? ""} onChange={set("shares")} inputMode="decimal" /></td>
                       <td><input className="edit-input" value={draft.avg_cost ?? ""} onChange={set("avg_cost")} inputMode="decimal" /></td>
                       <td className="num muted">{price != null ? money(price) : "—"}</td>
+                      <MoveCells m={q} />
                       <td className="num muted">{money(mv)}</td>
                       <td className="num muted">{money(pl)}</td>
                       <td><input className="edit-input" value={draft.target_price ?? ""} onChange={set("target_price")} inputMode="decimal" placeholder="—" /></td>
@@ -384,6 +388,7 @@ export default function PortfolioTab() {
                     <td className="num">{num(h.shares, 0)}</td>
                     <td className="num">{money(h.avg_cost)}</td>
                     <td className="num">{price != null ? money(price) : "—"}</td>
+                    <MoveCells m={q} />
                     <td className="num">{money(mv)}</td>
                     <td className={cls("num", pl >= 0 ? "pos" : "neg")}>{money(pl)}<br /><span style={{ fontSize: 11 }}>{plp >= 0 ? "+" : ""}{pct(plp)}</span></td>
                     <td className="num">{h.target_price ? money(h.target_price) : "—"}</td>
@@ -436,7 +441,7 @@ export default function PortfolioTab() {
                   </tr>
                 );
               })}
-              {holdings.length === 0 && <tr><td colSpan={10} className="muted">No holdings yet — add one above.</td></tr>}
+              {holdings.length === 0 && <tr><td colSpan={13} className="muted">No holdings yet — add one above.</td></tr>}
             </tbody>
           </table></div>
         )}
@@ -516,23 +521,23 @@ export default function PortfolioTab() {
         <h2 className="section">⭐ Watchlist</h2>
         <WatchForm onAdd={load} />
         <div className="table-wrap"><table className="tbl" style={{ marginTop: 12 }}>
-          <thead><tr><th>Ticker</th><th className="num">Price</th><th className="num">Chg</th><th className="num">Alert</th><th>Reason</th><th></th></tr></thead>
+          <thead><tr><th>Ticker</th><th className="num">Price</th>{MOVE_HEADERS}<th className="num">Alert</th><th>Reason</th><th></th></tr></thead>
           <tbody>
             {watch.map((w) => {
-              const price = quotes[w.ticker]?.price;
-              const chg = quotes[w.ticker]?.changePercent;
+              const q = quotes[w.ticker];
+              const price = q?.price;
               return (
                 <tr key={w.id}>
                   <td><strong>{w.ticker}</strong></td>
                   <td className="num">{price != null ? money(price) : "—"}</td>
-                  <td className={cls("num", (chg ?? 0) >= 0 ? "pos" : "neg")}>{chg != null ? `${chg >= 0 ? "+" : ""}${pct(chg)}` : "—"}</td>
+                  <MoveCells m={q} />
                   <td className="num">{w.alert_price ? money(w.alert_price) : "—"}</td>
                   <td className="muted" style={{ fontSize: 12 }}>{w.reason ?? "—"}</td>
                   <td><button className="btn danger sm" onClick={async () => { await fetch(`/api/watchlist?id=${w.id}`, { method: "DELETE" }); load(); }}>✕</button></td>
                 </tr>
               );
             })}
-            {watch.length === 0 && <tr><td colSpan={6} className="muted">Watchlist empty.</td></tr>}
+            {watch.length === 0 && <tr><td colSpan={9} className="muted">Watchlist empty.</td></tr>}
           </tbody>
         </table></div>
       </div>
