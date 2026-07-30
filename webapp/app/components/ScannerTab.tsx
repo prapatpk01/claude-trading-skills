@@ -158,6 +158,44 @@ export default function ScannerTab() {
         </div>
       )}
 
+      {/* The three desks the search actually passes through, and what each let
+          past. A funnel is the honest shape of a search: it says where the
+          names went, not just which five came out. */}
+      {result?.funnel?.stages?.length > 0 && (
+        <div className="card">
+          <h3 className="sub" style={{ marginTop: 0 }}>🔎 How the search ran — {result.funnel.scanned} names, three desks</h3>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead><tr>
+                <th>Stage</th><th>Desk</th><th className="num">Passed</th><th className="num">Stopped</th><th>What this stage does</th>
+              </tr></thead>
+              <tbody>
+                {result.funnel.stages.map((st: any, i: number) => (
+                  <tr key={st.stage}>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <strong>{i + 1}. {st.heading}</strong>
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <strong style={{ color: "var(--cyan)" }}>{st.owner}</strong><br />
+                      <span className="muted" style={{ fontSize: 11 }}>{st.role}</span>
+                    </td>
+                    <td className="num pos"><strong>{st.passed}</strong></td>
+                    <td className={cls("num", st.rejected > 0 ? "neg" : "muted")}>{st.rejected}</td>
+                    <td style={{ fontSize: 12, lineHeight: 1.5, minWidth: 260 }}>{st.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted" style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.5 }}>
+            A name reaches a card only if all three desks pass it. The research desks work in sequence —
+            momentum finds the candidates, the catalyst desk decides whether there is a reason to own them —
+            and the quant desk sets the entry and the target jointly: Priya&apos;s pressure engine can veto the
+            timing, Kai&apos;s stop can veto the geometry, and neither can overrule the other into a trade.
+          </p>
+        </div>
+      )}
+
       {result?.rejected?.length > 0 && (
         <div className="card">
           <h3 className="sub" style={{ marginTop: 0 }}>
@@ -170,12 +208,18 @@ export default function ScannerTab() {
           </p>
           <div className="table-wrap">
             <table className="tbl">
-              <thead><tr><th>Ticker</th><th className="num">Score</th><th>Why it was excluded</th><th></th></tr></thead>
+              <thead><tr><th>Ticker</th><th className="num">Score</th><th>Stopped by</th><th>Why it was excluded</th><th></th></tr></thead>
               <tbody>
                 {result.rejected.map((r: any) => (
                   <tr key={r.ticker}>
                     <td><strong>{r.ticker}</strong></td>
                     <td className="num muted">{r.score}/100</td>
+                    <td style={{ whiteSpace: "nowrap", fontSize: 11.5 }}>
+                      {r.stage === "momentum" ? "Maya Chen" : r.stage === "catalyst" ? "Aisha Fontaine" : r.stage === "quant" ? "Priya / Kai" : "—"}
+                      <br /><span className="muted" style={{ fontSize: 10 }}>
+                        {r.stage === "momentum" ? "momentum screen" : r.stage === "catalyst" ? "catalyst desk" : r.stage === "quant" ? "quant & risk" : ""}
+                      </span>
+                    </td>
                     <td className="neg" style={{ fontSize: 12 }}>
                       {r.reason}
                       {r.blocks?.length > 0 && (
@@ -213,6 +257,33 @@ export default function ScannerTab() {
                   <span className="tag">{result.engines[s.ticker].coveragePct}% model coverage</span>
                 </div>
               )}
+              {/* Aisha's read: the theme, the measured drift and the thesis in
+                  one line — the reason the name is here at all. */}
+              {result.catalysts?.[s.ticker] && (
+                <div style={{ margin: "8px 0", padding: "8px 11px", borderRadius: 10, background: "rgba(8,14,28,.42)", border: "1px solid var(--border)" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline", marginBottom: 4 }}>
+                    <span className="tag" style={{ color: "var(--cyan)", borderColor: "rgba(55,230,216,.4)" }}>
+                      Catalyst {result.catalysts[s.ticker].score ?? "—"}/25 · {result.catalysts[s.ticker].band}
+                    </span>
+                    {result.conviction?.[s.ticker] != null && (
+                      <span className="tag">Joint conviction {result.conviction[s.ticker]}/100</span>
+                    )}
+                    {result.catalysts[s.ticker].theme && (
+                      <span className="tag">{result.catalysts[s.ticker].theme.label} · {result.catalysts[s.ticker].theme.leadership}/100</span>
+                    )}
+                    <span className="muted" style={{ fontSize: 10.5 }}>
+                      Aisha Fontaine · {result.catalysts[s.ticker].coveragePct}% of the catalyst model evaluable
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 12.5, lineHeight: 1.55, margin: 0 }}>{result.catalysts[s.ticker].thesis}</p>
+                  {result.catalysts[s.ticker].pead?.excessPct != null && (
+                    <p className="muted" style={{ fontSize: 11, lineHeight: 1.5, margin: "4px 0 0" }}>
+                      {result.catalysts[s.ticker].pead.note}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Where the price has been over the two windows that matter for
                   timing an entry, plus any extended-hours move. */}
               {result.moves?.[s.ticker] && (

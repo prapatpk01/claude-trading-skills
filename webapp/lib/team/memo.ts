@@ -12,6 +12,8 @@ import { assessPositionZone, sizeByRisk, checkRiskCaps, type ZoneAssessment, typ
 import { classifySleeve, type Sleeve } from "./portfolio";
 import { runSAMP, type SampResult } from "./samp";
 import { multiTimeframe, earningsQuality, buildConviction, type MtfResult, type ConvictionResult, type QualityFlag } from "./intelligence";
+import { assessCatalyst, toEngineCatalyst, type CatalystRead } from "./catalyst";
+import { projectEarningsDates } from "../research";
 import { ROSTER, FUND } from "./roster";
 
 export interface DeskNote {
@@ -37,6 +39,8 @@ export interface TickerMemo {
   mtf: MtfResult;
   /** Cash-backed-earnings checks. */
   quality: { flags: QualityFlag[]; score: number | null; summary: string };
+  /** Aisha's desk — measured drift, surprise history and the next scheduled print. */
+  catalyst: CatalystRead;
   /** Aggregate read plus the places the desks disagree. */
   conviction: ConvictionResult;
   stop: { stop: number; atr: number } | null;
@@ -71,6 +75,8 @@ export interface MemoInput {
   currentWeightPct?: number | null;
   /** Forward yield estimate for sleeve classification. */
   yieldPct?: number | null;
+  /** Ranked theme groups, so the catalyst desk can name the theme. */
+  theme?: { label: string; proxy: string; leadership: number; rs3mPct: number | null } | null;
   dcfFairValue?: number | null;
   dcfUpsidePct?: number | null;
   targetPrice?: number | null;
@@ -83,10 +89,38 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
   const ov = data.overview;
 
   const regime = assessRegime(data.benchmarkCandles);
+
+  // ── Aisha Fontaine's catalyst read, computed BEFORE the momentum score ──
+  //
+  // Her seat was in the scoring models from the start but nothing ever fed it,
+  // so every score printed "Catalyst 0/10, not evaluated" and a tenth of the
+  // model was structurally unreachable. It runs first now because the momentum
+  // score consumes it: v3.0 credits a graded catalyst and deducts for a
+  // negative one, exactly as the published rules say it should.
+  const reportedDates = data.earnings.map((e) => e.reportedDate).filter((d): d is string => !!d);
+  const nextEarnings = projectEarningsDates(reportedDates, new Date(), 1);
+  const catalyst = assessCatalyst({
+    earnings: data.earnings,
+    quarters: data.quarters,
+    candles: data.candles,
+    benchmark: data.benchmarkCandles,
+    nextEarningsDate: nextEarnings.dates[0] ?? null,
+    nextEarningsBasis: nextEarnings.medianGapDays
+      ? `Projected from a median ${nextEarnings.medianGapDays}-day reporting cadence across ${reportedDates.length} past reports [E].`
+      : undefined,
+    theme: input.theme ?? null,
+  });
+
   const score = scoreMomentumV3({
     candles: data.candles,
     benchmark: data.benchmarkCandles,
     beta: ov?.beta ?? null,
+    catalystScore: catalyst.score,
+    catalystNegative: catalyst.negative,
+    // The 5-day earnings blackout is a documented REJECT in the rulebook, and
+    // until now nothing supplied the day count, so the rule had never once
+    // fired. The catalyst desk projects the date; this connects it.
+    daysToEarnings: catalyst.nextEvent.daysAway,
   });
 
   const stop = atrStop(data.candles, price, 2);
@@ -204,6 +238,27 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
         : ["No hard blocks triggered."]),
     ],
     verdict: score.signalReason,
+  });
+
+  // ── Aisha Fontaine — catalyst & PEAD ──
+  //
+  // Her seat was in the scoring models from the start but nothing ever fed it,
+  // so every score printed "Catalyst 0/10, not evaluated". The desk now measures
+  // what a free feed can actually support — the realised post-earnings drift
+  // against the index, the surprise history, and the next scheduled print — and
+  // names the rest as unavailable rather than guessing it.
+  desks.push({
+    member: ROSTER.aisha.name,
+    role: ROSTER.aisha.role,
+    heading: `Catalyst & PEAD — ${catalyst.score != null ? `${catalyst.score}/25` : "not gradable"} · ${catalyst.band}`,
+    bullets: [
+      ...catalyst.lines.map(
+        (l) => `${l.evaluated ? "" : "⏸ "}${l.label}: ${l.evaluated ? `${l.points}/${l.max}` : "not evaluated"} — ${l.detail}`
+      ),
+      `${catalyst.coveragePct}% of the catalyst model could be evaluated${catalyst.unavailable.length ? ` — missing: ${catalyst.unavailable.join(", ")}` : ""}.`,
+      ...catalyst.notes,
+    ],
+    verdict: catalyst.thesis,
   });
 
   // Priya Nair — SAMP engine (Sentinel Adaptive Structure v1.6)
@@ -419,6 +474,7 @@ export function buildTickerMemo(input: MemoInput): TickerMemo {
     samp,
     mtf,
     quality: earnQuality,
+    catalyst,
     conviction,
     stop,
     suggestedShares,

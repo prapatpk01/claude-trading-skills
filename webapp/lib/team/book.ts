@@ -8,6 +8,33 @@ import { ROSTER } from "./roster";
 import type { Candle } from "../types";
 import type { DeskNote } from "./memo";
 
+/**
+ * A risk anyone on the desk can put on the record.
+ *
+ * The fund's primary job is running the book together, so risk is not one
+ * person's column. Any desk that measures something worrying files it here with
+ * the evidence, and the register is what the meeting works through — a CRO who
+ * is the only person allowed to see risk is a single point of failure.
+ */
+export interface RiskItem {
+  raisedBy: string;
+  role: string;
+  severity: "high" | "medium" | "low";
+  item: string;
+  /** The measurement behind it. A risk without evidence is an opinion. */
+  evidence: string;
+  suggestedAction: string;
+}
+
+/** Every seat, and what it tabled — including the seats with nothing to add. */
+export interface RoundTableEntry {
+  member: string;
+  role: string;
+  desk: string;
+  tabled: boolean;
+  view: string;
+}
+
 export interface BookReview {
   asOf: string;
   nav: number;
@@ -21,6 +48,10 @@ export interface BookReview {
   cashRequiredPct: number | null;
   correlations: { a: string; b: string; correlation: number }[];
   desks: DeskNote[];
+  /** Everyone's view on the book, tabled or explicitly withheld. */
+  roundTable: RoundTableEntry[];
+  /** Risks filed by any desk, most severe first. */
+  riskRegister: RiskItem[];
   actions: string[];
   disclosures: string[];
 }
@@ -33,6 +64,9 @@ export interface BookInput {
   benchmark: Candle[];
   /** Daily closes per ticker, for the correlation matrix. */
   closesByTicker?: Record<string, number[]>;
+  /** Full candles per ticker, so the momentum, quant and execution desks can
+   *  measure trend, volatility and liquidity rather than sit the meeting out. */
+  candlesByTicker?: Record<string, Candle[]>;
   portfolioReturnPct?: number | null;
   spyReturnPct?: number | null;
 }
@@ -175,6 +209,220 @@ export function buildBookReview(input: BookInput): BookReview {
     ],
   });
 
+
+  // ══ The committee round table ═══════════════════════════════════════
+  //
+  // Running the book is everyone's job, not the portfolio manager's alone, so
+  // every seat gets the floor and every seat can file a risk. A desk with a
+  // measurement tables it; a desk without one says so and says what would give
+  // it a view — which is itself useful, because it shows the meeting what the
+  // fund cannot currently see.
+  const riskRegister: RiskItem[] = [];
+  const roundTable: RoundTableEntry[] = [];
+  const candles = input.candlesByTicker ?? {};
+  const file = (
+    who: { name: string; role: string },
+    severity: RiskItem["severity"],
+    item: string, evidence: string, suggestedAction: string
+  ) => riskRegister.push({ raisedBy: who.name, role: who.role, severity, item, evidence, suggestedAction });
+  const table = (who: { name: string; role: string; desk: string }, view: string, tabled = true) =>
+    roundTable.push({ member: who.name, role: who.role, desk: who.desk, tabled, view });
+
+  const weightOf = (t: string) => {
+    const h = holdings.find((x) => x.ticker === t);
+    if (!h || !nav) return 0;
+    return (((h.price ?? h.avg_cost) * h.shares) / nav) * 100;
+  };
+
+  // ── Maya Chen — is the book still in uptrends? ──
+  {
+    const reads = holdings
+      .map((h) => {
+        const c = candles[h.ticker];
+        if (!c || c.length < 200) return null;
+        const closes = c.map((x) => x.close);
+        const last = closes[closes.length - 1];
+        const ma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+        const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+        return { ticker: h.ticker, above200: last > ma200, above50: last > ma50, weight: weightOf(h.ticker) };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    if (reads.length) {
+      const broken = reads.filter((r) => !r.above200);
+      const brokenWeight = broken.reduce((s, r) => s + r.weight, 0);
+      table(ROSTER.maya,
+        `${reads.length - broken.length} of ${reads.length} measurable positions hold above their own 200-day average. ` +
+        (broken.length
+          ? `Below it: ${broken.map((b) => `${b.ticker} (${b.weight.toFixed(1)}% of NAV)`).join(", ")} — ${brokenWeight.toFixed(1)}% of the book in broken trends.`
+          : "No position is in a broken trend."));
+      if (brokenWeight >= 15) {
+        file(ROSTER.maya, brokenWeight >= 30 ? "high" : "medium",
+          "Trend damage across a material share of the book",
+          `${brokenWeight.toFixed(1)}% of NAV sits in names trading below their own 200-day average (${broken.map((b) => b.ticker).join(", ")}).`,
+          "Review each broken name against its thesis. v4 §5: a broken structure with growth intact blocks new entries, not the holding — but the aggregate is a regime signal in its own right.");
+      }
+    } else {
+      table(ROSTER.maya, "No position has 200 sessions of price history in this review, so no trend read is possible. Two hundred daily bars per holding would give one.", false);
+    }
+  }
+
+  // ── Priya Nair — realised risk, measured ──
+  {
+    const rets: Record<string, number[]> = {};
+    for (const [t, closes] of Object.entries(input.closesByTicker ?? {})) {
+      const r: number[] = [];
+      for (let i = 1; i < closes.length; i++) if (closes[i - 1] > 0) r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+      if (r.length > 20) rets[t] = r;
+    }
+    const betaWeighted = holdings.reduce((sum, h) => {
+      const b = (h as any).beta;
+      return b != null && nav ? sum + b * (weightOf(h.ticker) / 100) : sum;
+    }, 0);
+    const withBeta = holdings.filter((h) => (h as any).beta != null).length;
+    const bits: string[] = [];
+    if (withBeta) {
+      bits.push(`Beta-weighted exposure ${betaWeighted.toFixed(2)} across the ${withBeta} position${withBeta === 1 ? "" : "s"} with a measurable beta — a 10% index fall implies roughly ${(betaWeighted * 10).toFixed(1)}% on that share of the book.`);
+    }
+    if (input.portfolioReturnPct != null && input.spyReturnPct != null) {
+      const diff = input.portfolioReturnPct - input.spyReturnPct;
+      bits.push(`Book ${input.portfolioReturnPct >= 0 ? "+" : ""}${input.portfolioReturnPct.toFixed(1)}% against SPY ${input.spyReturnPct >= 0 ? "+" : ""}${input.spyReturnPct.toFixed(1)}% over the common window — ${diff >= 0 ? "+" : ""}${diff.toFixed(1)} points.`);
+    }
+    if (correlations.length) bits.push(`${correlations.length} position pair(s) correlate above 0.70; the highest is ${correlations[0].a}/${correlations[0].b} at ${correlations[0].correlation.toFixed(2)}.`);
+    table(ROSTER.priya, bits.length ? bits.join(" ") : "Neither beta nor a common return window was measurable this review, so no quantitative read is tabled.", bits.length > 0);
+    if (withBeta >= 2 && betaWeighted > 1.3) {
+      file(ROSTER.priya, betaWeighted > 1.6 ? "high" : "medium",
+        "Beta-weighted exposure above the book's risk budget",
+        `Beta-weighted exposure ${betaWeighted.toFixed(2)} across ${withBeta} measurable positions.`,
+        "Either reduce the highest-beta names or raise cash. Conviction does not lower beta; size does.");
+    }
+    if (correlations.length >= 3) {
+      file(ROSTER.priya, "medium",
+        "Diversification is thinner than the position count suggests",
+        `${correlations.length} pairs above 0.70 correlation — ${correlations.slice(0, 3).map((c) => `${c.a}/${c.b} ${c.correlation.toFixed(2)}`).join(", ")}.`,
+        "Treat the correlated cluster as one position for sizing. Ten names that move together is one bet held ten ways.");
+    }
+  }
+
+  // ── Ryan Blackwood — can the book actually be traded? ──
+  {
+    const liquidity = holdings
+      .map((h) => {
+        const c = candles[h.ticker];
+        if (!c || c.length < 20) return null;
+        const recent = c.slice(-20);
+        const advDollar = recent.reduce((s, x) => s + x.close * x.volume, 0) / recent.length;
+        const positionValue = (h.price ?? h.avg_cost) * h.shares;
+        if (!(advDollar > 0)) return null;
+        // Days to exit at a fifth of average daily volume — the share a desk can
+        // take without moving the price against itself.
+        return { ticker: h.ticker, days: positionValue / (advDollar * 0.2), advDollar, positionValue };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    if (liquidity.length) {
+      const worst = liquidity.slice().sort((a, b) => b.days - a.days)[0];
+      table(ROSTER.ryan,
+        `Every measurable position can be exited inside ${Math.max(...liquidity.map((l) => l.days)).toFixed(2)} session(s) at a fifth of its 20-day average dollar volume. ` +
+        `Least liquid relative to size: ${worst.ticker} at ${worst.days.toFixed(2)} session(s).`);
+      const illiquid = liquidity.filter((l) => l.days > 1);
+      if (illiquid.length) {
+        file(ROSTER.ryan, illiquid.some((l) => l.days > 3) ? "high" : "medium",
+          "Position size is large against traded volume",
+          illiquid.map((l) => `${l.ticker}: ${l.days.toFixed(1)} sessions to exit at 20% of ADV`).join("; "),
+          "Scale the exit over several sessions, or cap the position at a size one session can clear. A stop you cannot fill is not a stop.");
+      }
+    } else {
+      table(ROSTER.ryan, "No volume history reached this review, so tradeability could not be assessed. Twenty daily bars with volume per holding would give a read.", false);
+    }
+  }
+
+  // ── Nina Okonkwo & Leo Tanaka — what the data itself says ──
+  {
+    const dated = Object.entries(candles)
+      .map(([t, c]) => ({ t, date: c[c.length - 1]?.date ?? null }))
+      .filter((x) => x.date);
+    const oldest = dated.slice().sort((a, b) => (a.date! < b.date! ? -1 : 1))[0];
+    const withPrice = holdings.filter((h) => h.price != null).length;
+    const withYield = holdings.filter((h) => h.yieldPct != null).length;
+    table(ROSTER.nina,
+      `Prices resolved for ${withPrice}/${holdings.length}; distribution history for ${withYield}/${holdings.length}. ` +
+      `Anything missing scores zero and is flagged rather than estimated (Rule #5).`);
+    if (withPrice < holdings.length) {
+      file(ROSTER.nina, "high",
+        "NAV is computed with unpriced positions",
+        `${holdings.length - withPrice} position(s) fell back to cost basis because no live price resolved.`,
+        "Every weight in this review is measured against that NAV, so they are all slightly wrong. Re-run once prices resolve before acting on a drift figure.");
+    }
+    if (oldest?.date) {
+      table(ROSTER.leo,
+        `Oldest price in the book is ${oldest.t} at ${oldest.date}. Every weight and drift figure in this review is measured as of that set.`);
+    } else {
+      table(ROSTER.leo, "No dated price series reached this review, so the as-of position of the book cannot be stated.", false);
+    }
+  }
+
+  // ── Sofia Reyes, Marcus Webb, Aisha Fontaine, Thomas Eriksson ──
+  //
+  // These four need per-name fundamentals, which the book review does not
+  // fetch. Rather than invent a view, each says what it would need — which
+  // tells the meeting exactly what the fund is currently blind to.
+  table(ROSTER.sofia,
+    "No business-quality read this review: the book pass does not pull filings per holding. The valuation desk's per-position work covers this ground name by name.", false);
+  table(ROSTER.marcus,
+    "No earnings-trend read this review, for the same reason. Margin direction and revision momentum are in the per-ticker memo instead.", false);
+  table(ROSTER.aisha,
+    "No catalyst read this review: reporting dates across the book are not fetched here. Worth adding — an earnings calendar clustered into one week is a portfolio risk, not a per-name one.", false);
+  table(ROSTER.thomas,
+    "No valuation read this review; fair values are produced by the valuation desk per position rather than in the book pass.", false);
+
+  // ── The seats that already spoke above ──
+  if (regime) {
+    table(ROSTER.daniel, `${regime.regime} at ${regime.score}/100, cash floor ${regime.cashMinPct}%. ${regime.note}`);
+    if (cashRequiredPct != null && cashPct < cashRequiredPct) {
+      file(ROSTER.daniel, "high",
+        "Cash below the regime floor",
+        `Cash/defensive ${pct(cashPct)} against a ${cashRequiredPct}% floor for a ${regime.regime} regime.`,
+        "Raise cash before adding elsewhere. The floor exists so the fund can act in a drawdown rather than watch one.");
+    }
+  } else {
+    table(ROSTER.daniel, "Benchmark history was unavailable, so no regime could be scored this review.", false);
+  }
+  table(ROSTER.lena,
+    `NAV ${money(nav)} across ${holdings.length} position(s); blended forward yield ${pct(blended)} against the 5% objective. ` +
+    sleeves.map((x) => `${x.sleeve} ${pct(x.actualPct)}/${x.targetPct}%`).join(", ") + ".");
+  for (const sl of sleeves) {
+    if (sl.alert) {
+      file(ROSTER.lena, Math.abs(sl.driftPct) >= 10 ? "high" : "medium",
+        `${sl.sleeve} sleeve off target`,
+        `${pct(sl.actualPct)} against a ${sl.targetPct}% target — ${sl.driftPct >= 0 ? "+" : ""}${sl.driftPct.toFixed(2)} points, past the Rule #7 alert.`,
+        "Rebalance at this review, funding the move from the most extended position rather than the weakest thesis.");
+    }
+  }
+  table(ROSTER.kai,
+    zones.length
+      ? `${zones.length} position(s) assessed for concentration; ${zones.filter((z) => z.zone !== "BASE").length} outside the base band.`
+      : "No position reached the concentration bands.");
+  for (const z of zones) {
+    if (z.zone === "EMERGENCY" || z.zone === "TRIM") {
+      file(ROSTER.kai, z.zone === "EMERGENCY" ? "high" : "medium",
+        `${z.ticker} concentration — ${z.zone}`,
+        `${pct(z.weightPct)} of NAV.`,
+        z.action);
+    }
+  }
+  table(ROSTER.miriam,
+    `Data integrity: pricing verified for ${holdings.filter((h) => h.price != null).length}/${holdings.length}; cost basis user-supplied and unaudited [E].`);
+  file(ROSTER.miriam, "low",
+    "Cost basis is unaudited",
+    "Entered by hand and never reconciled to a broker statement.",
+    "Reconcile before any tax-driven decision. Every unrealised P/L figure in this app inherits the error.");
+  table(ROSTER.james,
+    actions.length
+      ? `${actions.length} action(s) outstanding. The register below is what this meeting works through.`
+      : "Book within policy on every measurable rule. No action required this review.");
+
+  const sev = { high: 0, medium: 1, low: 2 };
+  riskRegister.sort((a, b) => sev[a.severity] - sev[b.severity]);
+
   return {
     asOf: new Date().toISOString(),
     nav,
@@ -188,6 +436,8 @@ export function buildBookReview(input: BookInput): BookReview {
     cashRequiredPct,
     correlations,
     desks,
+    roundTable,
+    riskRegister,
     actions,
     disclosures: [
       "Sleeve classification is inferred from yield, beta and the fund's own instrument list; override it if a holding belongs elsewhere.",

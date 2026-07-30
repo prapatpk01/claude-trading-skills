@@ -279,7 +279,14 @@ export function scoreMomentumV3(input: ScoringInput): MomentumScoreV3 {
   }
   let total = lines.reduce((s, l) => s + l.points, 0);
 
-  // Catalyst adjustment (documented rules only — no invented catalysts)
+  // Catalyst adjustment (documented rules only — no invented catalysts).
+  //
+  // The desk's 0-25 catalyst score deliberately does NOT inflate this total:
+  // the signal thresholds are stated on a /100 scale built from the six phases
+  // above, and adding a seventh source of points would move every threshold
+  // without the rulebook saying so. It is reported alongside the score instead,
+  // and only the two documented adjustments touch the number — a negative
+  // catalyst costs 3 points, and earnings inside five days reject outright.
   if (input.catalystNegative) total -= 3;
   total = clamp(Math.round(total), 0, 100);
 
@@ -291,7 +298,14 @@ export function scoreMomentumV3(input: ScoringInput): MomentumScoreV3 {
   const scored = lines.filter((l) => l.flag !== "U").length;
   const dataQualityScore = lines.length ? Math.round((scored / lines.length) * 100) : 0;
 
-  const { signal, signalReason } = deriveSignal(total, blocks);
+  const derived = deriveSignal(total, blocks);
+  const { signal } = derived;
+  // Name the catalyst in the reason so a reader can see it was assessed at all,
+  // without it silently moving the score.
+  const signalReason =
+    input.catalystScore != null
+      ? `${derived.signalReason} Catalyst desk scored ${input.catalystScore}/25${input.catalystNegative ? " and reads negative (−3 applied)" : ""}.`
+      : derived.signalReason;
 
   return { total, lines, phaseTotals, hardBlocks: blocks, signal, signalReason, dataQualityScore, unavailable };
 }

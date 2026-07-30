@@ -350,3 +350,17 @@ export function themeForSector(ranked: GroupRank[], sector: string | null): { la
   if (!g || !isLeading(g)) return null;
   return { label: g.label, rsPct: g.rs3m ?? 0 };
 }
+
+/**
+ * The whole ranked group a sector belongs to, leading or not.
+ *
+ * `themeForSector` answers "is this name in a leading theme?" and returns only
+ * what a tag needs. The catalyst desk needs more — the proxy, the leadership
+ * score and the relative strength go into its thesis line — and it wants the
+ * group even when the group is NOT leading, because "in a lagging theme" is
+ * itself a finding worth stating rather than a null.
+ */
+export function groupForSector(ranked: GroupRank[], sector: string | null): GroupRank | null {
+  if (!sector) return null;
+  return ranked.find((x) => x.sector === sector) ?? null;
+}

@@ -252,6 +252,70 @@ export default function PortfolioTab() {
                   </table>
                 </div>
 
+                {/* Risk is not one person's column: any desk that measures
+                    something worrying files it, and this is what the meeting
+                    works through. */}
+                {r.riskRegister?.length > 0 && (
+                  <>
+                    <h3 className="sub">⚠️ Risk register — {r.riskRegister.length} item{r.riskRegister.length === 1 ? "" : "s"} filed</h3>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {r.riskRegister.map((k: any, i: number) => {
+                        const tone = k.severity === "high" ? "var(--red)" : k.severity === "medium" ? "var(--amber)" : "var(--muted)";
+                        return (
+                          <div key={i} style={{
+                            padding: "10px 12px", borderRadius: 11,
+                            background: k.severity === "high" ? "rgba(255,93,108,.07)" : "rgba(8,14,28,.42)",
+                            border: `1px solid ${k.severity === "high" ? "rgba(255,93,108,.35)" : "var(--border)"}`,
+                          }}>
+                            <div style={{ display: "flex", gap: 9, alignItems: "baseline", flexWrap: "wrap" }}>
+                              <span style={{
+                                fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, padding: "1px 5px",
+                                borderRadius: 4, color: tone, background: "rgba(120,150,220,.10)",
+                              }}>{k.severity.toUpperCase()}</span>
+                              <strong style={{ fontSize: 13 }}>{k.item}</strong>
+                              <span className="muted" style={{ fontSize: 11 }}>filed by {k.raisedBy} · {k.role}</span>
+                            </div>
+                            <p className="muted" style={{ fontSize: 12, lineHeight: 1.5, margin: "5px 0 0" }}>{k.evidence}</p>
+                            <p style={{ fontSize: 12.5, lineHeight: 1.5, margin: "4px 0 0" }}>
+                              <span style={{ color: tone, fontWeight: 700 }}>Proposed: </span>{k.suggestedAction}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* Every seat gets the floor — including the seats that have
+                    nothing to add, because what the fund cannot see is itself
+                    worth knowing. */}
+                {r.roundTable?.length > 0 && (
+                  <>
+                    <h3 className="sub">
+                      🗣 Committee round table — {r.roundTable.filter((x: any) => x.tabled).length} of {r.roundTable.length} desks tabled a view
+                    </h3>
+                    <div className="table-wrap">
+                      <table className="tbl">
+                        <thead><tr><th>Desk</th><th>View on the book</th></tr></thead>
+                        <tbody>
+                          {r.roundTable.map((x: any, i: number) => (
+                            <tr key={i} style={x.tabled ? undefined : { opacity: 0.62 }}>
+                              <td style={{ whiteSpace: "nowrap", minWidth: 150 }}>
+                                <strong>{x.member}</strong><br />
+                                <span className="muted" style={{ fontSize: 11 }}>{x.role}</span>
+                              </td>
+                              <td style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                                {!x.tabled && <span className="muted" style={{ fontSize: 10.5, fontWeight: 700, marginRight: 6 }}>NO INPUT</span>}
+                                {x.view}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
                 <h3 className="sub">Desk notes</h3>
                 <DeskNotes desks={r.desks} />
                 <Disclosures items={r.disclosures} />

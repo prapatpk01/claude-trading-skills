@@ -17,7 +17,7 @@ import { buildPlansV4, type PositionV4 } from "@/lib/team/sizingV4";
 import { buildGrowthInput, bestGrowthPct } from "@/lib/team/growthInputs";
 import { classifySleeve } from "@/lib/team/portfolio";
 import {
-  rankGroups, buildThematicTilt, themeForSector, THEME_PROXIES,
+  rankGroups, buildThematicTilt, themeForSector, groupForSector, THEME_PROXIES,
 } from "@/lib/team/thematic";
 import { getSector, getSectors } from "@/lib/sectors";
 import { readFearGreed } from "@/lib/team/fearGreed";
@@ -148,6 +148,20 @@ export async function POST(req: NextRequest) {
       const price = analysis.data.quote?.price ?? null;
       const yieldPct = await forwardYield(ticker, price);
 
+      // Rank the theme groups so the catalyst desk can name the theme this
+      // company sits in and how strongly it is leading. The same 20 proxies the
+      // macro and valuation desks pull, fetched in parallel.
+      const themeCandles: Record<string, Candle[]> = {};
+      const spyForThemes = await dailyCandles("SPY", 300).catch(() => [] as Candle[]);
+      await Promise.all(
+        THEME_PROXIES.map(async (t) => {
+          const c = await dailyCandles(t, 300).catch(() => [] as Candle[]);
+          if (c.length) themeCandles[t] = c;
+        })
+      );
+      const rankedForTicker = spyForThemes.length ? rankGroups(themeCandles, spyForThemes) : [];
+      const grp = groupForSector(rankedForTicker, analysis.data.overview?.sector ?? null);
+
       const memo = buildTickerMemo({
         data: analysis.data,
         nav: nav > 0 ? nav : null,
@@ -157,6 +171,9 @@ export async function POST(req: NextRequest) {
         dcfUpsidePct: analysis.dcf?.upsidePct ?? null,
         targetPrice: analysis.targetPrice ?? null,
         upsidePct: analysis.upsidePct ?? null,
+        theme: grp
+          ? { label: grp.label, proxy: grp.proxy, leadership: grp.leadership, rs3mPct: grp.rs3m }
+          : null,
       });
       return NextResponse.json({ mode, memo, fund: FUND });
     }
@@ -169,13 +186,19 @@ export async function POST(req: NextRequest) {
       }
       const spy = await dailyCandles("SPY", 400).catch(() => [] as Candle[]);
       const closesByTicker: Record<string, number[]> = {};
+      // Full candles too, so the momentum, quant and execution desks can measure
+      // trend, volatility and tradeability instead of sitting the meeting out.
+      const candlesByTicker: Record<string, Candle[]> = {};
       const enriched = await Promise.all(
         holdings.map(async (h) => {
           const [q, candles] = await Promise.all([
             getLightQuote(h.ticker).catch(() => null),
             dailyCandles(h.ticker, 400).catch(() => [] as Candle[]),
           ]);
-          if (candles.length) closesByTicker[h.ticker] = candles.map((c) => c.close);
+          if (candles.length) {
+            closesByTicker[h.ticker] = candles.map((c) => c.close);
+            candlesByTicker[h.ticker] = candles;
+          }
           const price = q?.price ?? candles[candles.length - 1]?.close ?? null;
           return {
             ...h,
@@ -212,6 +235,7 @@ export async function POST(req: NextRequest) {
         holdings: enriched,
         benchmark: spy,
         closesByTicker,
+        candlesByTicker,
         portfolioReturnPct,
         spyReturnPct,
       });

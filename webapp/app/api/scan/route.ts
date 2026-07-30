@@ -22,6 +22,9 @@ export async function GET(req: NextRequest) {
       const universe = raw
         .split(",").map((t) => t.trim().toUpperCase())
         .filter((t) => /^[A-Z.\-]{1,10}$/.test(t));
+      // No thematic ranking on an explicit list: the user named the universe,
+      // so there are no leading groups to measure it against. The catalyst desk
+      // still runs; its theme line simply reads as unavailable.
       return NextResponse.json({ ...(await runScan(universe.slice(0, 20), topN)), universeSource: "explicit" });
     }
 
@@ -61,7 +64,9 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const result = await runScan(themed.tickers, topN);
+    // Hand the ranked groups to the catalyst desk so it can say which theme a
+    // name sits in, and how strongly that theme is leading.
+    const result = await runScan(themed.tickers, topN, { themes: ranked });
     return NextResponse.json({
       ...result,
       playbook,

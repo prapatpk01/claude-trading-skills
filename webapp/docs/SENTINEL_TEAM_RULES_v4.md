@@ -331,6 +331,71 @@ The gate has two settings only: `adds ∈ {proceed, stage, hold}` and
 
 ---
 
+## 10c. Who does what — the standing duty and the two research seats
+
+**Standing duty, before any desk's own remit:** every member jointly manages the
+holdings portfolio. Every seat may table a view at the portfolio review, and
+every seat may file a risk to the register **with the measurement behind it**. A
+fund where only the CRO is allowed to see risk has one pair of eyes on it.
+
+The portfolio review therefore returns a **round table** — all fourteen seats,
+including the ones with nothing to add, because what the fund cannot currently
+see is itself worth knowing — and a **risk register** sorted by severity, each
+item naming who filed it, the evidence, and the proposed action.
+
+### The two research seats, split by the question they answer
+
+| Seat | Question | Owns |
+|---|---|---|
+| **Maya Chen** — Momentum Analyst | *What is moving?* | Momentum Scoring v3.0, the hard blocks, Engine A's entry layer |
+| **Aisha Fontaine** — Catalyst & Thematic Analyst | *Is there a reason?* | Theme, thesis, catalyst score, measured PEAD, the event calendar |
+
+### The scanner runs as three owned stages
+
+1. **Maya — momentum screen.** Whole universe, price and filings only. v3.0 with
+   its hard blocks, plus the 12% growth gate and entry layer.
+2. **Aisha — theme, thesis & catalyst.** Shortlist only (top 12 by momentum),
+   because this stage costs a full data pull per name. Engine A is **re-scored**
+   here with the catalyst line filled, which the cheap screen cannot do.
+3. **Priya Nair + Kai Tanaka — entry, stop & target, jointly.** Priya's SAMP
+   pressure read can veto the timing; Kai's ATR stop sets the geometry and can
+   veto on reward:risk. **Both must sign; neither can overrule the other into a
+   trade.**
+
+Ranking is by **joint conviction** — momentum 70%, catalyst 30% scaled by its own
+coverage — not by momentum alone. That is the point of putting a second research
+desk in the path.
+
+### The catalyst model (0–25, Aisha's scale)
+
+| Component | Pts | Source |
+|---|---|---|
+| Surprise magnitude | 7 | Reported vs consensus, latest quarter |
+| Surprise consistency | 5 | Beats in the last four quarters |
+| **Post-earnings drift — measured** | 7 | Realised return since the report **less the benchmark over the same sessions** |
+| Growth acceleration | 3 | Revenue YoY quarter on quarter — **[E] a proxy for estimate revisions**, which have no free source |
+| Next scheduled catalyst | 3 | Projected reporting date; **0 inside the 2-day blackout** |
+
+- Scored over what could be **evaluated**, with coverage reported (Rule #5).
+- A **miss**, or drift running ≥5% against the index after a report, marks the
+  catalyst **negative** — v3.0 deducts 3 points for it.
+- The 0–25 scale converts to Engine A's 0–10 catalyst line in one place, so the
+  two cannot drift apart.
+- The desk's score deliberately **does not inflate** v3.0's /100 total; the
+  thresholds are stated on that scale. It is reported alongside, and only the two
+  documented adjustments move the number.
+
+### Two dormant rules now connected
+
+- Engine A's catalyst line had **never** been supplied, so 10 of its 100 points
+  were structurally unreachable and every score read "Catalyst 0/10, not
+  evaluated".
+- v3.0's **5-day earnings blackout** (`EARNINGS_5D`, a documented REJECT) had
+  never fired, because no caller supplied the day count. The catalyst desk
+  projects the date; the memo now passes it.
+
+---
+
 ## 11. Precedence
 
 Applied top-down; the first level that fires decides, and every recommendation
