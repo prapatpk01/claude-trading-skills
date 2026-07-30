@@ -45,6 +45,17 @@ export interface PriceMoves {
   weekSessions: number | null;
   extended: SessionMove | null;
   asOf: string | null;
+  /** Where `price` came from — a live quote or the last daily bar. */
+  priceSource: "live quote" | "last daily close" | null;
+  /** Calendar days between `asOf` and now. */
+  ageDays: number | null;
+  /**
+   * True when the price is older than the most recent weekday, i.e. old enough
+   * that it is probably not the current market price. Surfaced rather than
+   * hidden: a stale price that looks live is worse than one labelled stale.
+   */
+  stale: boolean;
+  staleReason: string | null;
   missing: string[];
 }
 
@@ -201,20 +212,110 @@ export async function extendedHours(ticker: string): Promise<SessionMove | null>
   }
 }
 
+/** The most recent weekday on or before a date — a crude session calendar. */
+function lastWeekdayOnOrBefore(d: Date): Date {
+  const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  while (x.getUTCDay() === 0 || x.getUTCDay() === 6) x.setUTCDate(x.getUTCDate() - 1);
+  return x;
+}
+
 /**
- * Everything, for one ticker. The daily series and the extended-hours read are
- * fetched together; either can fail without taking the other with it.
+ * Judge how current a price is.
+ *
+ * Exported and pure so the rule can be tested without a network call. A price is
+ * called stale when its date is more than one weekday behind — one day of lag is
+ * normal before an open or on a holiday, several is not. Holidays are not in the
+ * calendar here, so a long weekend can read as one day stale; that is the safe
+ * direction to be wrong in, since the label invites a refresh rather than
+ * suppressing information.
+ */
+export function judgeFreshness(asOf: string | null, now = new Date()): {
+  ageDays: number | null;
+  stale: boolean;
+  staleReason: string | null;
+} {
+  if (!asOf) return { ageDays: null, stale: true, staleReason: "No timestamp on the price." };
+  const t = Date.parse(asOf);
+  if (!Number.isFinite(t)) return { ageDays: null, stale: true, staleReason: "Price timestamp could not be read." };
+  const priceDay = new Date(Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate()));
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const ageDays = Math.round((today.getTime() - priceDay.getTime()) / 86_400_000);
+
+  // One weekday of lag is the normal state before a session opens.
+  const expected = lastWeekdayOnOrBefore(new Date(today.getTime() - 86_400_000));
+  const stale = priceDay.getTime() < expected.getTime();
+  return {
+    ageDays,
+    stale,
+    staleReason: stale
+      ? `Price is dated ${asOf.slice(0, 10)}, which is behind the last trading day. The feed did not return a fresher bar — refresh, and if it persists the symbol may be delisted, renamed, or unsupported by the free endpoint.`
+      : null,
+  };
+}
+
+/**
+ * Everything, for one ticker.
+ *
+ * The daily series is read from the chart endpoint together with its metadata,
+ * so the live `regularMarketPrice` is available in the same response. That
+ * matters: the last *daily bar* is yesterday's close until today's bar is
+ * written, so a book valued on daily bars alone shows yesterday's prices through
+ * the whole session. Where the metadata carries a fresher regular-market price,
+ * it wins, and `priceSource` records which was used.
  */
 export async function getPriceMoves(ticker: string): Promise<PriceMoves> {
-  const [candles, ext] = await Promise.all([
+  const [candles, ext, meta] = await Promise.all([
     dailyCandles(ticker, 30).catch(() => [] as Candle[]),
     extendedHours(ticker),
+    yahooChartRaw(ticker, { period1: new Date(Date.now() - 7 * 86_400_000), interval: "1d" })
+      .then((r: any) => r?.meta ?? null)
+      .catch(() => null),
   ]);
   const daily = movesFromCandles(candles);
   const missing = [...daily.missing];
+
+  let price = daily.price;
+  let asOf = daily.asOf;
+  let changePct1D = daily.changePct1D;
+  let priceSource: PriceMoves["priceSource"] = daily.price != null ? "last daily close" : null;
+
+  const live = typeof meta?.regularMarketPrice === "number" ? meta.regularMarketPrice : null;
+  const liveTime = secondsOf(meta?.regularMarketTime);
+  if (live != null && live > 0) {
+    const liveDay = liveTime != null ? new Date(liveTime * 1000).toISOString().slice(0, 10) : null;
+    // Only take the live price when it is at least as recent as the last bar,
+    // so a cached metadata value cannot drag the price backwards.
+    if (!asOf || !liveDay || liveDay >= asOf) {
+      price = live;
+      priceSource = "live quote";
+      if (liveDay) asOf = liveDay;
+      // Re-measure the day change against the close the live price moved from.
+      const ref =
+        typeof meta?.chartPreviousClose === "number" && meta.chartPreviousClose > 0
+          ? meta.chartPreviousClose
+          : daily.prevClose;
+      if (ref != null && ref > 0) changePct1D = pctChange(ref, live);
+    }
+  }
+
   if (!ext) {
     // Not an error: inside the session, or the venue has no extended session.
     missing.push("No extended-hours trade found — either the regular session is open, or this listing has no pre/post market.");
   }
-  return { ticker, ...daily, extended: ext, missing };
+  const freshness = judgeFreshness(asOf);
+  if (freshness.stale && freshness.staleReason) missing.push(freshness.staleReason);
+
+  return {
+    ticker,
+    ...daily,
+    price,
+    asOf,
+    changePct1D,
+    priceSource,
+    extended: ext,
+    ageDays: freshness.ageDays,
+    stale: freshness.stale,
+    staleReason: freshness.staleReason,
+    missing,
+  };
 }

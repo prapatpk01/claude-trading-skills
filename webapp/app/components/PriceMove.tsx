@@ -25,6 +25,33 @@ export interface Moves {
   } | null;
   /** Legacy field, still sent by the cheap quote path. */
   changePercent?: number | null;
+  asOf?: string | null;
+  priceSource?: string | null;
+  stale?: boolean;
+  staleReason?: string | null;
+  ageDays?: number | null;
+}
+
+/**
+ * A stale-price marker.
+ *
+ * Shown beside the price rather than hidden in a tooltip, because a number that
+ * looks current but is days old is the one error a reader cannot catch for
+ * themselves. Renders nothing when the price is fresh.
+ */
+export function StaleFlag({ m }: { m: Moves | null | undefined }) {
+  if (!m?.stale) return null;
+  return (
+    <span
+      title={m.staleReason ?? "This price is behind the last trading day."}
+      style={{
+        fontSize: 9, fontWeight: 800, letterSpacing: 0.4, padding: "1px 4px", borderRadius: 4,
+        color: "var(--amber)", background: "rgba(245,185,59,.16)", whiteSpace: "nowrap",
+      }}
+    >
+      STALE{m.ageDays != null ? ` ${m.ageDays}d` : ""}
+    </span>
+  );
 }
 
 const fmt = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}%`;
@@ -98,6 +125,12 @@ export function MoveStack({ m }: { m: Moves | null | undefined }) {
       <span><span className="muted" style={{ fontSize: 10.5, marginRight: 4 }}>1D</span><DayChange m={m} /></span>
       <span><span className="muted" style={{ fontSize: 10.5, marginRight: 4 }}>1W</span><WeekChange m={m} /></span>
       {m?.extended && <ExtendedHours m={m} />}
+      <StaleFlag m={m} />
+      {m?.asOf && !m.stale && (
+        <span className="muted" style={{ fontSize: 10 }}>
+          as of {m.asOf}{m.priceSource ? ` · ${m.priceSource}` : ""}
+        </span>
+      )}
     </div>
   );
 }
@@ -114,7 +147,9 @@ export const MOVE_HEADERS = (
 export function MoveCells({ m }: { m: Moves | null | undefined }) {
   return (
     <>
-      <td className={cls("num")}><DayChange m={m} /></td>
+      <td className={cls("num")} style={{ whiteSpace: "nowrap" }}>
+        <DayChange m={m} />{m?.stale && <> <StaleFlag m={m} /></>}
+      </td>
       <td className={cls("num")}><WeekChange m={m} /></td>
       <td><ExtendedHours m={m} compact /></td>
     </>

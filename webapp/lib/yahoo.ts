@@ -250,7 +250,7 @@ export async function getYahooMarketData(ticker: string): Promise<MarketData> {
 
   return {
     ticker: t, quote, overview, financials, earnings, candles, benchmarkCandles,
-    quarters: [], annualEps: [],
+    quarters: [], ttm: null, annualEps: [],
     sources: Array.from(sources), warnings,
   };
 }

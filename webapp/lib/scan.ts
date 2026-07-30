@@ -7,7 +7,7 @@ import { buildGrowthInput, bestGrowthPct } from "./team/growthInputs";
 import { getSecFundamentals } from "./sec";
 import { runSAMP, type SampResult } from "./team/samp";
 import { computeBeta } from "./derive";
-import { movesFromCandles, extendedHours, type PriceMoves } from "./priceMoves";
+import { movesFromCandles, extendedHours, judgeFreshness, type PriceMoves } from "./priceMoves";
 import type { MarketData, SwingSetup, Candle } from "./types";
 
 /** Score floor to be presented at all — below this the model says REJECT. */
@@ -116,6 +116,7 @@ function lightMarketData(ticker: string, candles: Candle[], spy: Candle[]): Mark
     financials: { income: [], balance: [], cashflow: [] },
     earnings: [],
     quarters: [],
+    ttm: null,
     annualEps: [],
     candles,
     benchmarkCandles: spy,
@@ -152,7 +153,14 @@ export async function runScan(universe: string[], topN = 5): Promise<ScanResult>
       scanned++;
       // The daily windows are already paid for — these are the same closes the
       // technicals are computed from.
-      dailyMoves[ticker] = { ticker, ...movesFromCandles(candles), extended: null };
+      {
+        const m = movesFromCandles(candles);
+        dailyMoves[ticker] = {
+          ticker, ...m, extended: null,
+          priceSource: m.price != null ? "last daily close" : null,
+          ...judgeFreshness(m.asOf),
+        };
+      }
       const md = lightMarketData(ticker, candles, spy);
       const tech = computeTechnicals(md);
       const score = computeMomentumScore(tech, false);

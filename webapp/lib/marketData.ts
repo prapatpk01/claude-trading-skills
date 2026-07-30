@@ -265,6 +265,30 @@ async function enrich(data: MarketData): Promise<void> {
         if (sec.quarters.length) data.quarters = withYoY(sec.quarters);
         if (sec.annualEps.length) data.annualEps = sec.annualEps;
 
+        // The trailing-twelve-month income statement.
+        //
+        // Annual filings can be eleven months old, so a report built only on
+        // fiscal years describes a company as it was, not as it is. Revenue and
+        // net income are summed from the last four filed quarters here, which is
+        // both current and checkable against the quarterly table below it; gross
+        // and operating income come from the SEC layer's own trailing sums,
+        // because those lines are not carried per quarter.
+        const q4 = sec.quarters.slice(0, 4);
+        const sumOf = (pick: (q: typeof q4[number]) => number | null): number | null => {
+          const vals = q4.map(pick).filter((v): v is number => v != null && Number.isFinite(v));
+          return vals.length === 4 ? vals.reduce((s, v) => s + v, 0) : null;
+        };
+        if (q4.length) {
+          data.ttm = {
+            through: sec.latestQuarterEnd,
+            revenue: sumOf((q) => q.revenue) ?? sec.revenueTTM,
+            grossProfit: sec.grossProfitTTM,
+            operatingIncome: sec.operatingIncomeTTM,
+            netIncome: sumOf((q) => q.netIncome) ?? sec.netIncomeTTM,
+            quartersUsed: q4.length,
+          };
+        }
+
         // Ratios are computed from the latest full fiscal year, which is the
         // most reliable series we have. A TTM sum is only used when it agrees
         // with the annual figure — stitched-together quarterly facts are easy
@@ -458,6 +482,7 @@ async function getAlphaVantageMarketData(ticker: string): Promise<MarketData> {
     financials,
     earnings,
     quarters: [],
+    ttm: null,
     annualEps: [],
     candles,
     benchmarkCandles,

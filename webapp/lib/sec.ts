@@ -187,6 +187,9 @@ export interface SecFundamentals {
   revenueTTM: number | null;
   netIncomeTTM: number | null;
   grossProfitTTM: number | null;
+  operatingIncomeTTM: number | null;
+  /** Period end of the most recent quarter filed, e.g. "2026-04-30". */
+  latestQuarterEnd: string | null;
   equity: number | null;
   assets: number | null;
   sic: string | null;
@@ -259,6 +262,11 @@ export function parseCompanyFacts(data: any): SecFundamentals {
   const revenueTTM = ttm(facts, TAGS.revenue) ?? (Number(income[0]?.totalRevenue) || null);
   const netIncomeTTM = ttm(facts, TAGS.netIncome) ?? (Number(income[0]?.netIncome) || null);
   const grossProfitTTM = ttm(facts, TAGS.grossProfit) ?? (Number(income[0]?.grossProfit) || null);
+  // Operating income on a trailing basis, so the TTM column of the income
+  // statement is complete rather than showing a hole at the operating line.
+  // No fiscal-year fallback here: a full-year figure is not trailing, and
+  // labelling it as such would misdate it.
+  const operatingIncomeTTM = ttm(facts, TAGS.operatingIncome);
 
   // ── Quarterly series (revenue / net income / EPS) ──
   const qRev = quarterlySeries(facts, TAGS.revenue);
@@ -299,6 +307,10 @@ export function parseCompanyFacts(data: any): SecFundamentals {
     revenueTTM,
     netIncomeTTM,
     grossProfitTTM,
+    operatingIncomeTTM,
+    // The quarter the trailing figures run through — the answer to "how current
+    // is this?", which a report that only shows fiscal years cannot give.
+    latestQuarterEnd: quarters[0]?.end ?? null,
     equity: Number(balance[0]?.totalShareholderEquity) || null,
     assets: Number(balance[0]?.totalAssets) || null,
     sic: data?.sic ?? null,

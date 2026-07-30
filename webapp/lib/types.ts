@@ -92,6 +92,20 @@ export interface MarketData {
   earnings: EarningsRow[];
   /** Last 8 reported quarters (SEC), newest first. */
   quarters: QuarterlyRow[];
+  /**
+   * The trailing-twelve-month income statement, summed from the last four filed
+   * quarters. Annual statements can be nearly a year stale; this is what "latest"
+   * actually means, and `through` says which quarter it runs to.
+   */
+  ttm: {
+    through: string | null;
+    revenue: number | null;
+    grossProfit: number | null;
+    operatingIncome: number | null;
+    netIncome: number | null;
+    /** Quarters that were summed — fewer than four is not a full year. */
+    quartersUsed: number;
+  } | null;
   /** Annual diluted EPS history, newest first. */
   annualEps: { year: number; end: string; eps: number }[];
   candles: Candle[]; // daily, oldest → newest

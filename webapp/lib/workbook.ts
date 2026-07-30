@@ -75,11 +75,41 @@ function bandRows(ws: ExcelJS.Worksheet, start: number, end: number, cols: numbe
 const n = (v: any): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const orNA = (v: number | null | undefined) => (v == null ? "n/a" : v);
 
+/**
+ * A formula cell that also carries its computed value.
+ *
+ * ExcelJS writes a formula with no cached result, and any reader that does not
+ * recalculate — iOS Quick Look, most web and mail previews, Google Sheets'
+ * thumbnail — renders those cells EMPTY. The reader then sees a report with
+ * holes exactly where the derived numbers should be: margins, ROIC, the blended
+ * target. Every formula therefore ships both halves: the formula, so the model
+ * stays live when an input is edited, and the value, so the file reads correctly
+ * before anything has recalculated.
+ *
+ * Pass null for a result only where the cell genuinely depends on input the
+ * reader has not supplied yet.
+ */
+function fx(formula: string, result: number | string | null) {
+  return (result == null ? { formula } : { formula, result }) as any;
+}
+
+/** Median of the finite numbers in a list — mirrors Excel's MEDIAN. */
+function median(xs: (number | null | undefined)[]): number | null {
+  const v = xs.filter((x): x is number => typeof x === "number" && Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 export async function buildWorkbook(a: AnalysisResult): Promise<ExcelJS.Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "Equity Research Web";
   wb.created = new Date();
+  // Tell every spreadsheet application to recalculate the whole book on open.
+  // Together with the cached results written by fx(), this means the numbers are
+  // right both in an app that calculates and in a preview that does not.
+  wb.calcProperties.fullCalcOnLoad = true;
   const price = a.data.quote?.price ?? 0;
   const ov = a.data.overview;
 
@@ -123,12 +153,38 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
     mv?.extended ? mv.extended.changePct / 100 : "none",
     { fmt: "0.00%", color: toneOf(mv?.extended?.changePct) }
   );
-  labelValue(ws, 9, "Market Cap ($M)", n(ov?.marketCap) / M, { fmt: "#,##0" });
+  // Market cap from price × shares wherever the share count is known, so it
+  // moves with the price instead of carrying whatever snapshot the provider's
+  // profile endpoint last cached. A market cap that disagrees with the price on
+  // the line above it is the most visible way for a report to look wrong.
+  const shares = ov?.sharesOutstanding ?? null;
+  const mcapFromPrice = shares && price > 0 ? price * shares : null;
+  labelValue(ws, 9, "Market Cap ($M)", (mcapFromPrice ?? n(ov?.marketCap)) / M, { fmt: "#,##0" });
+  ws.getCell("C9").value = mcapFromPrice
+    ? `price × ${(shares! / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}M shares`
+    : "as reported by the data provider — may lag the price";
+  ws.getCell("C9").font = { italic: true, size: 8, color: { argb: GREY } };
   labelValue(ws, 10, "P/E (TTM)", orNA(ov?.peRatio), { fmt: "0.0" });
   labelValue(ws, 11, "EPS (TTM)", orNA(ov?.eps), { fmt: "$0.00" });
   labelValue(ws, 12, "Beta", orNA(ov?.beta), { fmt: "0.00" });
   labelValue(ws, 13, "52-wk Range", `${orNA(ov?.week52Low)} – ${orNA(ov?.week52High)}`);
   bandRows(ws, 5, 13, 2);
+  // Say how old the price is. A number that looks live but is three days old is
+  // the failure the reader cannot detect for themselves.
+  if (mv?.stale && mv.staleReason) {
+    const w = ws.getCell("A15");
+    w.value = `⚠ ${mv.staleReason}`;
+    ws.mergeCells("A15:B15");
+    w.font = { size: 8.5, bold: true, color: { argb: RED } };
+    w.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    ws.getRow(15).height = 28;
+  } else if (mv?.asOf) {
+    const w = ws.getCell("A15");
+    w.value = `Price as of ${mv.asOf}${mv.priceSource ? ` — ${mv.priceSource}` : ""}.`;
+    ws.mergeCells("A15:B15");
+    w.font = { size: 8, italic: true, color: { argb: GREY } };
+    w.alignment = { indent: 1 };
+  }
   if (mv?.extended) {
     ws.getCell("A14").value =
       `Extended-hours reading: $${mv.extended.price.toFixed(2)} at ` +
@@ -169,9 +225,9 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
     { fmt: "0.0%", col: 4, color: (a.expectedReturnPct ?? 0) >= 0 ? GREEN : RED });
   bandRows(ws, 5, 15, 5);
 
-  sectionHeader(ws, "A17:E17", "Quick Thesis");
+  sectionHeader(ws, "A18:E18", "Quick Thesis");
   const scenarios = a.thesis.map((s) => `${s.label} (${s.probability}%, PT $${s.targetPrice}): ${s.narrative}`);
-  let r = 18;
+  let r = 19;
   for (const s of scenarios) {
     ws.mergeCells(`A${r}:E${r + 1}`);
     const c = ws.getCell(`A${r}`);
@@ -239,7 +295,9 @@ function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
         "Revenue-weighted across the same filers, from their annual filings"],
       ["TAM ($B) — your input", "", "#,##0",
         "No free verifiable source exists for TAM. Enter one you trust and the share below computes."],
-      ["Share of your TAM", { formula: `IF(B${r + 4}="","enter TAM above",B${r + 1}/(B${r + 4}*1000))` }, "0.00%",
+      // The only cell in the book with no cached value, because it depends on a
+      // number the reader has not entered yet. It says so rather than sitting blank.
+      ["Share of your TAM", fx(`IF(B${r + 4}="","enter TAM above",B${r + 1}/(B${r + 4}*1000))`, "enter TAM above"), "0.00%",
         "Subject revenue ÷ your TAM"],
     ];
     sizeRows.forEach((row, i) => {
@@ -262,7 +320,10 @@ function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
       ws.getCell(rr, 3).alignment = { wrapText: true, vertical: "middle" };
     });
     // Make the pool share a live formula rather than a frozen number.
-    ws.getCell(r + 2, 2).value = { formula: `IF(B${poolRow}=0,"",B${poolRow + 1}/B${poolRow})` };
+    ws.getCell(r + 2, 2).value = fx(
+      `IF(B${poolRow}=0,"",B${poolRow + 1}/B${poolRow})`,
+      rp.sizing.subjectSharePct != null ? rp.sizing.subjectSharePct / 100 : null
+    );
     bandRows(ws, r, r + sizeRows.length - 1, 2);
     r += sizeRows.length + 1;
 
@@ -315,9 +376,16 @@ function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
     ws.getCell(r, 1).value = "Peer median (excl. subject)";
     ws.getCell(r, 1).font = { bold: true, italic: true };
     ws.getCell(r, 1).alignment = { indent: 1 };
+    const others = rp.peers.filter((p) => !p.isSubject);
+    const medianOf: Record<string, number | null> = {
+      E: median(others.map((p) => p.peTTM)),
+      F: median(others.map((p) => (p.grossMargin == null ? null : p.grossMargin / 100))),
+      G: median(others.map((p) => (p.netMargin == null ? null : p.netMargin / 100))),
+      H: median(others.map((p) => (p.revenueCagrPct == null ? null : p.revenueCagrPct / 100))),
+    };
     for (const col of ["E", "F", "G", "H"]) {
       const c = ws.getCell(`${col}${r}`);
-      c.value = { formula: `IFERROR(MEDIAN(${col}${peerStart + 1}:${col}${r - 1}),"")` };
+      c.value = fx(`IFERROR(MEDIAN(${col}${peerStart + 1}:${col}${r - 1}),"")`, medianOf[col]);
       c.numFmt = col === "E" ? "0.0" : "0.0%";
       c.font = { bold: true, italic: true };
       c.alignment = { horizontal: "right" };
@@ -409,22 +477,49 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
   const years = inc.map((r) => (r.fiscalDate as string).slice(0, 4));
   const nCols = Math.min(years.length, 5);
 
-  // Historical income & margins with formulas
-  sectionHeader(ws, "A3:F3", "Historical Income Statement & Margins ($M)");
-  headerRow(ws, 4, ["Line item", ...years.slice(0, nCols)]);
-  const isRows: [string, keyof FinancialRow | null, string][] = [
-    ["Revenue", "totalRevenue", "#,##0"],
-    ["Gross Profit", "grossProfit", "#,##0"],
-    ["Operating Income", "operatingIncome", "#,##0"],
-    ["Net Income", "netIncome", "#,##0"],
+  // ── Income statement: TTM first, then the fiscal years ──
+  //
+  // The trailing-twelve-month column leads because it is the only one that is
+  // current. An annual filing can be eleven months old, so a report built on
+  // fiscal years alone describes the company as it was. TTM is summed from the
+  // last four filed quarters and labelled with the quarter it runs through, so
+  // the reader can see exactly how fresh it is.
+  const ttm = a.data.ttm;
+  const ttmLabel = ttm?.through ? `TTM → ${ttm.through}` : "TTM";
+  const hasTtm = Boolean(ttm);
+
+  sectionHeader(ws, "A3:G3", "Income statement & margins ($M) — trailing twelve months, then fiscal years");
+  headerRow(ws, 4, ["Line item", ...(hasTtm ? [ttmLabel] : []), ...years.slice(0, nCols)]);
+  // Mark the TTM column so it does not read as just another fiscal year.
+  if (hasTtm) {
+    const h = ws.getCell(4, 2);
+    h.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BLUE } };
+    h.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  }
+  const isRows: [string, keyof FinancialRow | null, string, number | null][] = [
+    ["Revenue", "totalRevenue", "#,##0", ttm?.revenue ?? null],
+    ["Gross Profit", "grossProfit", "#,##0", ttm?.grossProfit ?? null],
+    ["Operating Income", "operatingIncome", "#,##0", ttm?.operatingIncome ?? null],
+    ["Net Income", "netIncome", "#,##0", ttm?.netIncome ?? null],
   ];
+  const dataCols = (hasTtm ? 1 : 0) + nCols;
   let r = 5;
   const revRow = 5;
-  isRows.forEach(([label, key, fmt]) => {
+  isRows.forEach(([label, key, fmt, ttmVal]) => {
     ws.getCell(r, 1).value = label;
     ws.getCell(r, 1).alignment = { indent: 1 };
+    let col = 2;
+    if (hasTtm) {
+      const cell = ws.getCell(r, col);
+      cell.value = ttmVal != null ? ttmVal / M : "n/a";
+      cell.numFmt = fmt;
+      cell.alignment = { horizontal: "right" };
+      cell.font = { bold: true };
+      if (ttmVal == null) cell.font = { italic: true, color: { argb: GREY } };
+      col++;
+    }
     for (let c = 0; c < nCols; c++) {
-      const cell = ws.getCell(r, 2 + c);
+      const cell = ws.getCell(r, col + c);
       cell.value = n(inc[c][key as string]) / M;
       cell.numFmt = fmt;
       cell.alignment = { horizontal: "right" };
@@ -442,21 +537,42 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
     ws.getCell(r, 1).value = label;
     ws.getCell(r, 1).font = { italic: true, color: { argb: GREY } };
     ws.getCell(r, 1).alignment = { indent: 2 };
-    for (let c = 0; c < nCols; c++) {
+    for (let c = 0; c < dataCols; c++) {
       const col = String.fromCharCode(66 + c); // B, C, ...
       const cell = ws.getCell(r, 2 + c);
-      cell.value = { formula: `IF(${col}${denRow}=0,0,${col}${numRow}/${col}${denRow})` };
+      // The same margin, computed twice on purpose: the formula keeps the sheet
+      // live, the cached result keeps it readable in a viewer that never
+      // recalculates.
+      const isTtmCol = hasTtm && c === 0;
+      const numerator = isTtmCol
+        ? isRows[numRow - revRow][3]
+        : n(inc[c - (hasTtm ? 1 : 0)][isRows[numRow - revRow][1] as string]);
+      const denominator = isTtmCol ? ttm?.revenue ?? null : n(inc[c - (hasTtm ? 1 : 0)].totalRevenue);
+      const value =
+        numerator != null && denominator != null && denominator !== 0 ? numerator / denominator : null;
+      cell.value = fx(`IF(${col}${denRow}=0,"",${col}${numRow}/${col}${denRow})`, value);
       cell.numFmt = "0.0%";
       cell.alignment = { horizontal: "right" };
     }
     r++;
   });
-  bandRows(ws, 5, r - 1, nCols + 1);
+  bandRows(ws, 5, r - 1, dataCols + 1);
   // color scale on margins
   ws.addConditionalFormatting({
-    ref: `B${grossMarginRow}:${String.fromCharCode(65 + nCols)}${r - 1}`,
+    ref: `B${grossMarginRow}:${String.fromCharCode(65 + dataCols)}${r - 1}`,
     rules: [{ type: "colorScale", cfvo: [{ type: "min" }, { type: "percentile", value: 50 }, { type: "max" }], color: [{ argb: "FFF8696B" }, { argb: "FFFFEB84" }, { argb: "FF63BE7B" }] } as any],
   });
+  r++;
+  ws.mergeCells(`A${r}:G${r}`);
+  const freshness = ws.getCell(`A${r}`);
+  freshness.value = hasTtm
+    ? `The TTM column sums the ${ttm!.quartersUsed} most recent filed quarters and runs through ${ttm!.through}. ` +
+      `The fiscal-year columns end ${years[0]} — up to eleven months older. Where a TTM line reads n/a, that line is not tagged per quarter in the filings and is left out rather than estimated.`
+    : `No trailing-twelve-month column could be built — fewer than four quarters were readable, so only fiscal years are shown. The most recent ends ${years[0] ?? "n/a"}, which may be up to eleven months old.`;
+  freshness.font = { size: 8.5, italic: true, color: { argb: hasTtm ? GREY : RED } };
+  freshness.alignment = { wrapText: true, vertical: "top", indent: 1 };
+  ws.getRow(r).height = 26;
+  r++;
 
   // Returns & balance snapshot
   r += 1;
@@ -475,7 +591,10 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
     // Total Debt is at row r+3 and Total Equity at r+4 (this row is r+5) —
     // referencing r+4/r+5 made the cell depend on itself and Excel showed a
     // circular-reference error.
-    ["Debt / Equity", { formula: `B${r + 3}/MAX(B${r + 4},0.0001)` }, "0.00"],
+    ["Debt / Equity", fx(
+      `B${r + 3}/MAX(B${r + 4},0.0001)`,
+      (n(b0.longTermDebt) + n(b0.shortTermDebt)) / Math.max(n(b0.totalShareholderEquity), 0.0001)
+    ), "0.00"],
     ["Free Cash Flow ($M)", fcf, "#,##0"],
     ["FCF Margin", a.assumptions.fcfMargin, "0.0%"],
   ];
@@ -532,9 +651,18 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
     // Make the derived lines live so an edited tax rate or capital base flows through.
     const ebitR = roicStart, taxR = roicStart + 1, nopatR = roicStart + 2;
     const icR = roicStart + 3, roicR = roicStart + 4, waccR = roicStart + 5, spreadR = roicStart + 6;
-    ws.getCell(nopatR, 2).value = { formula: `IF(OR(B${ebitR}="n/a",B${taxR}="n/a"),"n/a",B${ebitR}*(1-B${taxR}))` };
-    ws.getCell(roicR, 2).value = { formula: `IF(OR(B${nopatR}="n/a",B${icR}="n/a",B${icR}<=0),"n/a",B${nopatR}/B${icR})` };
-    ws.getCell(spreadR, 2).value = { formula: `IF(OR(B${roicR}="n/a",B${waccR}="n/a"),"n/a",B${roicR}-B${waccR})` };
+    ws.getCell(nopatR, 2).value = fx(
+      `IF(OR(B${ebitR}="n/a",B${taxR}="n/a"),"n/a",B${ebitR}*(1-B${taxR}))`,
+      rt.nopat != null ? rt.nopat / M : "n/a"
+    );
+    ws.getCell(roicR, 2).value = fx(
+      `IF(OR(B${nopatR}="n/a",B${icR}="n/a",B${icR}<=0),"n/a",B${nopatR}/B${icR})`,
+      rt.roicPct != null ? rt.roicPct / 100 : "n/a"
+    );
+    ws.getCell(spreadR, 2).value = fx(
+      `IF(OR(B${roicR}="n/a",B${waccR}="n/a"),"n/a",B${roicR}-B${waccR})`,
+      rt.spreadPct != null ? rt.spreadPct / 100 : "n/a"
+    );
     ws.getCell(spreadR, 2).font = {
       bold: true,
       color: { argb: (rt.spreadPct ?? 0) > 0 ? GREEN : RED },
@@ -587,8 +715,12 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
       ws.getCell(r, 2).numFmt = "#,##0";
       ws.getCell(r, 3).value = q.netIncome != null ? q.netIncome / M : "n/a";
       ws.getCell(r, 3).numFmt = "#,##0";
-      // margin as a live formula so edits recalculate
-      ws.getCell(r, 4).value = { formula: `IF(B${r}=0,"",C${r}/B${r})` };
+      // margin as a live formula so edits recalculate, with the value cached so
+      // it also reads correctly in a viewer that never recalculates
+      ws.getCell(r, 4).value = fx(
+        `IF(B${r}=0,"",C${r}/B${r})`,
+        q.revenue && q.netIncome != null ? q.netIncome / q.revenue : null
+      );
       ws.getCell(r, 4).numFmt = "0.0%";
       ws.getCell(r, 5).value = q.eps ?? "n/a";
       ws.getCell(r, 5).numFmt = "$0.00";
@@ -624,11 +756,17 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
     ws.getCell(r, 2).numFmt = "$0.00";
     ws.getCell(r, 3).value = e.estimatedEPS ?? 0;
     ws.getCell(r, 3).numFmt = "$0.00";
-    ws.getCell(r, 4).value = { formula: `B${r}-C${r}` };
+    ws.getCell(r, 4).value = fx(
+      `B${r}-C${r}`,
+      e.reportedEPS != null && e.estimatedEPS != null ? e.reportedEPS - e.estimatedEPS : null
+    );
     ws.getCell(r, 4).numFmt = "$0.00";
     ws.getCell(r, 5).value = (e.surprisePercent ?? 0) / 100;
     ws.getCell(r, 5).numFmt = "0.0%";
-    ws.getCell(r, 6).value = { formula: `IF(B${r}>=C${r},"BEAT","MISS")` };
+    ws.getCell(r, 6).value = fx(
+      `IF(B${r}>=C${r},"BEAT","MISS")`,
+      e.reportedEPS != null && e.estimatedEPS != null ? (e.reportedEPS >= e.estimatedEPS ? "BEAT" : "MISS") : null
+    );
     ws.getCell(r, 6).alignment = { horizontal: "center" };
     [2, 3, 4, 5].forEach((c) => (ws.getCell(r, c).alignment = { horizontal: "right" }));
     r++;
@@ -684,9 +822,15 @@ function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
   // weighted target via SUMPRODUCT
   ws.getCell(r, 1).value = "Blended PT";
   ws.getCell(r, 1).font = { bold: true };
-  ws.getCell(r, 2).value = { formula: `SUM(B${first}:B${r - 1})` };
+  ws.getCell(r, 2).value = fx(
+    `SUM(B${first}:B${r - 1})`,
+    a.thesis.reduce((acc, s2) => acc + s2.probability / 100, 0)
+  );
   ws.getCell(r, 2).numFmt = "0%";
-  ws.getCell(r, 3).value = { formula: `SUMPRODUCT(B${first}:B${r - 1},C${first}:C${r - 1})` };
+  ws.getCell(r, 3).value = fx(
+    `SUMPRODUCT(B${first}:B${r - 1},C${first}:C${r - 1})`,
+    a.thesis.reduce((acc, s2) => acc + (s2.probability / 100) * s2.targetPrice, 0)
+  );
   ws.getCell(r, 3).numFmt = "$#,##0.00";
   ws.getCell(r, 3).font = { bold: true, color: { argb: BLUE } };
   ws.getCell(r, 3).alignment = { horizontal: "right" };
@@ -783,7 +927,10 @@ function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
 }
 
 // ── Sheet 5: 3-Statement Model ────────────────────────────────────────
-function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[]; sheet: string } {
+function buildModel(
+  wb: ExcelJS.Workbook,
+  a: AnalysisResult
+): { fcfRefs: string[]; fcf: number[]; sheet: string } {
   const ws = wb.addWorksheet("5. 3-Statement Model", { views: [{ showGridLines: false }] });
   const sheetName = "5. 3-Statement Model";
   ws.columns = [{ width: 32 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
@@ -792,14 +939,45 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
   const inc = a.data.financials.income;
   const cf = a.data.financials.cashflow;
   const bal = a.data.financials.balance;
-  const baseRev = n(inc[0]?.totalRevenue) / M;
   const cf0 = cf[0] ?? {};
   const b0 = bal[0] ?? {};
   const g = a.assumptions.revenueGrowth;
-  const grossMargin = n(inc[0]?.grossProfit) / Math.max(n(inc[0]?.totalRevenue), 1);
-  const opMargin = a.data.overview?.operatingMargin ?? n(inc[0]?.operatingIncome) / Math.max(n(inc[0]?.totalRevenue), 1);
+
+  // The forecast starts from the trailing twelve months, not the last fiscal
+  // year. A model anchored to a filing that closed eleven months ago begins by
+  // discarding a year of the company's actual growth, and every year of the
+  // projection inherits that error.
+  const ttm = a.data.ttm;
+  const fyRev = n(inc[0]?.totalRevenue);
+  const baseRevRaw = ttm?.revenue ?? fyRev;
+  const baseRev = baseRevRaw / M;
+  const baseLabel = ttm?.revenue
+    ? `Base revenue — TTM through ${ttm.through} ($M)`
+    : `Base revenue — FY${String(inc[0]?.fiscalDate ?? "").slice(0, 4)} ($M)`;
+
+  const grossMargin =
+    ttm?.grossProfit && ttm.revenue ? ttm.grossProfit / ttm.revenue : n(inc[0]?.grossProfit) / Math.max(fyRev, 1);
+  const opMargin =
+    ttm?.operatingIncome && ttm.revenue
+      ? ttm.operatingIncome / ttm.revenue
+      : a.data.overview?.operatingMargin ?? n(inc[0]?.operatingIncome) / Math.max(fyRev, 1);
   const taxRate = 0.21;
   const fcfMargin = a.assumptions.fcfMargin;
+
+  // The projection, computed once. Every formula below caches the matching value
+  // from these arrays, so the sheet reads correctly before it recalculates and
+  // the two can never disagree — they come from the same numbers.
+  const rev: number[] = [];
+  for (let i = 0; i < 5; i++) rev.push((i === 0 ? baseRev : rev[i - 1]) * (1 + (g[i] ?? 0)));
+  const cogs = rev.map((v) => v * (1 - grossMargin));
+  const gp = rev.map((v, i) => v - cogs[i]);
+  const opInc = rev.map((v) => v * opMargin);
+  const tax = opInc.map((v) => v * taxRate);
+  const ni = opInc.map((v, i) => v - tax[i]);
+  const da = rev.map((v) => v * 0.04);
+  const ocf = ni.map((v, i) => v + da[i]);
+  const capex = rev.map((v) => -v * 0.05);
+  const fcfProj = ocf.map((v, i) => v + capex[i]);
 
   // Assumptions block
   sectionHeader(ws, "A3:G3", "Assumptions (edit blue cells to re-run the model)");
@@ -827,7 +1005,7 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
       ws.getCell(rr, col).alignment = { horizontal: "right" };
     });
   }
-  ws.getCell(11, 1).value = "Base revenue (Y0, $M)";
+  ws.getCell(11, 1).value = baseLabel;
   ws.getCell(11, 2).value = baseRev;
   ws.getCell(11, 2).numFmt = "#,##0";
   ws.getCell(11, 2).font = { bold: true };
@@ -849,12 +1027,12 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
   for (let i = 0; i < 5; i++) {
     const c = year(i);
     const prevRev = i === 0 ? "$B$11" : `${year(i - 1)}${revRow}`;
-    ws.getCell(revRow, 2 + i).value = { formula: `${prevRev}*(1+${c}5)` };
-    ws.getCell(cogsRow, 2 + i).value = { formula: `${c}${revRow}*(1-${c}6)` };
-    ws.getCell(gpRow, 2 + i).value = { formula: `${c}${revRow}-${c}${cogsRow}` };
-    ws.getCell(opRow, 2 + i).value = { formula: `${c}${revRow}*${c}7` };
-    ws.getCell(taxRow, 2 + i).value = { formula: `${c}${opRow}*${c}8` };
-    ws.getCell(niRow, 2 + i).value = { formula: `${c}${opRow}-${c}${taxRow}` };
+    ws.getCell(revRow, 2 + i).value = fx(`${prevRev}*(1+${c}5)`, rev[i]);
+    ws.getCell(cogsRow, 2 + i).value = fx(`${c}${revRow}*(1-${c}6)`, cogs[i]);
+    ws.getCell(gpRow, 2 + i).value = fx(`${c}${revRow}-${c}${cogsRow}`, gp[i]);
+    ws.getCell(opRow, 2 + i).value = fx(`${c}${revRow}*${c}7`, opInc[i]);
+    ws.getCell(taxRow, 2 + i).value = fx(`${c}${opRow}*${c}8`, tax[i]);
+    ws.getCell(niRow, 2 + i).value = fx(`${c}${opRow}-${c}${taxRow}`, ni[i]);
     for (const rr of [revRow, cogsRow, gpRow, opRow, taxRow, niRow]) {
       ws.getCell(rr, 2 + i).numFmt = "#,##0";
       ws.getCell(rr, 2 + i).alignment = { horizontal: "right" };
@@ -875,11 +1053,11 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
   const fcfRefs: string[] = [];
   for (let i = 0; i < 5; i++) {
     const c = year(i);
-    ws.getCell(niCfRow, 2 + i).value = { formula: `${c}${niRow}` };
-    ws.getCell(daRow, 2 + i).value = { formula: `${c}${revRow}*0.04` };
-    ws.getCell(ocfRow, 2 + i).value = { formula: `${c}${niCfRow}+${c}${daRow}` };
-    ws.getCell(capexRow, 2 + i).value = { formula: `-${c}${revRow}*0.05` };
-    ws.getCell(fcfRow, 2 + i).value = { formula: `${c}${ocfRow}+${c}${capexRow}` };
+    ws.getCell(niCfRow, 2 + i).value = fx(`${c}${niRow}`, ni[i]);
+    ws.getCell(daRow, 2 + i).value = fx(`${c}${revRow}*0.04`, da[i]);
+    ws.getCell(ocfRow, 2 + i).value = fx(`${c}${niCfRow}+${c}${daRow}`, ocf[i]);
+    ws.getCell(capexRow, 2 + i).value = fx(`-${c}${revRow}*0.05`, capex[i]);
+    ws.getCell(fcfRow, 2 + i).value = fx(`${c}${ocfRow}+${c}${capexRow}`, fcfProj[i]);
     for (const rr of [niCfRow, daRow, ocfRow, capexRow, fcfRow]) {
       ws.getCell(rr, 2 + i).numFmt = "#,##0";
       ws.getCell(rr, 2 + i).alignment = { horizontal: "right" };
@@ -903,16 +1081,21 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
   const otherAssets = (n(b0.totalAssets) - n(b0.cashAndEquivalents)) / M;
   const debt = (n(b0.longTermDebt) + n(b0.shortTermDebt)) / M;
   const baseEquity = n(b0.totalShareholderEquity) / M;
+  // Running balances, so the cached values match the rolling formulas.
+  let cashRoll = baseCash;
+  let equityRoll = baseEquity;
   for (let i = 0; i < 5; i++) {
     const c = year(i);
     const prevCash = i === 0 ? baseCash.toFixed(2) : `${year(i - 1)}${cashRow}`;
-    ws.getCell(cashRow, 2 + i).value = { formula: `${prevCash}+${c}${fcfRow}` };
+    cashRoll = (i === 0 ? baseCash : cashRoll) + fcfProj[i];
+    ws.getCell(cashRow, 2 + i).value = fx(`${prevCash}+${c}${fcfRow}`, cashRoll);
     ws.getCell(otherAssetRow, 2 + i).value = otherAssets;
-    ws.getCell(assetsRow, 2 + i).value = { formula: `${c}${cashRow}+${c}${otherAssetRow}` };
+    ws.getCell(assetsRow, 2 + i).value = fx(`${c}${cashRow}+${c}${otherAssetRow}`, cashRoll + otherAssets);
     ws.getCell(debtRow, 2 + i).value = debt;
     const prevEq = i === 0 ? baseEquity.toFixed(2) : `${year(i - 1)}${equityRow}`;
-    ws.getCell(equityRow, 2 + i).value = { formula: `${prevEq}+${c}${niRow}` };
-    ws.getCell(liabEqRow, 2 + i).value = { formula: `${c}${debtRow}+${c}${equityRow}` };
+    equityRoll = (i === 0 ? baseEquity : equityRoll) + ni[i];
+    ws.getCell(equityRow, 2 + i).value = fx(`${prevEq}+${c}${niRow}`, equityRoll);
+    ws.getCell(liabEqRow, 2 + i).value = fx(`${c}${debtRow}+${c}${equityRow}`, debt + equityRoll);
     for (const rr of [cashRow, otherAssetRow, assetsRow, debtRow, equityRow, liabEqRow]) {
       ws.getCell(rr, 2 + i).numFmt = "#,##0";
       ws.getCell(rr, 2 + i).alignment = { horizontal: "right" };
@@ -923,11 +1106,15 @@ function buildModel(wb: ExcelJS.Workbook, a: AnalysisResult): { fcfRefs: string[
   bandRows(ws, cashRow, liabEqRow, 6);
 
   footer(ws, "A39", a);
-  return { fcfRefs, sheet: sheetName };
+  return { fcfRefs, fcf: fcfProj, sheet: sheetName };
 }
 
 // ── Sheet 6: Valuation & Scenarios ────────────────────────────────────
-function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRefs: string[]; sheet: string }) {
+function buildValuation(
+  wb: ExcelJS.Workbook,
+  a: AnalysisResult,
+  model: { fcfRefs: string[]; fcf: number[]; sheet: string }
+) {
   const ws = wb.addWorksheet("6. Valuation & Scenarios", { views: [{ showGridLines: false }] });
   ws.columns = [{ width: 30 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
   titleCell(ws, "A1:G1", "DCF Valuation & Scenarios");
@@ -938,17 +1125,23 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   const b0 = a.data.financials.balance[0] ?? {};
   const netDebtM = ((n(b0.longTermDebt) + n(b0.shortTermDebt)) - n(b0.cashAndEquivalents)) / M;
 
-  // WACC block
+  // WACC block. The chain is computed here as well as written as formulas, so
+  // the cells read correctly before any recalculation and the two can never
+  // disagree — both come from these same four inputs.
+  const rf = 0.043, erp = 0.05, kd = 0.035, we = 0.85;
+  const ke = rf + beta * erp;
+  const wd = 1 - we;
+  const waccCalc = ke * we + kd * wd;
   sectionHeader(ws, "A3:C3", "WACC Build-up");
   const wa: [string, any, string][] = [
-    ["Risk-free rate", 0.043, "0.00%"],
-    ["Equity risk premium", 0.05, "0.00%"],
+    ["Risk-free rate", rf, "0.00%"],
+    ["Equity risk premium", erp, "0.00%"],
     ["Beta", beta, "0.00"],
-    ["Cost of equity", { formula: "B5+B7*B6" }, "0.00%"],
-    ["Cost of debt (after-tax)", 0.035, "0.00%"],
-    ["Equity weight", 0.85, "0%"],
-    ["Debt weight", { formula: "1-B10" }, "0%"],
-    ["WACC", { formula: "B8*B10+B9*B11" }, "0.00%"],
+    ["Cost of equity", fx("B5+B7*B6", ke), "0.00%"],
+    ["Cost of debt (after-tax)", kd, "0.00%"],
+    ["Equity weight", we, "0%"],
+    ["Debt weight", fx("1-B10", wd), "0%"],
+    ["WACC", fx("B8*B10+B9*B11", waccCalc), "0.00%"],
   ];
   let r = 5;
   wa.forEach(([label, val, fmt]) => {
@@ -981,11 +1174,15 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   ws.getCell(dfR, 1).value = "Discount factor";
   ws.getCell(pvR, 1).value = "PV of FCF";
   const cols = ["B", "C", "D", "E", "F"];
+  // Discount factors and present values, from the projected free cash flow the
+  // model sheet produced.
+  const df = [0, 1, 2, 3, 4].map((i) => 1 / Math.pow(1 + waccCalc, i + 1));
+  const pv = df.map((d, i) => (model.fcf[i] ?? 0) * d);
   for (let i = 0; i < 5; i++) {
     const c = cols[i];
-    ws.getCell(fcfR, 2 + i).value = { formula: model.fcfRefs[i] };
-    ws.getCell(dfR, 2 + i).value = { formula: `1/(1+$${waccCell.replace("B", "B$")})^${i + 1}` };
-    ws.getCell(pvR, 2 + i).value = { formula: `${c}${fcfR}*${c}${dfR}` };
+    ws.getCell(fcfR, 2 + i).value = fx(model.fcfRefs[i], model.fcf[i] ?? null);
+    ws.getCell(dfR, 2 + i).value = fx(`1/(1+$${waccCell.replace("B", "B$")})^${i + 1}`, df[i]);
+    ws.getCell(pvR, 2 + i).value = fx(`${c}${fcfR}*${c}${dfR}`, pv[i]);
     for (const rr of [fcfR, dfR, pvR]) {
       ws.getCell(rr, 2 + i).numFmt = rr === dfR ? "0.000" : "#,##0";
       ws.getCell(rr, 2 + i).alignment = { horizontal: "right" };
@@ -997,22 +1194,34 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   sectionHeader(ws, "A20:C20", "Intrinsic Value");
   const sumPv = 21, tv = 22, pvTv = 23, ev = 24, eq = 25, fv = 26, up = 27;
   ws.getCell(sumPv, 1).value = "Σ PV of FCF (Y1–Y5)";
-  ws.getCell(sumPv, 2).value = { formula: `SUM(B${pvR}:F${pvR})` };
+  const sumPvVal = pv.reduce((x, y) => x + y, 0);
+  const gVal = a.assumptions.terminalGrowth;
+  const tvVal = waccCalc > gVal ? ((model.fcf[4] ?? 0) * (1 + gVal)) / (waccCalc - gVal) : null;
+  const pvTvVal = tvVal != null ? tvVal * df[4] : null;
+  const evVal = pvTvVal != null ? sumPvVal + pvTvVal : null;
+  const eqVal = evVal != null ? evVal - netDebtM : null;
+  const sharesM = shares / M;
+  const fvVal = eqVal != null && sharesM > 0 ? eqVal / sharesM : null;
+  const priceNow = a.data.quote?.price ?? 0;
+  ws.getCell(sumPv, 2).value = fx(`SUM(B${pvR}:F${pvR})`, sumPvVal);
   ws.getCell(tv, 1).value = "Terminal value (Gordon)";
-  ws.getCell(tv, 2).value = { formula: `F${fcfR}*(1+${gCell})/(${waccCell}-${gCell})` };
+  ws.getCell(tv, 2).value = fx(`F${fcfR}*(1+${gCell})/(${waccCell}-${gCell})`, tvVal);
   ws.getCell(pvTv, 1).value = "PV of terminal value";
-  ws.getCell(pvTv, 2).value = { formula: `B${tv}*F${dfR}` };
+  ws.getCell(pvTv, 2).value = fx(`B${tv}*F${dfR}`, pvTvVal);
   ws.getCell(ev, 1).value = "Enterprise value";
-  ws.getCell(ev, 2).value = { formula: `B${sumPv}+B${pvTv}` };
+  ws.getCell(ev, 2).value = fx(`B${sumPv}+B${pvTv}`, evVal);
   ws.getCell(eq, 1).value = "Equity value (− net debt)";
-  ws.getCell(eq, 2).value = { formula: `B${ev}-${netDebtCell}` };
+  ws.getCell(eq, 2).value = fx(`B${ev}-${netDebtCell}`, eqVal);
   ws.getCell(fv, 1).value = "Fair value / share";
-  ws.getCell(fv, 2).value = { formula: `B${eq}/${sharesCell}` };
+  ws.getCell(fv, 2).value = fx(`B${eq}/${sharesCell}`, fvVal);
   ws.getCell(fv, 2).numFmt = "$#,##0.00";
   ws.getCell(fv, 1).font = { bold: true };
   ws.getCell(fv, 2).font = { bold: true, color: { argb: BLUE } };
   ws.getCell(up, 1).value = "Upside / (downside)";
-  ws.getCell(up, 2).value = { formula: `(B${fv}-${priceCell})/${priceCell}` };
+  ws.getCell(up, 2).value = fx(
+    `(B${fv}-${priceCell})/${priceCell}`,
+    fvVal != null && priceNow > 0 ? (fvVal - priceNow) / priceNow : null
+  );
   ws.getCell(up, 2).numFmt = "0.0%";
   for (const rr of [sumPv, tv, pvTv, ev, eq]) {
     ws.getCell(rr, 2).numFmt = "#,##0";
@@ -1045,7 +1254,7 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   const waccCols = ["E", "F", "G", "H", "I"];
   waccOffsets.forEach((off, i) => {
     const cell = ws.getCell(21, 5 + i);
-    cell.value = { formula: `${waccCell}+${off}` };
+    cell.value = fx(`${waccCell}+${off}`, waccCalc + off);
     cell.numFmt = "0.0%";
     cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: NAVY } };
@@ -1054,7 +1263,7 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   gOffsets.forEach((goff, rIdx) => {
     const rowNum = 22 + rIdx;
     const gLabel = ws.getCell(rowNum, 4);
-    gLabel.value = { formula: `${gCell}+${goff}` };
+    gLabel.value = fx(`${gCell}+${goff}`, gVal + goff);
     gLabel.numFmt = "0.00%";
     gLabel.font = { bold: true, color: { argb: "FFFFFFFF" } };
     gLabel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: NAVY } };
@@ -1068,8 +1277,18 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
         .join("+");
       const term = `(F${fcfR}*(1+${gref})/(${wref}-${gref}))/(1+${wref})^5`;
       const formula = `((${pvExplicit}+${term})-${netDebtCell})/${sharesCell}`;
+      // The same arithmetic in JS, so each sensitivity cell shows its number
+      // even in a viewer that does not calculate.
+      const wSens = waccCalc + woff;
+      const gSens = gVal + goff;
+      let sensVal: number | null = null;
+      if (wSens > gSens && sharesM > 0) {
+        const pvSum = model.fcf.reduce((acc, f, i2) => acc + f / Math.pow(1 + wSens, i2 + 1), 0);
+        const termSens = ((model.fcf[4] ?? 0) * (1 + gSens)) / (wSens - gSens) / Math.pow(1 + wSens, 5);
+        sensVal = (pvSum + termSens - netDebtM) / sharesM;
+      }
       const cell = ws.getCell(rowNum, 5 + cIdx);
-      cell.value = { formula };
+      cell.value = fx(formula, sensVal);
       cell.numFmt = "$#,##0.00";
       cell.alignment = { horizontal: "right" };
     });
@@ -1090,7 +1309,10 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
     ws.getCell(r, 1).value = `${s.label} (${s.probability}%)`;
     ws.getCell(r, 2).value = s.targetPrice;
     ws.getCell(r, 2).numFmt = "$#,##0.00";
-    ws.getCell(r, 3).value = { formula: `(B${r}-${priceCell})/${priceCell}` };
+    ws.getCell(r, 3).value = fx(
+      `(B${r}-${priceCell})/${priceCell}`,
+      priceNow > 0 ? (s.targetPrice - priceNow) / priceNow : null
+    );
     ws.getCell(r, 3).numFmt = "0.0%";
     [2, 3].forEach((c) => (ws.getCell(r, c).alignment = { horizontal: "right" }));
     r++;
@@ -1100,7 +1322,10 @@ function buildValuation(wb: ExcelJS.Workbook, a: AnalysisResult, model: { fcfRef
   ws.getCell(r, 2).value = a.targetPrice;
   ws.getCell(r, 2).numFmt = "$#,##0.00";
   ws.getCell(r, 2).font = { bold: true, color: { argb: BLUE } };
-  ws.getCell(r, 3).value = { formula: `(B${r}-${priceCell})/${priceCell}` };
+  ws.getCell(r, 3).value = fx(
+    `(B${r}-${priceCell})/${priceCell}`,
+    priceNow > 0 ? (a.targetPrice - priceNow) / priceNow : null
+  );
   ws.getCell(r, 3).numFmt = "0.0%";
   ws.getCell(r, 3).font = { bold: true };
   bandRows(ws, scStart, r - 1, 3);

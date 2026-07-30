@@ -65,6 +65,10 @@ export async function GET(req: NextRequest) {
           prevClose: m.prevClose,
           extended: m.extended,
           asOf: m.asOf ?? undefined,
+          priceSource: m.priceSource,
+          stale: m.stale,
+          staleReason: m.staleReason,
+          ageDays: m.ageDays,
         },
       };
     } catch {
