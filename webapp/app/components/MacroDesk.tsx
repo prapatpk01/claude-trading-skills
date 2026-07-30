@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { money, pct, cls } from "./format";
 import TeamPanel, { Disclosures } from "./TeamPanel";
+import NewsDesk from "./NewsDesk";
 
 /**
  * Macro desk — regime, sentiment, and the allocation they imply.
@@ -51,12 +52,14 @@ function Gauge({ value, band }: { value: number; band: string }) {
 export default function MacroDesk() {
   return (
     <div className="card ai-card" style={{ marginTop: 18 }}>
-      <h3 className="sub">🌐 Macro Desk — Regime, Sentiment &amp; Allocation</h3>
+      <h3 className="sub">🌐 Macro Desk — Regime, Sentiment, News &amp; Allocation</h3>
       <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
-        Two independent reads. The <strong>regime</strong> measures where the market is — trend, volatility, drawdown —
+        Three independent reads. The <strong>regime</strong> measures where the market is — trend, volatility, drawdown —
         and sets the base sleeve allocation. The <strong>Fear &amp; Greed</strong> reading measures how crowded that
         position is, and tilts it: below 15 the fund deploys into the panic, in extreme greed it takes risk off ahead of
-        a rotation. The result is a target for each sleeve and each leading group, in percent and in dollars.
+        a rotation. The <strong>news flow</strong> measures what is being said, and matters most where it disagrees with
+        the other two. The result is a target for each sleeve and each leading group, in percent and in dollars — and a
+        pace for getting there.
       </p>
       <TeamPanel
         label="Read the macro desk"
@@ -139,8 +142,11 @@ export default function MacroDesk() {
                             <td className="muted">{g.proxy}</td>
                             <td className="num"><strong>{g.targetPct.toFixed(1)}%</strong></td>
                             <td className="num">{g.currentPct.toFixed(1)}%</td>
+                            {/* money() carries its own minus sign, so the value
+                                is taken absolute before the sign is prepended —
+                                otherwise a reduction reads "−$-1,796". */}
                             <td className={cls("num", g.deltaValue >= 0 ? "pos" : "neg")}>
-                              {g.deltaValue >= 0 ? "+" : "−"}{money(g.deltaValue)}
+                              {g.deltaValue >= 0 ? "+" : "−"}{money(Math.abs(g.deltaValue), 0)}
                             </td>
                             <td className={cls("num", (g.rs3mPct ?? 0) >= 0 ? "pos" : "neg")}>
                               {g.rs3mPct == null ? "—" : `${g.rs3mPct >= 0 ? "+" : ""}${g.rs3mPct.toFixed(1)}%`}
@@ -162,6 +168,10 @@ export default function MacroDesk() {
               </ul>
 
               <SentimentDetail fg={fg} />
+
+              {/* The third read: what the economic news flow is saying, and
+                  where it disagrees with price and positioning. */}
+              <NewsDesk news={res.news} outlook={res.outlook} />
 
               <ul style={{ margin: "12px 0 0", paddingLeft: 18, display: "grid", gap: 5 }}>
                 {p.notes.map((n: string, i: number) => (

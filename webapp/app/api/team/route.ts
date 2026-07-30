@@ -22,6 +22,8 @@ import {
 import { getSector, getSectors } from "@/lib/sectors";
 import { readFearGreed } from "@/lib/team/fearGreed";
 import { buildMacroPlan } from "@/lib/team/macroPlan";
+import { buildNewsPulse } from "@/lib/news/pulse";
+import { buildOutlook } from "@/lib/news/outlook";
 import { classifySleeve as sleeveOf } from "@/lib/team/portfolio";
 import { getSecFundamentals } from "@/lib/sec";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
@@ -435,14 +437,26 @@ export async function POST(req: NextRequest) {
         currentSectorPct: pctOf(sectorValue),
       });
 
+      // News is a third, independent read. A failure here must not cost the
+      // macro plan, so it degrades to null and the desk says the feeds were
+      // unreachable rather than returning an error for the whole page.
+      const pulse = await buildNewsPulse().catch(() => null);
+      const outlook = pulse ? buildOutlook({ regime, fearGreed, pulse }) : null;
+
       return NextResponse.json({
         mode, nav: Math.round(nav * 100) / 100, plan, themes: ranked, fund: FUND,
+        news: pulse, outlook,
         disclosures: [
           "The regime score and the sentiment reading are separate inputs: the regime measures where the market is, sentiment measures how crowded that position is. Sentiment tilts the allocation; it never changes the regime score.",
           fearGreed.source === "CNN Fear & Greed Index"
             ? "Sentiment is CNN's published Fear & Greed Index."
             : "Sentiment is a proxy computed from free price feeds — CNN's index was unreachable. It is not a reconstruction of that index; two of its components have no free source and are absent rather than estimated.",
           "Group targets are derived from proxy-ETF relative strength. A leading proxy does not mean every name inside the group is leading.",
+          pulse
+            ? `News read from ${pulse.sourcesOk} of ${pulse.sourcesTotal} public feeds, ${pulse.classified} of ${pulse.total} headlines classified (${pulse.coveragePct}%). It is a keyword lexicon, not a language model: it reads what is being discussed and how the wording leans, never whether a story is true or already priced.`
+            : "The news feeds could not be reached from this host, so the narrative read is absent. The regime and sentiment reads are unaffected.",
+          "News changes the pace and sequence of decisions already taken. It never changes a sleeve target, a position cap, or a score.",
+          "Release dates in the calendar are projected from published conventions and marked [E]. FOMC is given at month resolution only — the committee sets the date and it is not guessed here.",
           "For research and education only. Not investment advice.",
         ],
       });

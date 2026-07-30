@@ -275,6 +275,62 @@ the stop or into strength, never at the open on a gap.
 
 ---
 
+## 10b. News flow — the third read (Nina Okonkwo)
+
+The fund reads the market three ways, and never averages them:
+
+| Read | Measures | Source | Sets |
+|---|---|---|---|
+| **Regime** | where the market **is** | price — trend, volatility, drawdown | the base sleeve allocation |
+| **Sentiment** | how **crowded** that is | Fear & Greed | a tilt on the allocation |
+| **News** | what is being **said** | public economic feeds | the **pace** of execution |
+
+The information lives in the disagreements, so the desk names them:
+
+| Divergence | Condition | Meaning |
+|---|---|---|
+| **Late-cycle** | news ≤ −10, tape Risk-On **or** F&G > 55 | deteriorating fundamentals under a rising market — stop adding into strength |
+| **Early recovery** | news ≥ +10, tape Risk-Off **or** F&G < 35 | narrative turned before the tape — stage entries, require price confirmation |
+| **Priced in** | news ≤ −10 **and** F&G < 35 | the story is in the price; follow the sentiment tilt, not the headlines |
+| **Crowded confirm** | news ≥ +10 **and** F&G > 55 | everyone reads the same thing; keep new size small |
+| **Aligned** | none of the above | the news desk issues no instruction |
+| **Insufficient** | fewer than 6 classified headlines | the read is withheld rather than manufactured |
+
+### What news is allowed to do
+
+> **News changes the pace and the sequence of a decision already taken. It never
+> changes a sleeve target, a position cap, or a score.**
+
+That boundary is the honest limit of the input. A keyword read of press
+headlines is the noisiest measurement the fund makes; letting it move real
+allocation would import that noise into the book. Slowing an add by a week costs
+little when the read is wrong and saves a great deal when it is right.
+
+The gate has two settings only: `adds ∈ {proceed, stage, hold}` and
+`trims ∈ {normal, accelerate}`.
+
+### Method
+
+- **Themes** — nine: monetary policy, inflation, labour, growth, credit &
+  liquidity, trade & geopolitics, energy, earnings & guidance, AI & tech capex.
+- **Two passes** — pass one decides what a headline is *about*, pass two which
+  way it *leans*. Direction is read per theme, because inflation "cooling" is
+  good news and growth "cooling" is not. Labour cues are anchored to their
+  subject: "payrolls rose" and "unemployment rose" are opposite news.
+- **Weighting** — recency ×1.0 / ×0.5 / ×0.25 at 48 hours / 1 week / older;
+  official sources (Fed, BLS, BEA, Treasury) ×1.6 against press ×1.0.
+- **Escalation** — the last 48 hours against the trailing week. A shift of 25
+  points or more is flagged, because the actionable moment is when a quiet theme
+  starts moving, not when a bad theme stays bad.
+- **Coverage (Rule #5)** — a headline matching no theme is *unclassified* and is
+  reported, never scored as neutral. Every classification lists the phrases that
+  produced it so a wrong read can be seen and the lexicon corrected.
+- **Dates** — projected from each agency's published release convention and
+  marked **[E]**. The FOMC is given at month resolution with no day count: the
+  committee sets the date and the app has no verifiable source for it.
+
+---
+
 ## 11. Precedence
 
 Applied top-down; the first level that fires decides, and every recommendation
@@ -410,8 +466,15 @@ excluded from the normalised score rather than assumed.
   Growth Quality block runs at reduced coverage; the percentage is always shown.
 - **Fund distribution coverage is unavailable** for most wrappers — Engine B's
   Coverage component is excluded, not assumed.
-- **Tier-1 macro dates** (FOMC, CPI, NFP) are not in the free feed. Gate 10
-  stays manual.
+- **Tier-1 macro dates** (FOMC, CPI, NFP) are not in the free feed. §10b
+  projects them from each agency's release convention and marks them [E]; FOMC
+  is month-resolution only. Gate 10 stays manual for any date a decision
+  actually depends on.
+- **The news read is a lexicon, not a language model.** It measures what the
+  press is discussing and how the wording leans. It cannot judge whether a story
+  is true, whether it is already priced, or what subtle prose means, and it will
+  misread sarcasm, negation at distance, and single-name news dressed as macro.
+  Coverage is reported every run so the size of the blind spot is visible.
 - **ETFs are not looked through** to their underlying sector exposure.
 - **Cost basis is user-supplied and unaudited** until reconciled to a broker
   statement.

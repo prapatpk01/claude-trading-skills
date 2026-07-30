@@ -11,7 +11,7 @@ export interface Member {
 export const ROSTER: Record<string, Member> = {
   james: { name: "James Hartwell", role: "CIO", desk: "Executive", owns: "Final verdict, deployment approval" },
   miriam: { name: "Miriam Osei", role: "CRO", desk: "Executive", owns: "Gate compliance, data integrity, bias checks" },
-  nina: { name: "Nina Okonkwo", role: "Data & Source Engineer", desk: "Executive", owns: "Source logging, feed quality, lineage" },
+  nina: { name: "Nina Okonkwo", role: "Data & Source Engineer", desk: "Executive", owns: "News flow, source logging, feed quality, lineage" },
   leo: { name: "Leo Tanaka", role: "Real-time Data Analyst", desk: "Executive", owns: "Live feed parsing, timestamps" },
   sofia: { name: "Sofia Reyes", role: "Sr. Fundamental Analyst", desk: "Research", owns: "Business quality, moat, thesis" },
   marcus: { name: "Marcus Webb", role: "Sr. Financial Analyst", desk: "Research", owns: "Earnings trend, margins, revision momentum" },
