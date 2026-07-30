@@ -30,6 +30,10 @@ export default function PortfolioTab() {
   const [draft, setDraft] = useState<Draft>({});
   const [savingRow, setSavingRow] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  // Deleting a position destroys its cost basis and history, and the ✕ sits one
+  // pixel-width from the edit pencil. It arms first and asks by name.
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,6 +56,14 @@ export default function PortfolioTab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // An armed delete disarms itself. Leaving it armed means the next stray tap
+  // in that cell deletes, which is the thing the confirmation exists to stop.
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const t = setTimeout(() => setConfirmDelete(null), 6000);
+    return () => clearTimeout(t);
+  }, [confirmDelete]);
 
   const refreshQuotes = useCallback(async () => {
     const tickers = Array.from(new Set([...holdings.map((h) => h.ticker), ...watch.map((w) => w.ticker)]));
@@ -308,7 +320,23 @@ export default function PortfolioTab() {
                       <td><input className="edit-input" value={draft.target_price ?? ""} onChange={set("target_price")} inputMode="decimal" placeholder="—" /></td>
                       <td style={{ minWidth: 150 }}>
                         <input className="edit-input" type="date" value={draft.opened_at ?? ""} onChange={set("opened_at")} />
-                        <input className="edit-input" type="date" style={{ marginTop: 4 }} value={draft.closed_at ?? ""} onChange={set("closed_at")} />
+                        {/* Sold is a state, not a date to type. The second bare
+                            date box read as a field waiting to be filled and
+                            invited an accidental closing date; this says what it
+                            does and supplies the date itself. */}
+                        <button
+                          className="btn ghost sm"
+                          style={{ marginTop: 4, width: "100%" }}
+                          title={draft.closed_at ? "Reopen this position" : "Mark this position sold as of today"}
+                          onClick={() =>
+                            setDraft((d) => ({
+                              ...d,
+                              closed_at: d.closed_at ? "" : new Date().toISOString().slice(0, 10),
+                            }))
+                          }
+                        >
+                          {draft.closed_at ? `Sold ${draft.closed_at} · reopen` : "Mark sold today"}
+                        </button>
                       </td>
                       <td style={{ minWidth: 180 }}>
                         <input className="edit-input" value={draft.thesis ?? ""} onChange={set("thesis")} placeholder="Thesis / notes" />
@@ -368,12 +396,42 @@ export default function PortfolioTab() {
                       <button className="btn ghost sm" title="Edit this position" onClick={() => startEdit(h)}>
                         ✎
                       </button>{" "}
-                      <button
-                        className="btn danger sm"
-                        onClick={async () => { await fetch(`/api/portfolio?id=${h.id}`, { method: "DELETE" }); load(); }}
-                      >
-                        ✕
-                      </button>
+                      {confirmDelete === h.id ? (
+                        <>
+                          {/* Keep sits where the ✕ was, so a stray second tap in
+                              the same spot cancels instead of deleting. */}
+                          <button className="btn ghost sm" onClick={() => setConfirmDelete(null)}>Keep</button>{" "}
+                          <button
+                            className="btn danger sm"
+                            disabled={deletingId === h.id}
+                            onClick={async () => {
+                              setDeletingId(h.id);
+                              setRowError(null);
+                              try {
+                                const res = await fetch(`/api/portfolio?id=${h.id}`, { method: "DELETE" });
+                                const json = await res.json().catch(() => ({}));
+                                if (!res.ok || json.error) throw new Error(json.error || "Could not delete this position.");
+                                setConfirmDelete(null);
+                                load();
+                              } catch (e: any) {
+                                setRowError(e.message);
+                              } finally {
+                                setDeletingId(null);
+                              }
+                            }}
+                          >
+                            {deletingId === h.id ? "…" : `Delete ${h.ticker}?`}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="btn danger sm"
+                          title={`Remove ${h.ticker} from the book — asks to confirm`}
+                          onClick={() => { setRowError(null); setConfirmDelete(h.id); }}
+                        >
+                          ✕
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
