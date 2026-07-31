@@ -1,15 +1,10 @@
 import YahooFinance from "yahoo-finance2";
-import type {
-  Quote,
-  Overview,
-  Financials,
-  FinancialRow,
-  EarningsRow,
-  Candle,
-  MarketData,
-} from "./types";
+import type { Quote, Overview, Financials, FinancialRow, EarningsRow, Candle, MarketData } from "./types";
 
-// yahoo-finance2 v4 is class-based and must be instantiated.
+// Production policy: Yahoo's public chart endpoint is the reliable keyless path
+// on cloud hosts. quote()/quoteSummary() require cookie/crumb behavior that is
+// frequently blocked or changes between yahoo-finance2 versions. Full company
+// fundamentals are therefore supplied by SEC EDGAR in marketData.enrich().
 const yf: any = new (YahooFinance as any)({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 
 const num = (v: any): number | null => {
@@ -18,239 +13,168 @@ const num = (v: any): number | null => {
   const n = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(n) ? n : null;
 };
-const pick = (...vals: (number | null | undefined)[]): number | null => {
-  for (const v of vals) if (v !== null && v !== undefined && Number.isFinite(v)) return v as number;
-  return null;
-};
-
-function fiscalDate(v: any): string {
-  if (!v) return "";
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  if (typeof v === "object" && v.fmt) return String(v.fmt);
-  const n = num(v);
-  if (n && n > 1e9) return new Date(n * 1000).toISOString().slice(0, 10);
-  return String(v);
-}
 
 async function retry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let lastErr: any;
   for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      lastErr = e;
-      await new Promise((r) => setTimeout(r, 300 * (i + 1)));
-    }
+    try { return await fn(); }
+    catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 250 * (i + 1))); }
   }
   throw lastErr;
 }
 
-// ── Raw quote (rich object, used for both Quote and Overview) ─────────
-async function rawQuote(ticker: string): Promise<any | null> {
-  const q = await retry<any>(() => yf.quote(ticker, { validateResult: false }));
-  return q && q.regularMarketPrice !== undefined ? q : null;
-}
-
-function toQuote(q: any, ticker: string): Quote | null {
-  if (!q || q.regularMarketPrice === undefined) return null;
+function emptyOverview(ticker: string, meta?: any): Overview {
+  const price = num(meta?.regularMarketPrice);
   return {
-    symbol: q.symbol ?? ticker,
-    price: num(q.regularMarketPrice) ?? 0,
-    change: num(q.regularMarketChange) ?? 0,
-    changePercent: num(q.regularMarketChangePercent) ?? 0,
-    high: num(q.regularMarketDayHigh) ?? 0,
-    low: num(q.regularMarketDayLow) ?? 0,
-    open: num(q.regularMarketOpen) ?? 0,
-    prevClose: num(q.regularMarketPreviousClose) ?? 0,
-    volume: num(q.regularMarketVolume) ?? undefined,
-    asOf: q.regularMarketTime ? new Date(q.regularMarketTime).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+    symbol: ticker,
+    name: meta?.longName ?? meta?.shortName ?? ticker,
+    description: "",
+    sector: "n/a",
+    industry: "n/a",
+    currency: meta?.currency ?? "USD",
+    country: "n/a",
+    marketCap: null,
+    peRatio: null,
+    forwardPE: null,
+    pegRatio: null,
+    priceToSales: null,
+    priceToBook: null,
+    eps: null,
+    dividendYield: null,
+    profitMargin: null,
+    operatingMargin: null,
+    roe: null,
+    roa: null,
+    revenueTTM: null,
+    grossProfitTTM: null,
+    ebitda: null,
+    beta: null,
+    week52High: num(meta?.fiftyTwoWeekHigh),
+    week52Low: num(meta?.fiftyTwoWeekLow),
+    sma50: null,
+    sma200: null,
+    analystTargetPrice: null,
+    sharesOutstanding: null,
   };
 }
 
-export async function yahooQuote(ticker: string): Promise<Quote | null> {
-  return toQuote(await rawQuote(ticker), ticker);
+function candlesFromChart(res: any): Candle[] {
+  const rows: any[] = res?.quotes ?? [];
+  return rows.filter(r => r?.close != null).map(r => ({
+    date: (r.date instanceof Date ? r.date : new Date(r.date)).toISOString().slice(0, 10),
+    open: num(r.open) ?? 0,
+    high: num(r.high) ?? 0,
+    low: num(r.low) ?? 0,
+    close: num(r.close) ?? 0,
+    volume: num(r.volume) ?? 0,
+  })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/**
- * Raw chart response, exposed so callers that need more than closes — the
- * exchange's trading-period bounds, extended-hours bars — can read it without
- * standing up a second client with its own configuration.
- */
-export async function yahooChartRaw(
-  ticker: string,
-  opts: { period1: Date; interval?: string; includePrePost?: boolean }
-): Promise<any> {
+function quoteFromChart(ticker: string, res: any, candles: Candle[]): Quote | null {
+  const meta = res?.meta ?? {};
+  const last = candles.at(-1);
+  if (!last) return null;
+  const prev = candles.at(-2) ?? last;
+  const px = num(meta.regularMarketPrice) ?? last.close;
+  const prevClose = num(meta.chartPreviousClose) ?? num(meta.previousClose) ?? prev.close;
+  return {
+    symbol: ticker,
+    price: px,
+    change: px - prevClose,
+    changePercent: prevClose ? ((px - prevClose) / prevClose) * 100 : 0,
+    high: num(meta.regularMarketDayHigh) ?? last.high,
+    low: num(meta.regularMarketDayLow) ?? last.low,
+    open: num(meta.regularMarketOpen) ?? last.open,
+    prevClose,
+    volume: num(meta.regularMarketVolume) ?? last.volume,
+    asOf: meta.regularMarketTime ? new Date(Number(meta.regularMarketTime) * 1000).toISOString().slice(0, 10) : last.date,
+  };
+}
+
+export async function yahooChartRaw(ticker: string, opts: { period1: Date; interval?: string; includePrePost?: boolean }): Promise<any> {
   return retry<any>(() => yf.chart(ticker, opts as any));
 }
 
-// ── Candles (daily) — public chart endpoint, most reliable on cloud ───
 export async function yahooCandles(ticker: string, days = 400): Promise<Candle[]> {
-  const period1 = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const res = await retry<any>(() => yf.chart(ticker, { period1, interval: "1d" }));
-  const rows: any[] = res?.quotes ?? [];
-  return rows
-    .filter((r) => r.close != null)
-    .map((r) => ({
-      date: (r.date instanceof Date ? r.date : new Date(r.date)).toISOString().slice(0, 10),
-      open: num(r.open) ?? 0,
-      high: num(r.high) ?? 0,
-      low: num(r.low) ?? 0,
-      close: num(r.close) ?? 0,
-      volume: num(r.volume) ?? 0,
-    }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const period1 = new Date(Date.now() - days * 86400000);
+  const res = await yahooChartRaw(ticker, { period1, interval: "1d" });
+  return candlesFromChart(res);
 }
 
-// ── quoteSummary split into groups so one failing module doesn't nuke all
-const PROFILE_MODULES = ["assetProfile", "summaryDetail", "defaultKeyStatistics", "financialData", "price"];
-const STATEMENT_MODULES = ["incomeStatementHistory", "balanceSheetHistory", "cashflowStatementHistory", "earningsHistory"];
-
-async function summaryGroup(ticker: string, modules: string[]): Promise<any | null> {
-  try {
-    return await retry<any>(() => yf.quoteSummary(ticker, { modules, validateResult: false }));
-  } catch {
-    return null;
-  }
+/**
+ * Lightweight quote deliberately uses chart(), not quote(). This avoids the
+ * yahoo-finance2 option/schema mismatch and Yahoo crumb restrictions seen on
+ * Vercel while retaining a current/last-session market price.
+ */
+export async function yahooQuote(ticker: string): Promise<Quote | null> {
+  const period1 = new Date(Date.now() - 14 * 86400000);
+  const res = await yahooChartRaw(ticker, { period1, interval: "1d" });
+  const candles = candlesFromChart(res);
+  return quoteFromChart(ticker.trim().toUpperCase(), res, candles);
 }
 
-function buildOverview(ticker: string, q: any, s: any): Overview {
-  const ap = s?.assetProfile ?? {};
-  const sd = s?.summaryDetail ?? {};
-  const ks = s?.defaultKeyStatistics ?? {};
-  const fd = s?.financialData ?? {};
-  const pr = s?.price ?? {};
-  q = q ?? {};
-  return {
-    symbol: ticker,
-    name: pr.longName ?? pr.shortName ?? q.longName ?? q.shortName ?? ticker,
-    description: ap.longBusinessSummary ?? "",
-    sector: ap.sector ?? "n/a",
-    industry: ap.industry ?? "n/a",
-    currency: pr.currency ?? q.currency ?? "USD",
-    country: ap.country ?? "n/a",
-    marketCap: pick(num(pr.marketCap), num(sd.marketCap), num(q.marketCap)),
-    peRatio: pick(num(sd.trailingPE), num(q.trailingPE)),
-    forwardPE: pick(num(sd.forwardPE), num(ks.forwardPE), num(q.forwardPE)),
-    pegRatio: pick(num(ks.pegRatio), num(ks.trailingPegRatio)),
-    priceToSales: num(sd.priceToSalesTrailing12Months),
-    priceToBook: pick(num(ks.priceToBook), num(q.priceToBook)),
-    eps: pick(num(ks.trailingEps), num(q.epsTrailingTwelveMonths)),
-    dividendYield: pick(num(sd.dividendYield), num(q.dividendYield), num(q.trailingAnnualDividendYield)),
-    profitMargin: num(fd.profitMargins),
-    operatingMargin: num(fd.operatingMargins),
-    roe: num(fd.returnOnEquity),
-    roa: num(fd.returnOnAssets),
-    revenueTTM: num(fd.totalRevenue),
-    grossProfitTTM: num(fd.grossProfits),
-    ebitda: num(fd.ebitda),
-    beta: pick(num(sd.beta), num(ks.beta)),
-    week52High: pick(num(sd.fiftyTwoWeekHigh), num(q.fiftyTwoWeekHigh)),
-    week52Low: pick(num(sd.fiftyTwoWeekLow), num(q.fiftyTwoWeekLow)),
-    sma50: pick(num(sd.fiftyDayAverage), num(q.fiftyDayAverage)),
-    sma200: pick(num(sd.twoHundredDayAverage), num(q.twoHundredDayAverage)),
-    analystTargetPrice: pick(num(fd.targetMeanPrice), num(q.targetPriceMean)),
-    sharesOutstanding: pick(num(ks.sharesOutstanding), num(q.sharesOutstanding)),
-  };
-}
-
-function buildFinancials(s: any): Financials {
-  const mapRows = (arr: any[], dateKey: string, fields: Record<string, string>): FinancialRow[] =>
-    (arr ?? []).slice(0, 5).map((r) => {
-      const row: FinancialRow = { fiscalDate: fiscalDate(r[dateKey]) };
-      for (const [key, yKey] of Object.entries(fields)) row[key] = num(r[yKey]) ?? 0;
-      return row;
-    });
-  return {
-    income: mapRows(s?.incomeStatementHistory?.incomeStatementHistory, "endDate", {
-      totalRevenue: "totalRevenue",
-      grossProfit: "grossProfit",
-      operatingIncome: "operatingIncome",
-      ebit: "ebit",
-      netIncome: "netIncome",
-      interestExpense: "interestExpense",
-      incomeTaxExpense: "incomeTaxExpense",
-      incomeBeforeTax: "incomeBeforeTax",
-    }),
-    balance: mapRows(s?.balanceSheetHistory?.balanceSheetStatements, "endDate", {
-      totalAssets: "totalAssets",
-      totalCurrentAssets: "totalCurrentAssets",
-      cashAndEquivalents: "cash",
-      totalLiabilities: "totalLiab",
-      totalCurrentLiabilities: "totalCurrentLiabilities",
-      longTermDebt: "longTermDebt",
-      shortTermDebt: "shortLongTermDebt",
-      totalShareholderEquity: "totalStockholderEquity",
-    }),
-    cashflow: mapRows(s?.cashflowStatementHistory?.cashflowStatements, "endDate", {
-      operatingCashflow: "totalCashFromOperatingActivities",
-      capitalExpenditures: "capitalExpenditures",
-      cashflowFromInvestment: "totalCashflowsFromInvestingActivities",
-      cashflowFromFinancing: "totalCashFromFinancingActivities",
-      dividendPayout: "dividendsPaid",
-      changeInCashAndCashEquivalents: "changeInCash",
-    }),
-  };
-}
-
-function buildEarnings(s: any): EarningsRow[] {
-  const hist: any[] = s?.earningsHistory?.history ?? [];
-  return hist
-    .map((h) => ({
-      fiscalDate: fiscalDate(h.quarter),
-      reportedEPS: num(h.epsActual),
-      estimatedEPS: num(h.epsEstimate),
-      surprise: num(h.epsDifference),
-      surprisePercent: h.surprisePercent != null ? (num(h.surprisePercent) ?? 0) * 100 : null,
-    }))
-    .reverse()
-    .slice(0, 8);
-}
-
+// Kept for provider-agnostic callers. Yahoo fundamentals are intentionally not
+// treated as authoritative in production; SEC EDGAR fills these structures.
 export function overviewHasData(o: Overview | null): boolean {
   if (!o) return false;
   return o.marketCap != null || o.peRatio != null || o.eps != null || o.revenueTTM != null;
 }
 export function financialsHasData(f: Financials): boolean {
-  return f.income.length > 0 && Number(f.income[0].totalRevenue) > 0;
+  return f.income.length > 0 && Number(f.income[0]?.totalRevenue) > 0;
 }
 
-// ── Full aggregator ───────────────────────────────────────────────────
 export async function getYahooMarketData(ticker: string): Promise<MarketData> {
   const t = ticker.trim().toUpperCase();
   const sources = new Set<string>();
   const warnings: string[] = [];
 
-  const [q, profile, statements, candles, benchmarkCandles] = await Promise.all([
-    rawQuote(t).then((r) => { if (r) sources.add("Yahoo Finance (quote)"); return r; }).catch((e) => { warnings.push(`Yahoo quote: ${e?.message ?? "failed"}`); return null; }),
-    summaryGroup(t, PROFILE_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (fundamentals)"); return r; }),
-    summaryGroup(t, STATEMENT_MODULES).then((r) => { if (r) sources.add("Yahoo Finance (financial statements)"); return r; }),
-    // 5 years of daily bars: needed to sample the historical P/E range that
-    // the valuation scenarios are built from (400 days only covers one year).
-    yahooCandles(t, 1900).then((r) => { sources.add("Yahoo Finance (daily history)"); return r; }).catch((e) => { warnings.push(`Yahoo history: ${e?.message ?? "failed"}`); return [] as Candle[]; }),
-    yahooCandles("SPY", 200).catch(() => [] as Candle[]),
-  ]);
-
-  const overview = buildOverview(t, q, profile);
-  const financials = buildFinancials(statements);
-  const earnings = buildEarnings(statements);
-  if (!overviewHasData(overview)) warnings.push("Yahoo fundamentals unavailable (endpoint may be blocked from this host).");
-  if (!financialsHasData(financials)) warnings.push("Yahoo financial statements unavailable.");
-
-  let quote = toQuote(q, t);
-  if (!quote && candles.length > 0) {
-    const last = candles[candles.length - 1];
-    const prev = candles[candles.length - 2] ?? last;
-    quote = {
-      symbol: t, price: last.close, change: last.close - prev.close,
-      changePercent: prev.close ? ((last.close - prev.close) / prev.close) * 100 : 0,
-      high: last.high, low: last.low, open: last.open, prevClose: prev.close, volume: last.volume, asOf: last.date,
-    };
-    sources.add("Derived (daily candles)");
+  let chart: any = null;
+  let candles: Candle[] = [];
+  try {
+    chart = await yahooChartRaw(t, { period1: new Date(Date.now() - 1900 * 86400000), interval: "1d" });
+    candles = candlesFromChart(chart);
+    if (candles.length) sources.add("Yahoo Finance public chart endpoint");
+  } catch (e: any) {
+    warnings.push(`Price history unavailable: ${e?.message ?? "Yahoo chart failed"}`);
   }
 
+  const benchmarkCandles = await yahooCandles("SPY", 220).catch(() => [] as Candle[]);
+  if (benchmarkCandles.length) sources.add("Yahoo Finance public chart endpoint (SPY benchmark)");
+
+  const quote = quoteFromChart(t, chart, candles);
+  const overview = emptyOverview(t, chart?.meta);
+  const financials: Financials = { income: [], balance: [], cashflow: [] };
+  const earnings: EarningsRow[] = [];
+
+  // No warnings are emitted for quoteSummary/fundamental modules because they
+  // are no longer requested. marketData.enrich() now decides whether missing
+  // fundamentals are a real data-quality problem after SEC/AV fallbacks run.
   return {
-    ticker: t, quote, overview, financials, earnings, candles, benchmarkCandles,
-    quarters: [], ttm: null, annualEps: [],
-    sources: Array.from(sources), warnings,
+    ticker: t,
+    quote,
+    overview,
+    financials,
+    earnings,
+    candles,
+    benchmarkCandles,
+    quarters: [],
+    ttm: null,
+    annualEps: [],
+    sources: Array.from(sources),
+    warnings,
   };
 }
+
+// Legacy helpers retained for type/API compatibility. They intentionally return
+// empty data rather than hitting blocked quoteSummary modules.
+export async function yahooOverview(ticker: string): Promise<Overview | null> {
+  const q = await yahooQuote(ticker).catch(() => null);
+  return q ? emptyOverview(ticker.trim().toUpperCase()) : null;
+}
+export async function yahooFinancials(_ticker: string): Promise<Financials> {
+  return { income: [], balance: [], cashflow: [] };
+}
+export async function yahooEarnings(_ticker: string): Promise<EarningsRow[]> { return []; }
+
+// Types referenced by older imports in downstream branches.
+export type { FinancialRow };
