@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/analyze";
+import { sanitizeResearch } from "@/lib/sanitizeResearch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ export async function GET(req: NextRequest) {
         { status: 404 }
       );
     }
+    if (result.research) result.research = sanitizeResearch(result.research);
     return NextResponse.json(result);
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analysis failed" }, { status: 500 });
