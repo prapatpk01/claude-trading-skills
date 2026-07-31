@@ -2,12 +2,9 @@
 import {useState} from"react";
 import {money} from"./format";
 
-type Holding={ticker:string;closed_at?:string|null};
-type Quote={price?:number}|null;
-
-export default function ActiveFundManager({holdings,quotes,nav}:{holdings:Holding[];quotes:Record<string,Quote>;nav:number}){
+export default function ActiveFundManager(){
  const[loading,setLoading]=useState(false),[data,setData]=useState<any>(null),[error,setError]=useState<string|null>(null);
- async function run(){setLoading(true);setError(null);try{const tickers=Array.from(new Set(holdings.filter(h=>!h.closed_at).map(h=>h.ticker)));const r=await fetch("/api/active-fund",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tickers,nav,prices:Object.fromEntries(tickers.map(t=>[t,quotes[t]?.price??null]))})}),j=await r.json();if(!r.ok)throw new Error(j.error||"Review failed");setData(j)}catch(e:any){setError(e.message)}finally{setLoading(false)}}
+ async function run(){setLoading(true);setError(null);try{const p=await fetch("/api/portfolio").then(r=>r.json());if(p.error)throw new Error(p.error);const holdings=(p.holdings??[]).filter((h:any)=>!h.closed_at);const tickers=Array.from(new Set(holdings.map((h:any)=>h.ticker))) as string[];let quotes:Record<string,any>={};if(tickers.length){const q=await fetch(`/api/quote?tickers=${encodeURIComponent(tickers.join(","))}`).then(r=>r.json());quotes=q.quotes??{}}const nav=holdings.reduce((s:number,h:any)=>s+((quotes[h.ticker]?.price??h.avg_cost)*h.shares),0);const r=await fetch("/api/active-fund",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tickers,nav})}),j=await r.json();if(!r.ok)throw new Error(j.error||"Review failed");setData(j)}catch(e:any){setError(e.message)}finally{setLoading(false)}}
  return <div className="card ai-card" style={{marginTop:18}}>
   <h3 className="sub">🧠 Sentinel Active Fund Management Engine</h3>
   <p className="muted" style={{fontSize:12,lineHeight:1.6}}>The fund does not rebalance only what it already owns. It discovers new stocks and ETFs, sends them through Research, specialist desks, Risk and the Investment Committee, then compares approved ideas against existing holdings before proposing capital allocation.</p>
