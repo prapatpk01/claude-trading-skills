@@ -5,81 +5,46 @@ import type { AppLang } from "../page";
 import TickerInput from "./TickerInput";
 import { money, pct, num } from "./format";
 
-const t = (lang: AppLang, en: string, th: string) => lang === "th" ? th : en;
-const bn = (v:any) => typeof v === "number" && Number.isFinite(v) ? `${v >= 1e9 ? (v/1e9).toFixed(1)+"B" : v >= 1e6 ? (v/1e6).toFixed(1)+"M" : v.toLocaleString()}` : "—";
+const t=(l:AppLang,en:string,th:string)=>l==="th"?th:en;
+const bn=(v:any)=>typeof v==="number"&&Number.isFinite(v)?(Math.abs(v)>=1e9?`${(v/1e9).toFixed(1)}B`:Math.abs(v)>=1e6?`${(v/1e6).toFixed(1)}M`:v.toLocaleString()):"—";
+const p=(v:any)=>typeof v==="number"&&Number.isFinite(v)?`${v>=0?"+":""}${v.toFixed(1)}%`:"—";
+const rawPct=(v:any)=>typeof v==="number"&&Number.isFinite(v)?`${(Math.abs(v)<1?v*100:v).toFixed(1)}%`:"—";
 
-export default function ResearchTabV2({ lang }: { lang: AppLang }) {
-  const [ticker,setTicker] = useState("");
-  const [data,setData] = useState<any>(null);
-  const [loading,setLoading] = useState(false);
-  const [error,setError] = useState<string|null>(null);
-
-  async function run(e?:React.FormEvent, override?:string){
-    e?.preventDefault(); const x=(override??ticker).trim().toUpperCase(); if(!x)return;
-    setLoading(true); setError(null); setData(null);
-    try{const r=await fetch(`/api/analyze?ticker=${encodeURIComponent(x)}`); const j=await r.json(); if(!r.ok)throw new Error(j.error||"Analysis failed"); setData(j);}catch(e:any){setError(e.message)}finally{setLoading(false)}
-  }
-
-  return <div>
-    <div className="card">
-      <h2 className="section">🔎 {t(lang,"Institutional Equity Research","วิเคราะห์หุ้นระดับกองทุน")}</h2>
-      <p className="muted" style={{fontSize:13}}>{t(lang,"Five-year fundamentals, latest four quarters, quality, thesis, catalysts, risks, valuation and DCF in one underwriting workflow.","วิเคราะห์งบ 5 ปี, 4 ไตรมาสล่าสุด, คุณภาพธุรกิจ, Thesis, Catalyst, Risk, Valuation และ DCF ใน workflow เดียว")}</p>
-      <form className="searchbar" onSubmit={run}>
-        <TickerInput value={ticker} onChange={setTicker} placeholder="NVDA" onSubmitTicker={(x)=>run(undefined,x)} />
-        <button className="btn" disabled={loading}>{loading?t(lang,"Analyzing…","กำลังวิเคราะห์…"):t(lang,"Run Deep Dive","วิเคราะห์เชิงลึก")}</button>
-      </form>
-      {error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}
-    </div>
-    {loading&&<div className="card"><span className="spinner"/> {t(lang,"Pulling filings, market data and valuation inputs…","กำลังดึงงบการเงิน ข้อมูลตลาด และข้อมูลสำหรับประเมินมูลค่า…")}</div>}
-    {data&&<DeepDive data={data} lang={lang}/>} 
-  </div>
+export default function ResearchTabV2({lang}:{lang:AppLang}){
+ const[ticker,setTicker]=useState("");const[data,setData]=useState<any>(null);const[loading,setLoading]=useState(false);const[error,setError]=useState<string|null>(null);
+ async function run(e?:React.FormEvent,override?:string){e?.preventDefault();const x=(override??ticker).trim().toUpperCase();if(!x)return;setLoading(true);setError(null);setData(null);try{const r=await fetch(`/api/analyze?ticker=${encodeURIComponent(x)}`);const j=await r.json();if(!r.ok)throw new Error(j.error||"Analysis failed");setData(j)}catch(e:any){setError(e.message)}finally{setLoading(false)}}
+ return <div><div className="card"><h2 className="section">🔎 {t(lang,"Institutional Equity Research","วิเคราะห์หุ้นระดับกองทุน")}</h2><p className="muted" style={{fontSize:13}}>{t(lang,"Full underwriting: five-year history, TTM and quarterly trend, quality, ROIC, moat, peers, market position, thesis, catalysts, risks, valuation scenarios and DCF.","วิเคราะห์เต็มรูปแบบ: งบ 5 ปี, TTM และแนวโน้มรายไตรมาส, คุณภาพธุรกิจ, ROIC, Moat, Peers, ตำแหน่งการแข่งขัน, Thesis, Catalyst, Risk, Valuation และ DCF")}</p><form className="searchbar" onSubmit={run}><TickerInput value={ticker} onChange={setTicker} placeholder="AVGO" onSubmitTicker={(x)=>run(undefined,x)}/><button className="btn" disabled={loading}>{loading?t(lang,"Analyzing…","กำลังวิเคราะห์…"):t(lang,"Run Deep Dive","วิเคราะห์เชิงลึก")}</button></form>{error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}</div>{loading&&<div className="card"><span className="spinner"/> {t(lang,"Pulling filings, price history, peers, dividends and valuation inputs…","กำลังดึงงบ ราคา Peers ปันผล และข้อมูลประเมินมูลค่า…")}</div>}{data&&<DeepDive data={data} lang={lang}/>}</div>
 }
 
 function DeepDive({data,lang}:{data:any;lang:AppLang}){
-  const ov=data.data?.overview; const fin=data.data?.financials; const qs=(data.data?.quarters??[]).slice(0,4); const dcf=data.dcf;
-  const years=(fin?.income??[]).slice(0,5);
-  return <>
-    <div className="card">
-      <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-        <div><h2 className="section" style={{marginBottom:4}}>{data.ticker} · {ov?.name??""}</h2><div className="muted">{ov?.sector??"—"} · {ov?.industry??"—"}</div></div>
-        <div style={{textAlign:"right"}}><div style={{fontSize:30,fontWeight:900}}>{money(data.data?.quote?.price)}</div><span className={`pill ${data.signal?.toLowerCase()}`}>{data.signal}</span></div>
-      </div>
-      <div className="grid cols-4" style={{marginTop:14}}>
-        <Metric label={t(lang,"Blended Target","ราคาเป้าหมายผสม")} value={money(data.targetPrice)} sub={`${data.upsidePct>=0?"+":""}${pct(data.upsidePct)}`} />
-        <Metric label="DCF" value={dcf?money(dcf.fairValue):"—"} sub={dcf?`WACC ${(dcf.wacc*100).toFixed(1)}%`:""}/>
-        <Metric label={t(lang,"Momentum","โมเมนตัม")} value={`${data.momentum?.total??"—"}/100`} />
-        <Metric label={t(lang,"Quality Snapshot","คุณภาพเบื้องต้น")} value={qualityLabel(ov,years)} />
-      </div>
-    </div>
+ const d=data.data??{},ov=d.overview??{},fin=d.financials??{},qs=(d.quarters??[]).slice(0,4),years=(fin.income??[]).slice(0,5),dcf=data.dcf,research=data.research,returns=research?.returns,moat=research?.moat,peers=research?.peers??[],sizing=research?.sizing,ttm=d.ttm;
+ const latest=years[0]??{},latestCf=fin.cashflow?.[0]??{},latestBal=fin.balance?.[0]??{};
+ const revenueCagr=cagr(years.map((x:any)=>x.totalRevenue)); const fcf=(n(latestCf.operatingCashflow)!=null&&n(latestCf.capitalExpenditures)!=null)?n(latestCf.operatingCashflow)!-Math.abs(n(latestCf.capitalExpenditures)!):null;
+ const debt=(n(latestBal.longTermDebt)??0)+(n(latestBal.shortTermDebt)??0),cash=n(latestBal.cashAndEquivalents),netDebt=cash==null?null:debt-cash;
+ return <>
+  <div className="card"><div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><h2 className="section" style={{marginBottom:4}}>{data.ticker} · {ov.name??""}</h2><div className="muted">{ov.sector??"—"} · {ov.industry??"—"} · {ov.country??"—"}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:30,fontWeight:900}}>{money(d.quote?.price)}</div><span className={`pill ${data.signal?.toLowerCase()}`}>{data.signal}</span></div></div><div className="grid cols-4" style={{marginTop:14}}><Metric label={t(lang,"Blended Target","ราคาเป้าหมายผสม")} value={money(data.targetPrice)} sub={p(data.upsidePct)}/><Metric label="DCF" value={dcf?money(dcf.fairValue):"—"} sub={dcf?`WACC ${(dcf.wacc*100).toFixed(1)}%`:""}/><Metric label={t(lang,"Momentum","โมเมนตัม")} value={`${data.momentum?.total??"—"}/100`}/><Metric label={t(lang,"Moat","ความได้เปรียบ")} value={moat?.overall??qualityLabel(ov,years)} sub={moat?`${moat.ratedCount}/5 tests`:""}/></div></div>
 
-    <div className="card">
-      <h3 className="sub">📚 {t(lang,"5-Year Financial History","งบการเงินย้อนหลัง 5 ปี")}</h3>
-      <div className="table-wrap"><table className="tbl"><thead><tr><th>{t(lang,"Fiscal Year","ปี")}</th><th className="num">Revenue</th><th className="num">Gross Profit</th><th className="num">Operating Income</th><th className="num">Net Income</th><th className="num">Op. Cash Flow</th><th className="num">Capex</th></tr></thead><tbody>
-        {years.map((r:any,i:number)=>{const cf=fin?.cashflow?.[i]??{}; return <tr key={r.fiscalDate}><td><strong>{r.fiscalDate}</strong></td><td className="num">{bn(r.totalRevenue)}</td><td className="num">{bn(r.grossProfit)}</td><td className="num">{bn(r.operatingIncome)}</td><td className="num">{bn(r.netIncome)}</td><td className="num">{bn(cf.operatingCashflow)}</td><td className="num">{bn(cf.capitalExpenditures)}</td></tr>})}
-      </tbody></table></div>
-    </div>
+  <div className="card"><h3 className="sub">🧭 {t(lang,"Executive Underwriting Snapshot","สรุปการวิเคราะห์สำหรับผู้จัดการกองทุน")}</h3><div className="grid cols-4"><Metric label={t(lang,"Revenue CAGR","รายได้ CAGR")} value={revenueCagr==null?"—":p(revenueCagr)}/><Metric label="ROIC" value={returns?.roicPct==null?"—":`${returns.roicPct.toFixed(1)}%`} sub={returns?.spreadPct==null?"":`ROIC-WACC ${p(returns.spreadPct)}`}/><Metric label={t(lang,"FCF","กระแสเงินสดอิสระ")} value={bn(fcf)}/><Metric label={t(lang,"Net Debt","หนี้สุทธิ")} value={netDebt==null?"—":bn(netDebt)}/></div>{returns?.verdict&&<p className="notice" style={{marginTop:12}}>{returns.verdict}</p>}</div>
 
-    <div className="card">
-      <h3 className="sub">🧾 {t(lang,"Latest 4 Quarters","4 ไตรมาสล่าสุด")}</h3>
-      <div className="table-wrap"><table className="tbl"><thead><tr><th>{t(lang,"Quarter","ไตรมาส")}</th><th className="num">Revenue</th><th className="num">Net Income</th><th className="num">Net Margin</th><th className="num">EPS</th><th className="num">Revenue YoY</th></tr></thead><tbody>
-        {qs.map((q:any)=><tr key={q.end}><td><strong>{q.end}</strong></td><td className="num">{bn(q.revenue)}</td><td className="num">{bn(q.netIncome)}</td><td className="num">{q.netMargin==null?"—":`${(q.netMargin*100).toFixed(1)}%`}</td><td className="num">{q.eps==null?"—":money(q.eps)}</td><td className="num">{q.revenueYoY==null?"—":`${q.revenueYoY>=0?"+":""}${(q.revenueYoY*100).toFixed(1)}%`}</td></tr>)}
-      </tbody></table></div>
-    </div>
+  <div className="card"><h3 className="sub">📚 {t(lang,"5-Year Financial History","งบการเงินย้อนหลัง 5 ปี")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>{t(lang,"Fiscal Year","ปี")}</th><th className="num">Revenue</th><th className="num">Gross Profit</th><th className="num">Operating Income</th><th className="num">Net Income</th><th className="num">Op. Cash Flow</th><th className="num">Capex</th><th className="num">FCF</th></tr></thead><tbody>{years.map((r:any,i:number)=>{const cf=fin.cashflow?.[i]??{},ocf=n(cf.operatingCashflow),cap=n(cf.capitalExpenditures),fcf=ocf==null||cap==null?null:ocf-Math.abs(cap);return <tr key={r.fiscalDate}><td><strong>{r.fiscalDate}</strong></td><td className="num">{bn(r.totalRevenue)}</td><td className="num">{bn(r.grossProfit)}</td><td className="num">{bn(r.operatingIncome)}</td><td className="num">{bn(r.netIncome)}</td><td className="num">{bn(ocf)}</td><td className="num">{bn(cap)}</td><td className="num">{bn(fcf)}</td></tr>})}</tbody></table></div></div>
 
-    <div className="grid cols-2">
-      <div className="card"><h3 className="sub">🧠 {t(lang,"Investment Thesis","Thesis การลงทุน")}</h3>{data.thesis?.map((s:any)=><div className="notice" style={{marginBottom:8}} key={s.label}><strong>{s.label} · {s.probability}% · {money(s.targetPrice)}</strong><br/>{s.narrative}</div>)}</div>
-      <div className="card"><h3 className="sub">🚀 {t(lang,"Catalyst Map","แผน Catalyst")}</h3>{data.catalysts?.map((c:any,i:number)=><div className="notice" style={{marginBottom:8}} key={i}><strong>{c.horizon} · {c.event}</strong><br/>{c.impact}</div>)}</div>
-    </div>
+  <div className="card"><h3 className="sub">🧾 {t(lang,"Latest 4 Quarters + TTM","4 ไตรมาสล่าสุด + TTM")}</h3>{ttm&&<div className="grid cols-4" style={{marginBottom:14}}><Metric label="TTM Revenue" value={bn(ttm.revenue)} sub={`${ttm.quartersUsed??0} quarters`}/><Metric label="TTM Gross Profit" value={bn(ttm.grossProfit)}/><Metric label="TTM Operating Income" value={bn(ttm.operatingIncome)}/><Metric label="TTM Net Income" value={bn(ttm.netIncome)}/></div>}<div className="table-wrap"><table className="tbl"><thead><tr><th>{t(lang,"Quarter","ไตรมาส")}</th><th className="num">Revenue</th><th className="num">Net Income</th><th className="num">Net Margin</th><th className="num">EPS</th><th className="num">Revenue YoY</th></tr></thead><tbody>{qs.map((q:any)=><tr key={q.end}><td><strong>{q.end}</strong></td><td className="num">{bn(q.revenue)}</td><td className="num">{bn(q.netIncome)}</td><td className="num">{q.netMargin==null?"—":rawPct(q.netMargin)}</td><td className="num">{q.eps==null?"—":money(q.eps)}</td><td className="num">{q.revenueYoY==null?"—":rawPct(q.revenueYoY)}</td></tr>)}</tbody></table></div></div>
 
-    <div className="grid cols-2">
-      <div className="card"><h3 className="sub">⚠ {t(lang,"Risk Underwriting","วิเคราะห์ความเสี่ยง")}</h3>{data.risks?.map((r:string,i:number)=><div className="notice" style={{marginBottom:7}} key={i}>{r}</div>)}</div>
-      <div className="card"><h3 className="sub">🏦 {t(lang,"Quality & Balance Sheet","คุณภาพธุรกิจและงบดุล")}</h3><KV k="ROE" v={ov?.roe==null?"—":`${(ov.roe*100).toFixed(1)}%`}/><KV k={t(lang,"Profit Margin","อัตรากำไรสุทธิ")} v={ov?.profitMargin==null?"—":`${(ov.profitMargin*100).toFixed(1)}%`}/><KV k="P/E" v={num(ov?.peRatio,1)}/><KV k="Forward P/E" v={num(ov?.forwardPE,1)}/><KV k="Beta" v={num(ov?.beta,2)}/><KV k={t(lang,"52W Range","กรอบราคา 52 สัปดาห์")} v={`${money(ov?.week52Low)} – ${money(ov?.week52High)}`}/></div>
-    </div>
+  <div className="grid cols-2"><div className="card"><h3 className="sub">🏦 {t(lang,"Quality, Returns & Balance Sheet","คุณภาพ ผลตอบแทนต่อทุน และงบดุล")}</h3><KV k="ROE" v={rawPct(ov.roe)}/><KV k="ROA" v={rawPct(ov.roa)}/><KV k={t(lang,"Profit Margin","อัตรากำไรสุทธิ")} v={rawPct(ov.profitMargin)}/><KV k={t(lang,"Operating Margin","อัตรากำไรดำเนินงาน")} v={rawPct(ov.operatingMargin)}/><KV k="ROIC" v={returns?.roicPct==null?"—":`${returns.roicPct.toFixed(1)}%`}/><KV k={t(lang,"ROIC − WACC","ROIC − WACC")} v={returns?.spreadPct==null?"—":p(returns.spreadPct)}/><KV k={t(lang,"Debt","หนี้")} v={bn(debt)}/><KV k={t(lang,"Cash","เงินสด")} v={bn(cash)}/></div><div className="card"><h3 className="sub">🏰 {t(lang,"Economic Moat Evidence","หลักฐานความได้เปรียบทางธุรกิจ")}</h3>{moat?.sources?.map((m:any,i:number)=><div className="notice" style={{marginBottom:8}} key={i}><strong>{m.source} · {m.strength}</strong><br/>{m.evidence}</div>)??<div className="muted">—</div>}</div></div>
 
-    <div className="card"><h3 className="sub">💎 {t(lang,"Valuation & DCF","การประเมินมูลค่าและ DCF")}</h3><div className="grid cols-4"><Metric label="DCF Fair Value" value={dcf?money(dcf.fairValue):"—"}/><Metric label="WACC" value={dcf?`${(dcf.wacc*100).toFixed(1)}%`:"—"}/><Metric label={t(lang,"Terminal Growth","Terminal Growth")} value={dcf?`${(dcf.terminalGrowth*100).toFixed(1)}%`:"—"}/><Metric label={t(lang,"Expected Return","ผลตอบแทนคาดหวัง")} value={data.expectedReturnPct==null?"—":`${data.expectedReturnPct>=0?"+":""}${pct(data.expectedReturnPct)}`}/></div><p className="notice" style={{marginTop:12}}>{data.valuationNote}</p></div>
-  </>
+  <div className="card"><h3 className="sub">🏁 {t(lang,"Peer Benchmark & Market Position","เปรียบเทียบคู่แข่งและตำแหน่งในตลาด")}</h3>{research?.peerSet?.basis&&<p className="notice">{research.peerSet.basis}</p>}<div className="grid cols-3" style={{margin:"12px 0"}}><Metric label={t(lang,"Peer revenue pool","รายได้รวมกลุ่มคู่แข่ง")} value={bn(sizing?.peerPoolRevenue)}/><Metric label={t(lang,"Subject share","สัดส่วนของบริษัท")} value={sizing?.subjectSharePct==null?"—":`${sizing.subjectSharePct.toFixed(1)}%`}/><Metric label={t(lang,"Peer-pool growth","การเติบโตกลุ่มคู่แข่ง")} value={sizing?.poolCagrPct==null?"—":p(sizing.poolCagrPct)}/></div><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th className="num">Revenue TTM</th><th className="num">Net Margin</th><th className="num">P/E</th><th className="num">Rev CAGR</th></tr></thead><tbody>{peers.map((x:any)=><tr key={x.ticker}><td><strong>{x.isSubject?"★ ":""}{x.ticker}</strong></td><td className="num">{bn(x.revenueTTM)}</td><td className="num">{x.netMargin==null?"—":`${x.netMargin.toFixed(1)}%`}</td><td className="num">{x.peTTM==null?"—":`${x.peTTM.toFixed(1)}x`}</td><td className="num">{x.revenueCagrPct==null?"—":p(x.revenueCagrPct)}</td></tr>)}</tbody></table></div></div>
+
+  <div className="grid cols-2"><div className="card"><h3 className="sub">🧠 {t(lang,"Investment Thesis Scenarios","Thesis และ Scenario")}</h3>{data.thesis?.map((s:any)=><div className="notice" style={{marginBottom:8}} key={s.label}><strong>{s.label} · {s.probability}% · {money(s.targetPrice)}</strong><br/>{s.narrative}</div>)}</div><div className="card"><h3 className="sub">🚀 {t(lang,"Catalyst Timeline","ไทม์ไลน์ Catalyst")}</h3>{(research?.timeline?.length?research.timeline:data.catalysts)?.map((c:any,i:number)=><div className="notice" style={{marginBottom:8}} key={i}><strong>{c.date??c.horizon??c.window??"—"} · {c.event}</strong><br/>{c.impact}{c.basis&&<><br/><span className="muted" style={{fontSize:11}}>{c.basis}</span></>}</div>)}</div></div>
+
+  <div className="grid cols-2"><div className="card"><h3 className="sub">⚠ {t(lang,"Risk Underwriting","วิเคราะห์ความเสี่ยง")}</h3>{data.risks?.map((r:string,i:number)=><div className="notice" style={{marginBottom:7}} key={i}>{r}</div>)}</div><div className="card"><h3 className="sub">📊 {t(lang,"Market & Valuation Snapshot","ตลาดและ Valuation")}</h3><KV k="P/E" v={num(ov.peRatio,1)}/><KV k="Forward P/E" v={num(ov.forwardPE,1)}/><KV k="PEG" v={num(ov.pegRatio,2)}/><KV k="Price/Sales" v={num(ov.priceToSales,2)}/><KV k="Price/Book" v={num(ov.priceToBook,2)}/><KV k="Beta" v={num(ov.beta,2)}/><KV k={t(lang,"52W Range","กรอบราคา 52 สัปดาห์")} v={`${money(ov.week52Low)} – ${money(ov.week52High)}`}/></div></div>
+
+  <div className="card"><h3 className="sub">💎 {t(lang,"Valuation, DCF & Scenario Assumptions","Valuation, DCF และสมมติฐาน")}</h3><div className="grid cols-4"><Metric label="DCF Fair Value" value={dcf?money(dcf.fairValue):"—"}/><Metric label="WACC" value={dcf?`${(dcf.wacc*100).toFixed(1)}%`:"—"}/><Metric label={t(lang,"Terminal Growth","Terminal Growth")} value={dcf?`${(dcf.terminalGrowth*100).toFixed(1)}%`:"—"}/><Metric label={t(lang,"Expected Return","ผลตอบแทนคาดหวัง")} value={data.expectedReturnPct==null?"—":p(data.expectedReturnPct)}/></div>{data.multiples&&<div className="grid cols-4" style={{marginTop:12}}><Metric label="Forward EPS" value={money(data.multiples.forwardEps)}/><Metric label="Bear P/E" value={`${data.multiples.peLow}x`}/><Metric label="Base P/E" value={`${data.multiples.peMid}x`}/><Metric label="Bull P/E" value={`${data.multiples.peHigh}x`}/></div>}<p className="notice" style={{marginTop:12}}>{data.valuationNote}</p></div>
+
+  {(d.warnings?.length||research?.sources?.length)&&<div className="card"><h3 className="sub">🔬 {t(lang,"Data Quality & Sources","คุณภาพข้อมูลและแหล่งข้อมูล")}</h3>{d.warnings?.map((w:string,i:number)=><div className="notice" style={{marginBottom:6}} key={`w${i}`}>⚠ {w}</div>)}{research?.sources?.map((s:string,i:number)=><div className="muted" style={{fontSize:12,marginBottom:5}} key={`s${i}`}>• {s}</div>)}</div>}
+ </>
 }
-
+function n(v:any){return typeof v==="number"&&Number.isFinite(v)?v:null}
+function cagr(vals:any[]){const xs=vals.map(n).filter((x):x is number=>x!=null&&x>0);if(xs.length<2)return null;return (Math.pow(xs[0]/xs[xs.length-1],1/(xs.length-1))-1)*100}
 function qualityLabel(ov:any,years:any[]){let s=0;if((ov?.roe??0)>.15)s++;if((ov?.profitMargin??0)>.1)s++;if(years.length>=4&&years[0]?.totalRevenue>years[years.length-1]?.totalRevenue)s++;if((ov?.beta??2)<1.3)s++;return s>=4?"High":s>=2?"Good":"Mixed"}
 function Metric({label,value,sub}:{label:string;value:any;sub?:string}){return <div className="metric"><div className="label">{label}</div><div className="value" style={{fontSize:18}}>{value}</div>{sub&&<div className="sub">{sub}</div>}</div>}
 function KV({k,v}:{k:string;v:any}){return <div className="kv"><span className="k">{k}</span><strong>{v}</strong></div>}
