@@ -11,21 +11,33 @@ type Analysis = {
   data?: { overview?: { dividendYield?: number | null }; quarters?: Array<{ revenueYoY?: number | null }> };
 };
 
-type Props = {
-  holdings: Holding[];
-  quotes: Record<string, Quote>;
-  lang: Lang;
-};
-
+type Props = { holdings: Holding[]; quotes: Record<string, Quote>; lang: Lang };
 type Sleeve = "Growth" | "Momentum" | "High Dividend";
 const TARGETS: Record<Sleeve, number> = { Growth: 40, Momentum: 35, "High Dividend": 25 };
-
 const tx = (lang: Lang, en: string, th: string) => lang === "th" ? th : en;
 const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
 
 function normalizeYield(v: number | null | undefined) {
   if (v == null || !Number.isFinite(v)) return null;
   return v > 0 && v < 1 ? v * 100 : v;
+}
+
+async function analyzeTicker(ticker: string): Promise<[string, Analysis | null]> {
+  try {
+    const r = await fetch(`/api/analyze?ticker=${encodeURIComponent(ticker)}`);
+    if (!r.ok) return [ticker, null];
+    return [ticker, await r.json()];
+  } catch {
+    return [ticker, null];
+  }
+}
+
+async function analyzeInBatches(tickers: string[], batchSize = 3) {
+  const rows: Array<[string, Analysis | null]> = [];
+  for (let i = 0; i < tickers.length; i += batchSize) {
+    rows.push(...await Promise.all(tickers.slice(i, i + batchSize).map(analyzeTicker)));
+  }
+  return rows;
 }
 
 export default function PortfolioIntelligence({ holdings, quotes, lang }: Props) {
@@ -37,15 +49,7 @@ export default function PortfolioIntelligence({ holdings, quotes, lang }: Props)
     if (!tickers.length) { setAnalysis({}); return; }
     let cancelled = false;
     setLoading(true);
-    Promise.all(tickers.map(async ticker => {
-      try {
-        const r = await fetch(`/api/analyze?ticker=${encodeURIComponent(ticker)}`);
-        if (!r.ok) return [ticker, null] as const;
-        return [ticker, await r.json()] as const;
-      } catch {
-        return [ticker, null] as const;
-      }
-    })).then(rows => {
+    analyzeInBatches(tickers, 3).then(rows => {
       if (!cancelled) setAnalysis(Object.fromEntries(rows));
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -65,13 +69,14 @@ export default function PortfolioIntelligence({ holdings, quotes, lang }: Props)
       const yieldPct = normalizeYield(a?.data?.overview?.dividendYield);
 
       let sleeve: Sleeve = "Growth";
-      let reason = "growth/default";
-      if ((yieldPct ?? 0) >= 5) { sleeve = "High Dividend"; reason = `yield ${yieldPct?.toFixed(1)}%`; }
-      else if ((momentum ?? 0) >= 70) { sleeve = "Momentum"; reason = `momentum ${momentum}`; }
-      else if ((growth ?? 0) >= 12) { sleeve = "Growth"; reason = `growth ${growth?.toFixed(1)}%`; }
-      else if ((momentum ?? 0) >= 55) { sleeve = "Momentum"; reason = `momentum ${momentum}`; }
+      let reasonEn = "core growth / incomplete data";
+      let reasonTh = "กลุ่มเติบโตหลัก / ข้อมูลยังไม่ครบ";
+      if ((yieldPct ?? 0) >= 5) { sleeve = "High Dividend"; reasonEn = `yield ${yieldPct?.toFixed(1)}%`; reasonTh = `ปันผล ${yieldPct?.toFixed(1)}%`; }
+      else if ((momentum ?? 0) >= 70) { sleeve = "Momentum"; reasonEn = `momentum ${momentum}`; reasonTh = `โมเมนตัม ${momentum}`; }
+      else if ((growth ?? 0) >= 12) { sleeve = "Growth"; reasonEn = `growth ${growth?.toFixed(1)}%`; reasonTh = `เติบโต ${growth?.toFixed(1)}%`; }
+      else if ((momentum ?? 0) >= 55) { sleeve = "Momentum"; reasonEn = `momentum ${momentum}`; reasonTh = `โมเมนตัม ${momentum}`; }
 
-      return { ...h, value, momentum, growth, yieldPct, sleeve, reason };
+      return { ...h, value, momentum, growth, yieldPct, sleeve, reasonEn, reasonTh };
     });
 
     const sleeves = (Object.keys(TARGETS) as Sleeve[]).map(sleeve => {
@@ -79,8 +84,7 @@ export default function PortfolioIntelligence({ holdings, quotes, lang }: Props)
       const value = members.reduce((s,p) => s + p.value, 0);
       const actual = nav ? value / nav * 100 : 0;
       const target = TARGETS[sleeve];
-      const drift = actual - target;
-      return { sleeve, members, value, actual, target, drift };
+      return { sleeve, members, value, actual, target, drift: actual - target };
     });
 
     const proposals = sleeves.filter(s => Math.abs(s.drift) >= 3).sort((a,b) => Math.abs(b.drift) - Math.abs(a.drift));
@@ -119,18 +123,13 @@ export default function PortfolioIntelligence({ holdings, quotes, lang }: Props)
             {model.proposals.map(s => {
               const deltaValue = model.nav * Math.abs(s.drift) / 100;
               const overweight = s.drift > 0;
-              return (
-                <div className={styles.queueItem} key={s.sleeve}>
-                  <span className={styles.queueDot}/>
-                  <div>
-                    <strong>{overweight ? tx(lang, "Trim", "ลด") : tx(lang, "Add", "เพิ่ม")} {tx(lang, s.sleeve, s.sleeve === "Growth" ? "กลุ่มเติบโต" : s.sleeve === "Momentum" ? "กลุ่มโมเมนตัม" : "กลุ่มปันผลสูง")}</strong>
-                    <div className={styles.intelNote}>{tx(lang,
-                      `${s.actual.toFixed(1)}% vs ${s.target}% target. Indicative rebalance ${deltaValue.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}.`,
-                      `ปัจจุบัน ${s.actual.toFixed(1)}% เทียบเป้า ${s.target}% มูลค่าที่ควรปรับโดยประมาณ ${deltaValue.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`
-                    )}</div>
-                  </div>
-                </div>
-              );
+              return <div className={styles.queueItem} key={s.sleeve}><span className={styles.queueDot}/><div>
+                <strong>{overweight ? tx(lang, "Trim", "ลด") : tx(lang, "Add", "เพิ่ม")} {tx(lang, s.sleeve, s.sleeve === "Growth" ? "กลุ่มเติบโต" : s.sleeve === "Momentum" ? "กลุ่มโมเมนตัม" : "กลุ่มปันผลสูง")}</strong>
+                <div className={styles.intelNote}>{tx(lang,
+                  `${s.actual.toFixed(1)}% vs ${s.target}% target. Indicative rebalance ${deltaValue.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}.`,
+                  `ปัจจุบัน ${s.actual.toFixed(1)}% เทียบเป้า ${s.target}% มูลค่าที่ควรปรับโดยประมาณ ${deltaValue.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`
+                )}</div>
+              </div></div>;
             })}
           </div>
         )}
@@ -138,27 +137,18 @@ export default function PortfolioIntelligence({ holdings, quotes, lang }: Props)
 
       <div className={styles.tableWrapLocal}>
         <table className={styles.intelTable}>
-          <thead><tr>
-            <th>{tx(lang, "Ticker", "หุ้น")}</th>
-            <th>{tx(lang, "Sleeve", "กลุ่ม")}</th>
-            <th>{tx(lang, "Momentum", "โมเมนตัม")}</th>
-            <th>{tx(lang, "Growth", "การเติบโต")}</th>
-            <th>{tx(lang, "Yield", "ปันผล")}</th>
-            <th>{tx(lang, "Classification", "เหตุผลจัดกลุ่ม")}</th>
-          </tr></thead>
+          <thead><tr><th>{tx(lang,"Ticker","หุ้น")}</th><th>{tx(lang,"Sleeve","กลุ่ม")}</th><th>{tx(lang,"Momentum","โมเมนตัม")}</th><th>{tx(lang,"Growth","การเติบโต")}</th><th>{tx(lang,"Yield","ปันผล")}</th><th>{tx(lang,"Classification","เหตุผลจัดกลุ่ม")}</th></tr></thead>
           <tbody>{model.positions.map(p => <tr key={p.id}>
             <td><strong>{p.ticker}</strong></td>
             <td>{tx(lang, p.sleeve, p.sleeve === "Growth" ? "เติบโต" : p.sleeve === "Momentum" ? "โมเมนตัม" : "ปันผลสูง")}</td>
-            <td>{p.momentum ?? "—"}</td>
-            <td>{p.growth == null ? "—" : `${p.growth.toFixed(1)}%`}</td>
-            <td>{p.yieldPct == null ? "—" : `${p.yieldPct.toFixed(1)}%`}</td>
-            <td>{p.reason}</td>
+            <td>{p.momentum ?? "—"}</td><td>{p.growth == null ? "—" : `${p.growth.toFixed(1)}%`}</td><td>{p.yieldPct == null ? "—" : `${p.yieldPct.toFixed(1)}%`}</td>
+            <td>{lang === "th" ? p.reasonTh : p.reasonEn}</td>
           </tr>)}</tbody>
         </table>
       </div>
       <div className={styles.disclaimer}>{tx(lang,
-        "Classification is rule-based and uses available live analyzer data. It is a portfolio-construction aid, not an automatic trade instruction.",
-        "การจัดกลุ่มใช้กฎจากข้อมูลวิเคราะห์ที่ระบบดึงได้จริง ใช้ช่วยตัดสินใจจัดพอร์ตเท่านั้น ไม่ใช่คำสั่งซื้อขายอัตโนมัติ"
+        "Classification is rule-based and uses available live analyzer data. Up to 12 holdings are analyzed in batches of three to protect data-provider reliability. It is a portfolio-construction aid, not an automatic trade instruction.",
+        "การจัดกลุ่มใช้กฎจากข้อมูลวิเคราะห์จริง โดยวิเคราะห์สูงสุด 12 สินทรัพย์และจำกัดครั้งละ 3 ตัวเพื่อรักษาความเสถียรของแหล่งข้อมูล ใช้ช่วยจัดพอร์ตเท่านั้น ไม่ใช่คำสั่งซื้อขายอัตโนมัติ"
       )}</div>
     </section>
   );
