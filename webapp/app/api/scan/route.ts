@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDividendScan, DIVIDEND_UNIVERSE } from "@/lib/dividendScan";
-import { runMomentumV61, MOMENTUM_V61_UNIVERSE } from "@/lib/momentumV61";
+import { runMomentumV62, MOMENTUM_V62_UNIVERSE } from "@/lib/momentumV62";
 import { runThematicPortfolio, type RebalanceCadence } from "@/lib/thematicPortfolio";
 import { universeForSector } from "@/lib/sectorUniverse";
 
@@ -25,8 +25,8 @@ export async function GET(req: NextRequest) {
       const universe = explicit?.length ? explicit : sector === "All" ? DIVIDEND_UNIVERSE : universeForSector(sector);
       return NextResponse.json({ ...(await runDividendScan(universe, topN)), universeSource: explicit?.length ? "explicit" : sector === "All" ? "dividend-quality-universe" : "sector", sector });
     }
-    const universe = explicit?.length ? explicit : sector === "All" ? MOMENTUM_V61_UNIVERSE : universeForSector(sector);
-    return NextResponse.json({ ...(await runMomentumV61(universe, topN)), universeSource: explicit?.length ? "explicit" : sector === "All" ? "high-beta-liquid-universe" : "sector", sector });
+    const universe = explicit?.length ? explicit : sector === "All" ? MOMENTUM_V62_UNIVERSE : universeForSector(sector);
+    return NextResponse.json({ ...(await runMomentumV62(universe, topN)), universeSource: explicit?.length ? "explicit" : sector === "All" ? "high-beta-liquid-universe" : "sector", sector });
   } catch (e:any) {
     return NextResponse.json({ error: e?.message ?? "Scan failed" }, { status: 500 });
   }
