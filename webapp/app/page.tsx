@@ -7,6 +7,7 @@ import FundCommandCenter from "./components/FundCommandCenter";
 import ActiveFundManager from "./components/ActiveFundManager";
 import HoldingsIntelligence from "./components/HoldingsIntelligence";
 import HoldingsMarketMonitor from "./components/HoldingsMarketMonitor";
+import DividendCalendarPanel from "./components/DividendCalendarPanel";
 import TabNav, { type TabDef } from "./components/TabNav";
 
 export type AppLang = "en" | "th";
@@ -47,7 +48,7 @@ export default function Home() {
 
       {tab === "command" && <FundCommandCenter onNavigate={setTab} lang={lang} />}
       {tab === "analyze" && <ResearchTabV2 lang={lang} />}
-      {tab === "portfolio" && <><ActiveFundManager /><HoldingsMarketMonitor /><HoldingsIntelligence lang={lang} /><PortfolioTab /></>}
+      {tab === "portfolio" && <><ActiveFundManager /><HoldingsMarketMonitor /><DividendCalendarPanel lang={lang} /><HoldingsIntelligence lang={lang} /><PortfolioTab /></>}
       {tab === "scanner" && <AlphaScannerV2 lang={lang} />}
 
       <div className="footer-note">
