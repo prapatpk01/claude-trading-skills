@@ -1,118 +1,19 @@
 import { getMarketData } from "./marketData";
 import { buildAnalysis } from "./analyze";
+import { fetchDividends, inferFrequency } from "./dividends";
 
-export interface DividendPick {
-  ticker: string;
-  name: string;
-  sector: string;
-  score: number;
-  yieldPct: number | null;
-  revenueGrowthPct: number | null;
-  roePct: number | null;
-  profitMarginPct: number | null;
-  payoutQuality: string;
-  thesis: string;
-  catalysts: { horizon: string; event: string; impact: string }[];
-  risks: string[];
-  dcfFairValue: number | null;
-  targetPrice: number | null;
-  upsidePct: number | null;
-  reasons: string[];
-}
+export const DIVIDEND_UNIVERSE = Array.from(new Set([
+  "MO","PM","BTI","O","VICI","ADC","NNN","WPC","SPG","EPR","MAIN","ARCC","BXSL","OBDC",
+  "ENB","TRP","EPD","MPLX","ET","KMI","XOM","CVX","COP","VLO","MPC","OKE","WMB",
+  "VZ","T","IBM","CSCO","TXN","QCOM","UPS","DEO","UL","KO","PEP","MDT","JNJ","ABBV","PFE","BMY",
+  "USB","PNC","TFC","KEY","HBAN","RF","FITB","JPM","BAC","C","HSBC","TD","BNS","RY","CM",
+  "SO","DUK","AEP","D","EXC","NEE","PPL","ED","PEG","DTE","WEC","ES","SRE",
+  "RIO","BHP","VALE","NEM","GOLD","DOW","LYB","NUE","STLD"
+]));
 
-const n = (v: any): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
-const pct = (v: number | null | undefined) => v == null ? null : Math.abs(v) <= 2 ? v * 100 : v;
-
-function cheapScore(data: Awaited<ReturnType<typeof getMarketData>>) {
-  const ov = data.overview;
-  const inc = data.financials.income;
-  const cf = data.financials.cashflow;
-  const latest = inc[0];
-  const oldest = inc[Math.min(inc.length - 1, 4)];
-  const latestCf = cf[0];
-  const yieldPct = pct(ov?.dividendYield);
-  const roePct = pct(ov?.roe);
-  const marginPct = pct(ov?.profitMargin);
-  const rev0 = n(latest?.totalRevenue);
-  const revOld = n(oldest?.totalRevenue);
-  const years = Math.max(1, Math.min(4, inc.length - 1));
-  const growth = rev0 && revOld && revOld > 0 ? (Math.pow(rev0 / revOld, 1 / years) - 1) * 100 : null;
-  const ocf = n(latestCf?.operatingCashflow);
-  const div = Math.abs(n(latestCf?.dividendPayout) ?? 0);
-  const coverage = ocf && ocf > 0 ? div / ocf : null;
-
-  let score = 0;
-  const reasons: string[] = [];
-  if ((yieldPct ?? 0) >= 5) { score += 25; reasons.push(`Yield ${yieldPct?.toFixed(1)}%`); }
-  else if ((yieldPct ?? 0) >= 3) { score += 15; reasons.push(`Yield ${yieldPct?.toFixed(1)}%`); }
-  if ((roePct ?? 0) >= 15) { score += 15; reasons.push(`ROE ${roePct?.toFixed(1)}%`); }
-  if ((marginPct ?? 0) >= 12) { score += 10; reasons.push(`Margin ${marginPct?.toFixed(1)}%`); }
-  if ((growth ?? 0) >= 8) { score += 15; reasons.push(`Revenue CAGR ${growth?.toFixed(1)}%`); }
-  if (coverage != null && coverage <= 0.7) { score += 20; reasons.push(`Dividend/OCF ${(coverage * 100).toFixed(0)}%`); }
-  else if (coverage != null && coverage <= 1) { score += 10; reasons.push(`Dividend/OCF ${(coverage * 100).toFixed(0)}%`); }
-  if ((ov?.beta ?? 9) <= 1.2) score += 5;
-  if ((ov?.peRatio ?? 999) <= 25) score += 10;
-  return { score: Math.min(100, score), yieldPct, roePct, marginPct, growth, coverage, reasons };
-}
-
-export async function runDividendScan(universe: string[], topN = 5) {
-  const ranked: { ticker: string; pre: ReturnType<typeof cheapScore> }[] = [];
-  const rejected: { ticker: string; reason: string }[] = [];
-
-  for (const ticker of universe.slice(0, 36)) {
-    try {
-      const data = await getMarketData(ticker);
-      const pre = cheapScore(data);
-      if ((pre.yieldPct ?? 0) < 2) {
-        rejected.push({ ticker, reason: "Dividend yield below 2% quality-income floor" });
-        continue;
-      }
-      ranked.push({ ticker, pre });
-    } catch (e: any) {
-      rejected.push({ ticker, reason: e?.message ?? "fundamental data unavailable" });
-    }
-  }
-
-  ranked.sort((a,b) => b.pre.score - a.pre.score);
-  const shortlist = ranked.slice(0, Math.max(topN * 2, 8));
-  const picks: DividendPick[] = [];
-
-  for (const row of shortlist) {
-    try {
-      const a = await buildAnalysis(row.ticker);
-      const ov = a.data.overview;
-      const scenario = a.thesis.find((s) => s.label === "Base");
-      const thesis = scenario?.narrative ?? a.signalReasons?.join(" · ") ?? "No thesis available";
-      const qualityBonus = (a.dcf && a.upsidePct > 0 ? 5 : 0) + (a.signal === "BUY" ? 5 : 0);
-      picks.push({
-        ticker: row.ticker,
-        name: ov?.name ?? row.ticker,
-        sector: ov?.sector ?? "n/a",
-        score: Math.min(100, row.pre.score + qualityBonus),
-        yieldPct: row.pre.yieldPct,
-        revenueGrowthPct: row.pre.growth,
-        roePct: row.pre.roePct,
-        profitMarginPct: row.pre.marginPct,
-        payoutQuality: row.pre.coverage == null ? "Unknown" : row.pre.coverage <= 0.7 ? "Strong" : row.pre.coverage <= 1 ? "Adequate" : "Stretched",
-        thesis,
-        catalysts: a.catalysts.slice(0, 4),
-        risks: a.risks.slice(0, 4),
-        dcfFairValue: a.dcf?.fairValue ?? null,
-        targetPrice: a.targetPrice ?? null,
-        upsidePct: a.upsidePct ?? null,
-        reasons: row.pre.reasons,
-      });
-    } catch (e: any) {
-      rejected.push({ ticker: row.ticker, reason: `Deep dive failed: ${e?.message ?? "unknown"}` });
-    }
-  }
-
-  picks.sort((a,b) => b.score - a.score);
-  return {
-    mode: "dividend",
-    scanned: Math.min(universe.length, 36),
-    picks: picks.slice(0, topN),
-    rejected,
-    methodology: "Dividend quality score: yield, cash-flow coverage, ROE, profitability, 5Y revenue growth, valuation and deep-dive thesis/catalyst/DCF confirmation.",
-  };
-}
+export interface DividendPick {ticker:string;name:string;sector:string;score:number;yieldPct:number|null;revenueGrowthPct:number|null;roePct:number|null;profitMarginPct:number|null;payoutQuality:string;distributionGrowthPct:number|null;cuts3Y:number;thesis:string;catalysts:{horizon:string;event:string;impact:string}[];risks:string[];dcfFairValue:number|null;targetPrice:number|null;upsidePct:number|null;reasons:string[];dataQuality:string;}
+const n=(v:any):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
+const pct=(v:number|null|undefined)=>v==null?null:Math.abs(v)<=2?v*100:v;
+function distStats(events:{date:string;amount:number}[]){const now=Date.now(),cut3=new Date(now-3*365*86400000).toISOString().slice(0,10),cut1=new Date(now-365*86400000).toISOString().slice(0,10),cut2=new Date(now-2*365*86400000).toISOString().slice(0,10),recent=events.filter(e=>e.date>=cut3);let cuts=0;for(let i=1;i<recent.length;i++)if(recent[i].amount<recent[i-1].amount*.98)cuts++;const a=events.filter(e=>e.date>=cut1).reduce((s,e)=>s+e.amount,0),b=events.filter(e=>e.date>=cut2&&e.date<cut1).reduce((s,e)=>s+e.amount,0);return{cuts,growth:b>0?(a/b-1)*100:null,ttm:a}}
+function cagr(inc:any[]){if(inc.length<2)return null;const a=n(inc[0]?.totalRevenue),b=n(inc[Math.min(4,inc.length-1)]?.totalRevenue),yrs=Math.min(4,inc.length-1);return a&&b&&b>0?(Math.pow(a/b,1/yrs)-1)*100:null}
+export async function runDividendScan(universe:string[]=DIVIDEND_UNIVERSE,topN=5){const ranked:any[]=[],rejected:any[]=[];let idx=0;const list=universe.slice(0,80),workers=Array.from({length:6},async()=>{while(true){const i=idx++;if(i>=list.length)break;const ticker=list[i];try{const [md,div]=await Promise.all([getMarketData(ticker).catch(()=>null),fetchDividends(ticker,4).catch(()=>({events:[],price:null} as any))]);const price=md?.quote?.price??div.price??null,st=distStats(div.events??[]),freq=inferFrequency(div.events??[]).perYear,yieldPct=price&&price>0?(freq&&div.events?.length?(div.events.at(-1)!.amount*freq/price)*100:st.ttm>0?st.ttm/price*100:pct(md?.overview?.dividendYield)):pct(md?.overview?.dividendYield);if(yieldPct==null||yieldPct<2){rejected.push({ticker,reason:"verified yield below 2% or unavailable"});continue}const inc=md?.financials.income??[],cf=md?.financials.cashflow??[],growth=cagr(inc),roe=pct(md?.overview?.roe),margin=pct(md?.overview?.profitMargin),ocf=n(cf[0]?.operatingCashflow),divPayout=Math.abs(n(cf[0]?.dividendPayout)??0),coverage=ocf&&ocf>0?divPayout/ocf:null,pe=md?.overview?.peRatio??null;let score=0;const reasons:string[]=[];if(yieldPct>=6){score+=25;reasons.push(`Yield ${yieldPct.toFixed(1)}%`)}else if(yieldPct>=4){score+=20;reasons.push(`Yield ${yieldPct.toFixed(1)}%`)}else{score+=12;reasons.push(`Yield ${yieldPct.toFixed(1)}%`)}if(st.cuts===0){score+=15;reasons.push("No >2% distribution cut in 3Y history")}else if(st.cuts<=2)score+=6;if((st.growth??-99)>3){score+=10;reasons.push(`Distribution growth ${st.growth!.toFixed(1)}%`)}else if((st.growth??-99)>=0)score+=5;if(coverage!=null&&coverage<=.7){score+=15;reasons.push(`Dividend/OCF ${(coverage*100).toFixed(0)}%`)}else if(coverage!=null&&coverage<=1)score+=8;if((roe??0)>=15)score+=10;if((margin??0)>=10)score+=7;if((growth??-99)>=5)score+=8;if(pe!=null&&pe>0&&pe<=25)score+=10;ranked.push({ticker,score:Math.min(100,score),yieldPct,growth,roe,margin,coverage,st,reasons,md})}catch(e:any){rejected.push({ticker,reason:e?.message??"data unavailable"})}}});await Promise.all(workers);ranked.sort((a,b)=>b.score-a.score);const shortlist=ranked.slice(0,Math.max(10,topN*2)),picks:DividendPick[]=[];for(const row of shortlist){try{const a=await buildAnalysis(row.ticker),ov=a.data.overview,base=a.thesis.find(s=>s.label==="Base"),qualityBonus=(a.committee?.decision==="APPROVE"?8:a.committee?.decision==="WATCH"?3:0)+(a.dcf&&a.upsidePct>0?4:0);picks.push({ticker:row.ticker,name:ov?.name??row.ticker,sector:ov?.sector??"n/a",score:Math.min(100,row.score+qualityBonus),yieldPct:row.yieldPct,revenueGrowthPct:row.growth,roePct:row.roe,profitMarginPct:row.margin,payoutQuality:row.coverage==null?(row.st.cuts===0?"History stable / cash coverage unavailable":"Coverage unavailable"):row.coverage<=.7?"Strong":row.coverage<=1?"Adequate":"Stretched",distributionGrowthPct:row.st.growth,cuts3Y:row.st.cuts,thesis:base?.narrative??a.signalReasons?.join(" · ")??"No thesis available",catalysts:a.catalysts.slice(0,4),risks:a.risks.slice(0,4),dcfFairValue:a.dcf?.fairValue??null,targetPrice:a.targetPrice??null,upsidePct:a.upsidePct??null,reasons:row.reasons,dataQuality:[row.yieldPct,row.growth,row.roe,row.margin,row.coverage].filter(x=>x!=null).length>=4?"FULL":"PARTIAL"})}catch(e:any){rejected.push({ticker:row.ticker,reason:`deep dive failed: ${e?.message??"unknown"}`})}}picks.sort((a,b)=>b.score-a.score);return{mode:"dividend",scanned:list.length,picks:picks.slice(0,topN),rejected,methodology:"Dividend Quality v2: verified distribution history/yield first, then payout cash-flow coverage, 3-year cut record, distribution growth, ROE, profitability, revenue durability, valuation, thesis/catalyst/risk and DCF/committee confirmation.",noQualifiers:picks.length?null:"No dividend names cleared the verified 2% yield floor and deep-quality review."}}
