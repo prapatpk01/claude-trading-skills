@@ -21,9 +21,16 @@ export interface PerformanceSeries {
   endValue: number;
   changePct: number;
   benchmarkChangePct: number | null;
+  activeReturnPct: number | null;
   bestDay: { date: string; pct: number } | null;
   worstDay: { date: string; pct: number } | null;
   maxDrawdownPct: number | null;
+  annualizedVolatilityPct: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  beta: number | null;
+  alphaAnnualizedPct: number | null;
+  positiveDayPct: number | null;
   missing: string[];
   note: string;
 }
@@ -34,6 +41,15 @@ export interface PositionInput {
 }
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
+const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+const variance = (xs: number[], avg = mean(xs)) => xs.length > 1 ? xs.reduce((s, x) => s + (x - avg) ** 2, 0) / (xs.length - 1) : 0;
+const covariance = (a: number[], b: number[], avgA = mean(a), avgB = mean(b)) => {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += (a[i] - avgA) * (b[i] - avgB);
+  return sum / (n - 1);
+};
 
 export async function buildPerformance(
   positions: PositionInput[],
@@ -45,7 +61,6 @@ export async function buildPerformance(
   const missing: string[] = [];
   const seriesByTicker = new Map<string, Map<string, number>>();
 
-  // fetch sequentially-ish with small concurrency to stay polite
   const fetched = await Promise.all(
     valid.map(async (p) => {
       try {
@@ -68,9 +83,6 @@ export async function buildPerformance(
   const spy = await dailyCandles("SPY", days + 30).catch(() => [] as Candle[]);
   const spyByDate = new Map(spy.map((c) => [c.date, c.close]));
 
-  // Use the union of trading days, restricted to the requested window, and
-  // carry each position's last known close forward so a single missing bar
-  // doesn't punch a hole in the portfolio line.
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const allDates = new Set<string>();
   seriesByTicker.forEach((m) => m.forEach((_, d) => { if (d >= cutoff) allDates.add(d); }));
@@ -99,9 +111,7 @@ export async function buildPerformance(
     if (!startValue) startValue = value;
     const spyClose = spyByDate.get(date);
     if (spyClose != null && spyStart == null) spyStart = spyClose;
-    const benchmark =
-      spyClose != null && spyStart ? round2((spyClose / spyStart) * startValue) : null;
-
+    const benchmark = spyClose != null && spyStart ? round2((spyClose / spyStart) * startValue) : null;
     points.push({ date, value: round2(value), benchmark });
   }
   if (points.length < 2) return null;
@@ -109,27 +119,58 @@ export async function buildPerformance(
   const endValue = points[points.length - 1].value;
   const changePct = startValue ? ((endValue - startValue) / startValue) * 100 : 0;
 
-  // daily extremes and peak-to-trough drawdown
   let best: { date: string; pct: number } | null = null;
   let worst: { date: string; pct: number } | null = null;
   let peak = points[0].value;
   let maxDd = 0;
+  const portfolioReturns: number[] = [];
+  const benchmarkReturns: number[] = [];
+  let positiveDays = 0;
+
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1].value;
     const cur = points[i].value;
     if (prev > 0) {
-      const pct = ((cur - prev) / prev) * 100;
-      if (!best || pct > best.pct) best = { date: points[i].date, pct: round2(pct) };
-      if (!worst || pct < worst.pct) worst = { date: points[i].date, pct: round2(pct) };
+      const r = (cur - prev) / prev;
+      const p = r * 100;
+      portfolioReturns.push(r);
+      if (r > 0) positiveDays++;
+      if (!best || p > best.pct) best = { date: points[i].date, pct: round2(p) };
+      if (!worst || p < worst.pct) worst = { date: points[i].date, pct: round2(p) };
     }
+    const b0 = points[i - 1].benchmark;
+    const b1 = points[i].benchmark;
+    if (b0 != null && b1 != null && b0 > 0) benchmarkReturns.push((b1 - b0) / b0);
     if (cur > peak) peak = cur;
     if (peak > 0) maxDd = Math.min(maxDd, ((cur - peak) / peak) * 100);
   }
 
   const firstBench = points.find((p) => p.benchmark != null)?.benchmark ?? null;
   const lastBench = [...points].reverse().find((p) => p.benchmark != null)?.benchmark ?? null;
-  const benchmarkChangePct =
-    firstBench && lastBench ? round2(((lastBench - firstBench) / firstBench) * 100) : null;
+  const benchmarkChangePct = firstBench && lastBench ? round2(((lastBench - firstBench) / firstBench) * 100) : null;
+
+  const avg = mean(portfolioReturns);
+  const volDaily = Math.sqrt(variance(portfolioReturns, avg));
+  const annualizedVolatilityPct = portfolioReturns.length > 1 ? round2(volDaily * Math.sqrt(252) * 100) : null;
+  const sharpe = volDaily > 0 ? round2((avg / volDaily) * Math.sqrt(252)) : null;
+  const downside = portfolioReturns.filter(r => r < 0);
+  const downsideDev = downside.length ? Math.sqrt(mean(downside.map(r => r * r))) : 0;
+  const sortino = downsideDev > 0 ? round2((avg / downsideDev) * Math.sqrt(252)) : null;
+  const positiveDayPct = portfolioReturns.length ? round2((positiveDays / portfolioReturns.length) * 100) : null;
+
+  const paired = Math.min(portfolioReturns.length, benchmarkReturns.length);
+  let beta: number | null = null;
+  let alphaAnnualizedPct: number | null = null;
+  if (paired > 10) {
+    const pr = portfolioReturns.slice(-paired);
+    const br = benchmarkReturns.slice(-paired);
+    const avgP = mean(pr), avgB = mean(br);
+    const varB = variance(br, avgB);
+    if (varB > 0) {
+      beta = round2(covariance(pr, br, avgP, avgB) / varB);
+      alphaAnnualizedPct = round2((avgP - beta * avgB) * 252 * 100);
+    }
+  }
 
   return {
     points,
@@ -137,11 +178,18 @@ export async function buildPerformance(
     endValue,
     changePct: round2(changePct),
     benchmarkChangePct,
+    activeReturnPct: benchmarkChangePct != null ? round2(changePct - benchmarkChangePct) : null,
     bestDay: best,
     worstDay: worst,
     maxDrawdownPct: round2(maxDd),
+    annualizedVolatilityPct,
+    sharpe,
+    sortino,
+    beta,
+    alphaAnnualizedPct,
+    positiveDayPct,
     missing,
     note:
-      "Current share counts valued back through time (the app stores positions, not a transaction ledger), so this is a constant-holdings series rather than a time-weighted return.",
+      "Current share counts valued back through time (the app stores positions, not a transaction ledger), so this is a constant-holdings series rather than a time-weighted return. Sharpe, Sortino, beta and alpha are diagnostic estimates from this same series and are not audited fund-performance statistics.",
   };
 }
