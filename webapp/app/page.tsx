@@ -1,8 +1,8 @@
 "use client";
 import { useMemo, useState } from "react";
-import AnalyzeTab from "./components/AnalyzeTab";
+import ResearchTabV2 from "./components/ResearchTabV2";
 import PortfolioTab from "./components/PortfolioTab";
-import ScannerTab from "./components/ScannerTab";
+import AlphaScannerV2 from "./components/AlphaScannerV2";
 import FundCommandCenter from "./components/FundCommandCenter";
 import TabNav, { type TabDef } from "./components/TabNav";
 
@@ -35,13 +35,7 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button
-            className="btn ghost sm"
-            type="button"
-            onClick={() => setLang(lang === "en" ? "th" : "en")}
-            aria-label="Toggle Thai English language"
-            title={lang === "en" ? "แปลหน้าเป็นภาษาไทย" : "Switch to English"}
-          >
+          <button className="btn ghost sm" type="button" onClick={() => setLang(lang === "en" ? "th" : "en")} aria-label="Toggle Thai English language" title={lang === "en" ? "แปลหน้าเป็นภาษาไทย" : "Switch to English"}>
             {lang === "en" ? "🇹🇭 แปลไทย" : "EN English"}
           </button>
           <TabNav tabs={tabs} active={tab} onChange={setTab} />
@@ -49,17 +43,15 @@ export default function Home() {
       </header>
 
       {tab === "command" && <FundCommandCenter onNavigate={setTab} lang={lang} />}
-      {tab === "analyze" && <AnalyzeTab />}
+      {tab === "analyze" && <ResearchTabV2 lang={lang} />}
       {tab === "portfolio" && <PortfolioTab />}
-      {tab === "scanner" && <ScannerTab />}
+      {tab === "scanner" && <AlphaScannerV2 lang={lang} />}
 
       <div className="footer-note">
         {lang === "th" ? (
-          <>ระบบวิจัย Sentinel Capital · ข้อมูลตลาด: Yahoo Finance + SEC EDGAR · จัดเก็บข้อมูล: Supabase<br />
-          ซอฟต์แวร์นี้ใช้เพื่อสนับสนุนการวิเคราะห์และบริหารพอร์ต ข้อมูลตลาดอาจล่าช้า ควรตรวจสอบข้อมูลก่อนตัดสินใจลงทุนจริง</>
+          <>ระบบวิจัย Sentinel Capital · ข้อมูลตลาด: Yahoo Finance + SEC EDGAR · จัดเก็บข้อมูล: Supabase<br />ซอฟต์แวร์นี้ใช้เพื่อสนับสนุนการวิเคราะห์และบริหารพอร์ต ข้อมูลตลาดอาจล่าช้า ควรตรวจสอบข้อมูลก่อนตัดสินใจลงทุนจริง</>
         ) : (
-          <>Sentinel Capital research system · Market data: Yahoo Finance + SEC EDGAR · Persistence: Supabase. <br />
-          Decision-support software for research and portfolio management. Market data may be delayed; validate execution decisions independently.</>
+          <>Sentinel Capital research system · Market data: Yahoo Finance + SEC EDGAR · Persistence: Supabase. <br />Decision-support software for research and portfolio management. Market data may be delayed; validate execution decisions independently.</>
         )}
       </div>
     </div>
