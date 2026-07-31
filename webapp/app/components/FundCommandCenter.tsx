@@ -7,10 +7,12 @@ type Holding = { id: string; ticker: string; shares: number; avg_cost: number; c
 type Quote = { price?: number; changePercent?: number } | null;
 type Analytics = { performance?: any; dividends?: any } | null;
 type Props = { onNavigate: (tab: string) => void };
+type ActionLevel = "info" | "medium" | "high" | "ok";
 
 const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
 const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 const val = (n: number | null | undefined, suffix = "") => n == null ? "—" : `${n.toFixed(2)}${suffix}`;
+const levelClass = (level: ActionLevel) => level === "high" ? styles.high : level === "medium" ? styles.medium : level === "ok" ? styles.ok : "";
 
 export default function FundCommandCenter({ onNavigate }: Props) {
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -64,7 +66,7 @@ export default function FundCommandCenter({ onNavigate }: Props) {
   const postureClass = posture === "POLICY NORMAL" ? styles.pos : styles.neg;
 
   const actions = useMemo(() => {
-    const out: { level: string; text: string }[] = [];
+    const out: { level: ActionLevel; text: string }[] = [];
     if (!holdings.length) out.push({ level: "info", text: "Build the initial portfolio and define target sleeves before deploying capital." });
     if (book.topWeight > 25) out.push({ level: "high", text: `Reduce or explicitly approve concentration: ${book.rows[0]?.ticker} is ${book.topWeight.toFixed(1)}% of NAV.` });
     if (book.hhi > 25) out.push({ level: "high", text: `Diversification risk is elevated (HHI ${book.hhi.toFixed(1)}). Review correlated exposures and sleeve caps.` });
@@ -136,7 +138,7 @@ export default function FundCommandCenter({ onNavigate }: Props) {
       <section className={styles.content}>
         <div className={styles.panel}>
           <div className={styles.panelTitle}><h3>CIO Action Queue</h3><span>{actions.length} review item{actions.length === 1 ? "" : "s"}</span></div>
-          <div className={styles.queue}>{actions.map((a, i) => <div className={`${styles.queueItem} ${styles[a.level] ?? ""}`} key={i}><span className={styles.queueDot}/><div>{a.text}</div></div>)}</div>
+          <div className={styles.queue}>{actions.map((a, i) => <div className={`${styles.queueItem} ${levelClass(a.level)}`} key={i}><span className={styles.queueDot}/><div>{a.text}</div></div>)}</div>
         </div>
         <div className={styles.panel}>
           <div className={styles.panelTitle}><h3>Income Engine</h3><span>forward net</span></div>
