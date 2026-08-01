@@ -1,0 +1,19 @@
+:root{--v9-safe-bottom:env(safe-area-inset-bottom,0px)}
+.sentinel-main{min-width:0}.card,.metric,.table-wrap{min-width:0}.tbl{width:100%}
+@media(max-width:900px){
+  .institutional-layout{display:block!important}.institutional-sidebar{display:none!important}.institutional-content{width:100%!important;min-width:0!important}
+  .sentinel-main{padding:12px!important}.sentinel-topbar{padding:10px 12px!important;align-items:center!important}.sentinel-brand-lockup{min-width:0}.sentinel-mark{width:38px!important;height:42px!important}.sentinel-wordmark strong{font-size:13px!important}.sentinel-wordmark span{display:none!important}
+  .sentinel-control-cluster{gap:6px!important}.sentinel-confidence{display:none!important}.sentinel-status{font-size:9px!important;white-space:nowrap}
+  .sentinel-nav-wrap{position:sticky;top:0;z-index:20;padding:8px 10px!important;background:rgba(3,7,18,.94);backdrop-filter:blur(16px)}
+  .tab-nav{display:flex!important;overflow-x:auto!important;scrollbar-width:none;gap:6px!important;padding-bottom:2px}.tab-nav::-webkit-scrollbar{display:none}.tab-nav button{flex:0 0 auto;white-space:nowrap;font-size:11px!important;padding:8px 10px!important}
+  .grid.cols-4,.grid.cols-3,.grid.cols-2{grid-template-columns:1fr 1fr!important}.card{padding:14px!important;border-radius:16px!important}.section{font-size:17px!important}.sub{font-size:15px!important}
+  .table-wrap{overflow-x:auto!important;-webkit-overflow-scrolling:touch}.tbl{min-width:680px}.metric .value{font-size:17px!important}
+  form.searchbar:not(.cash-ledger-form){flex-direction:column!important;align-items:stretch!important}form.searchbar:not(.cash-ledger-form)>*{width:100%!important;min-width:0!important}
+  .footer-note{padding:14px 12px calc(14px + var(--v9-safe-bottom))!important;font-size:10px!important}
+}
+@media(max-width:560px){
+  .grid.cols-4,.grid.cols-3,.grid.cols-2{grid-template-columns:1fr!important}.sentinel-main{padding:9px!important}.card{padding:12px!important;margin-top:12px!important}.notice,.err{font-size:11.5px!important;line-height:1.55!important}
+  .sentinel-lang-btn{font-size:10px!important;padding:7px 8px!important}.institutional-page-header{padding:10px 12px!important}.institutional-page-header h1{font-size:19px!important}
+  button,.btn{min-height:38px}.tbl th,.tbl td{padding:8px 7px!important;font-size:11px!important}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
