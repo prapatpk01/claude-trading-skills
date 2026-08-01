@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase } from "@/lib/supabase";
+import { getSupabase, getSupabaseAdmin, supabaseConfigured } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { mergeLot, findOpenLot } from "@/lib/mergeLot";
 
@@ -28,6 +28,21 @@ const optDate = (v: any): string | null => {
 };
 const roundShares = (v: number) => Math.round(v * 1e7) / 1e7;
 
+function writeClientOrResponse() {
+  const admin = getSupabaseAdmin();
+  if (admin) return { admin, error: null as NextResponse | null };
+  if (supabaseConfigured()) {
+    return {
+      admin: null,
+      error: NextResponse.json(
+        { error: "Secure portfolio writes are unavailable because SUPABASE_SERVICE_ROLE_KEY is not configured." },
+        { status: 503 },
+      ),
+    };
+  }
+  return { admin: null, error: null as NextResponse | null };
+}
+
 export async function GET() {
   const sb = getSupabase();
   if (sb) {
@@ -51,7 +66,8 @@ export async function POST(req: NextRequest) {
   if (Math.abs(shares - roundShares(shares)) > 1e-10) return NextResponse.json({ error: "Shares support up to 7 decimal places." }, { status: 400 });
 
   const txDate = optDate(body.transaction_date) ?? optDate(body.opened_at) ?? new Date().toISOString().slice(0, 10);
-  const sb = getSupabase();
+  const { admin: sb, error: writeError } = writeClientOrResponse();
+  if (writeError) return writeError;
 
   if (action === "sell") {
     if (sb) {
@@ -101,7 +117,8 @@ export async function POST(req: NextRequest) {
   };
 
   if (sb) {
-    const { data: openRows } = await sb.from("holdings").select("*").eq("ticker", ticker);
+    const { data: openRows, error: openReadError } = await sb.from("holdings").select("*").eq("ticker", ticker);
+    if (openReadError) return NextResponse.json({ error: `Supabase: ${openReadError.message}` }, { status: 500 });
     const existing = openRows ? findOpenLot(openRows as any[], ticker) : undefined;
     if (existing) {
       const merged = mergeLot(existing as any, row);
@@ -167,7 +184,8 @@ export async function PATCH(req: NextRequest) {
   if (body.closed_at !== undefined) patch.closed_at = optDate(body.closed_at);
   if (!Object.keys(patch).length) return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
 
-  const sb = getSupabase();
+  const { admin: sb, error: writeError } = writeClientOrResponse();
+  if (writeError) return writeError;
   if (sb) {
     let { data, error } = await sb.from("holdings").update(patch).eq("id", id).select().single();
     if (error && isMissingColumn(error.message)) {
@@ -187,7 +205,8 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  const sb = getSupabase();
+  const { admin: sb, error: writeError } = writeClientOrResponse();
+  if (writeError) return writeError;
   if (sb) {
     const { error } = await sb.from("holdings").delete().eq("id", id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
