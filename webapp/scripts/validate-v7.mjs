@@ -33,8 +33,7 @@ requireText("lib/institutional/v7.ts", [
   "POSITION_CAP",
   "INCOMPLETE_COMMITTEE",
   "BROKEN_LINEAGE",
-  "audit",
-  "human",
+  "rulesVersion: \"Sentinel-v7.0\"",
 ]);
 
 requireText("app/api/v7/health/route.ts", [
