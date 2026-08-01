@@ -1,0 +1,191 @@
+:root {
+  --si-bg: #030711;
+  --si-panel: rgba(8, 17, 36, .82);
+  --si-panel-strong: rgba(9, 19, 42, .96);
+  --si-line: rgba(112, 139, 255, .20);
+  --si-line-bright: rgba(126, 103, 255, .50);
+  --si-purple: #8a5cff;
+  --si-blue: #4b8dff;
+  --si-cyan: #35e5ee;
+  --si-green: #2ce6a2;
+}
+
+body {
+  background:
+    radial-gradient(circle at 82% -5%, rgba(80, 72, 255, .20), transparent 34%),
+    radial-gradient(circle at 8% 12%, rgba(23, 167, 255, .13), transparent 30%),
+    linear-gradient(180deg, #030711 0%, #050a16 42%, #030711 100%) !important;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: .32;
+  background-image:
+    linear-gradient(rgba(94, 126, 210, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 126, 210, .035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, black, transparent 88%);
+}
+
+.sentinel-shell {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 18px 18px 84px;
+}
+
+.sentinel-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-columns: minmax(250px, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 18px;
+  margin: -18px -18px 18px;
+  background: linear-gradient(180deg, rgba(3, 7, 17, .96), rgba(3, 7, 17, .76));
+  border-bottom: 1px solid rgba(103, 125, 211, .16);
+  backdrop-filter: blur(24px) saturate(1.25);
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+}
+
+.sentinel-brand-lockup { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.sentinel-mark {
+  width: 54px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 0 18px rgba(111, 92, 255, .42));
+  flex: none;
+}
+.sentinel-mark svg { width: 100%; height: 100%; }
+.sentinel-wordmark { display: grid; line-height: .95; min-width: 0; }
+.sentinel-wordmark strong {
+  font-size: 18px;
+  letter-spacing: .16em;
+  color: #f4f6ff;
+  white-space: nowrap;
+}
+.sentinel-wordmark span {
+  margin-top: 7px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .18em;
+  color: #7788ac;
+}
+.sentinel-brand-lockup.is-compact .sentinel-mark { width: 42px; height: 46px; }
+.sentinel-brand-lockup.is-compact .sentinel-wordmark strong { font-size: 14px; }
+
+.sentinel-control-cluster { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.sentinel-status,
+.sentinel-confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--si-line);
+  border-radius: 11px;
+  background: rgba(9, 18, 37, .78);
+  color: #aab7d6;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .04em;
+}
+.sentinel-status { color: #4af4bb; border-color: rgba(44, 230, 162, .22); }
+.sentinel-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--si-green);
+  box-shadow: 0 0 13px var(--si-green);
+}
+.sentinel-confidence-bar {
+  width: 82px;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,.07);
+}
+.sentinel-confidence-bar span {
+  display: block;
+  width: 87%;
+  height: 100%;
+  background: linear-gradient(90deg, #4d63ff, #a757ff, #ec7cff);
+  box-shadow: 0 0 14px rgba(167, 87, 255, .75);
+}
+
+.sentinel-nav-wrap {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.sentinel-lang-btn { min-height: 42px; }
+
+.sentinel-command-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 17px;
+  margin-bottom: 18px;
+  border: 1px solid var(--si-line);
+  border-radius: 15px;
+  background: linear-gradient(135deg, rgba(14, 26, 57, .86), rgba(8, 15, 34, .70));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 20px 70px -44px rgba(89, 78, 255, .8);
+}
+.sentinel-command-strip strong { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }
+.sentinel-command-strip span { color: #8493b4; font-size: 12px; }
+
+.sentinel-main > * { animation: sentinel-rise .42s ease both; }
+@keyframes sentinel-rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+
+.sentinel-shell .card,
+.sentinel-shell .metric,
+.sentinel-shell .ai-card {
+  border-color: rgba(103, 130, 221, .20) !important;
+  background: linear-gradient(150deg, rgba(14, 25, 52, .84), rgba(5, 12, 27, .88)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.025),
+    0 26px 70px -48px rgba(72, 94, 255, .85) !important;
+}
+.sentinel-shell .card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(circle at 12% 0%, rgba(80, 144, 255, .08), transparent 34%);
+}
+.sentinel-shell button.btn:not(.ghost) {
+  background: linear-gradient(135deg, #4f85ff 0%, #6d69ff 45%, #a85cff 100%) !important;
+  box-shadow: 0 10px 30px -12px rgba(98, 91, 255, .95) !important;
+}
+.sentinel-shell button.btn:hover { transform: translateY(-2px); filter: brightness(1.12); }
+.sentinel-shell table.tbl th { color: #8f9dbc; letter-spacing: .08em; }
+.sentinel-shell table.tbl tr:hover td { background: rgba(97, 111, 230, .045); }
+.sentinel-shell .footer-note { color: #64718f; }
+
+@media (max-width: 900px) {
+  .sentinel-topbar { grid-template-columns: 1fr; }
+  .sentinel-control-cluster { justify-content: flex-start; }
+  .sentinel-nav-wrap { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .sentinel-shell { padding: 10px 10px 72px; }
+  .sentinel-topbar { margin: -10px -10px 14px; padding: 12px 12px; }
+  .sentinel-mark { width: 46px; height: 50px; }
+  .sentinel-wordmark strong { font-size: 15px; letter-spacing: .12em; }
+  .sentinel-wordmark span { font-size: 8px; line-height: 1.4; }
+  .sentinel-control-cluster { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .sentinel-status, .sentinel-confidence { justify-content: center; padding: 0 9px; }
+  .sentinel-confidence-bar { width: 54px; }
+  .sentinel-command-strip { align-items: flex-start; flex-direction: column; gap: 5px; }
+}
