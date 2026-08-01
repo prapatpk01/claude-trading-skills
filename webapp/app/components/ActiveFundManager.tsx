@@ -30,11 +30,15 @@ export default function ActiveFundManager({ lang }: { lang: AppLang }) {
         const q = await fetch(`/api/quote?tickers=${encodeURIComponent(tickers.join(","))}`).then((r) => r.json());
         quotes = q.quotes ?? {};
       }
-      const nav = holdings.reduce((s: number, h: any) => s + ((quotes[h.ticker]?.price ?? h.avg_cost) * Number(h.shares)), 0);
+      const positionValues = holdings.map((h: any) => ({
+        ticker: String(h.ticker).toUpperCase(),
+        marketValue: (quotes[h.ticker]?.price ?? Number(h.avg_cost)) * Number(h.shares),
+      }));
+      const nav = positionValues.reduce((s: number, x: any) => s + Number(x.marketValue || 0), 0);
       const r = await fetch("/api/active-fund", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tickers, candidateTickers, nav }),
+        body: JSON.stringify({ tickers, candidateTickers, positionValues, nav }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Review failed");
@@ -52,8 +56,8 @@ export default function ActiveFundManager({ lang }: { lang: AppLang }) {
       <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
         {tr(
           lang,
-          "This review is not limited to existing holdings. Every Opportunity Discovery candidate is compared with the current portfolio before the committee decides whether to initiate, add, hold cash, watch with a trigger, replace or reject.",
-          "การทบทวนนี้ไม่ได้จำกัดเฉพาะหุ้นที่ถืออยู่ หุ้นทุกตัวจาก Opportunity Discovery จะถูกเปรียบเทียบกับพอร์ตปัจจุบันก่อนที่คณะกรรมการจะตัดสินใจว่าจะเปิดสถานะใหม่ เพิ่มน้ำหนัก ถือเงินสด เฝ้าดูพร้อมเงื่อนไข สับเปลี่ยน หรือปฏิเสธ"
+          "This review separates risk assets from the managed Liquidity Sleeve. SGOV, JAAA and approved short-duration instruments fund new opportunities before the committee considers selling a strong equity holding.",
+          "การทบทวนนี้จะแยกสินทรัพย์เสี่ยงออกจาก Liquidity Sleeve อย่างชัดเจน โดย SGOV, JAAA และตราสารอายุสั้นที่กำหนดจะเป็นแหล่งเงินทุนสำหรับโอกาสใหม่ก่อนที่คณะกรรมการจะพิจารณาขายหุ้นเดิมที่ยังแข็งแรง"
         )}
       </p>
       <button className="btn" onClick={run} disabled={loading}>
@@ -63,16 +67,19 @@ export default function ActiveFundManager({ lang }: { lang: AppLang }) {
 
       {data && <>
         {data.macro && <MacroPanel macro={data.macro} lang={lang} />}
+        {data.liquidity && <LiquidityPanel liquidity={data.liquidity} plan={data.capitalPlan} lang={lang} />}
+
         <div className="grid cols-4" style={{ marginTop: 14 }}>
           <M l={tr(lang, "New opportunities", "โอกาสใหม่นอกพอร์ต")} v={data.discovery?.uniqueNew ?? 0} />
           <M l={tr(lang, "Initiate", "เสนอเปิดสถานะใหม่")} v={data.capitalPlan?.initiates ?? 0} />
           <M l={tr(lang, "Add existing", "เสนอเพิ่มหุ้นเดิม")} v={data.capitalPlan?.adds ?? 0} />
           <M l={tr(lang, "Review / Exit", "ทบทวน / ออก")} v={data.capitalPlan?.reviews ?? 0} />
         </div>
-        <div className="grid cols-3" style={{ marginTop: 12 }}>
-          <M l={tr(lang, "Proposed deployment", "เงินที่เสนอให้นำไปลงทุน")} v={money(data.capitalPlan?.deployUsd ?? 0)} />
-          <M l={tr(lang, "Capital raised by rotations", "เงินที่ได้จากการสับเปลี่ยน")} v={money(data.capitalPlan?.raiseUsd ?? 0)} />
-          <M l={tr(lang, "Residual cash", "เงินสดคงเหลือ")} v={money(data.capitalPlan?.cashAfterUsd ?? 0)} />
+        <div className="grid cols-4" style={{ marginTop: 12 }}>
+          <M l={tr(lang, "Requested deployment", "เงินลงทุนที่ร้องขอ")} v={money(data.capitalPlan?.requestedDeployUsd ?? 0)} />
+          <M l={tr(lang, "Funded from liquidity", "ใช้จาก Liquidity Sleeve")} v={money(data.capitalPlan?.fundedFromLiquidityUsd ?? 0)} />
+          <M l={tr(lang, "Funded by rotations", "ใช้จากการสับเปลี่ยน")} v={money(data.capitalPlan?.fundedFromRotationsUsd ?? 0)} />
+          <M l={tr(lang, "Liquidity after plan", "Liquidity หลังดำเนินการ")} v={`${money(data.capitalPlan?.liquidityAfterUsd ?? 0)} · ${data.capitalPlan?.liquidityAfterPct ?? 0}%`} />
         </div>
 
         <h3 className="sub">🔭 {tr(lang, "Opportunity Discovery", "แหล่งค้นหาโอกาสลงทุน")}</h3>
@@ -82,13 +89,13 @@ export default function ActiveFundManager({ lang }: { lang: AppLang }) {
 
         <IdeaTable ideas={data.newIdeas ?? []} title={tr(lang, "New opportunities — fully researched", "โอกาสลงทุนใหม่ — ผ่านการวิเคราะห์และประชุมแล้ว")} lang={lang} />
         <OpportunityDecisionTable rows={data.opportunityDecisions ?? []} lang={lang} />
-        <IdeaTable ideas={data.existing ?? []} title={tr(lang, "Existing holdings — committee review", "หุ้นที่ถืออยู่ — ผลทบทวนจากคณะกรรมการ")} lang={lang} />
+        <IdeaTable ideas={data.existing ?? []} title={tr(lang, "Risk holdings — committee review", "สินทรัพย์เสี่ยงที่ถืออยู่ — ผลทบทวนจากคณะกรรมการ")} lang={lang} />
 
         <h3 className="sub">🔄 {tr(lang, "Replacement Alpha", "การสับเปลี่ยนเพื่อเพิ่ม Alpha")}</h3>
         {data.replacements?.length ? (
           <div className="table-wrap"><table className="tbl"><thead><tr><th>{tr(lang, "From", "ลดจาก")}</th><th>{tr(lang, "To", "ย้ายไป")}</th><th className="num">{tr(lang, "Rotate", "สัดส่วน")}</th><th>{tr(lang, "Why", "เหตุผล")}</th></tr></thead><tbody>{data.replacements.map((x: any, i: number) => <tr key={i}><td><strong>{x.from}</strong></td><td><strong>{x.to}</strong></td><td className="num">{x.rotatePct}% · {money(x.rotateUsd)}</td><td style={{ fontSize: 12 }}>{x.reason}</td></tr>)}</tbody></table></div>
         ) : (
-          <div className="notice">{tr(lang, "No outside idea clears the replacement hurdle. WATCH candidates remain in the allocation meeting with explicit promotion triggers.", "ยังไม่มีหุ้นใหม่นอกพอร์ตที่ผ่านเกณฑ์สับเปลี่ยน แต่ Candidate ที่เป็น WATCH ยังคงอยู่ในการประชุมจัดพอร์ตพร้อมเงื่อนไขเลื่อนเป็นลงทุนจริงอย่างชัดเจน")}</div>
+          <div className="notice">{tr(lang, "No risk holding needs to be sold. Either no opportunity clears the hurdle or deployable liquidity is sufficient.", "ยังไม่จำเป็นต้องขายสินทรัพย์เสี่ยง เพราะยังไม่มีโอกาสที่ผ่านเกณฑ์ หรือ Liquidity ส่วนเกินเพียงพอต่อแผนลงทุน")}</div>
         )}
 
         <h3 className="sub">🏛 {tr(lang, "Fund Operating Process", "กระบวนการทำงานของทีมกองทุน")}</h3>
@@ -107,21 +114,48 @@ function MacroPanel({ macro, lang }: { macro: any; lang: AppLang }) {
       <M l={tr(lang, "Regime", "สภาวะตลาด")} v={lang === "th" ? macro.regimeTh : macro.regime} />
       <M l={tr(lang, "Macro score", "คะแนน Macro")} v={`${macro.score}/100`} />
       <M l={tr(lang, "Risk budget", "งบความเสี่ยง")} v={`${macro.riskBudgetPct}%`} />
-      <M l={tr(lang, "Cash floor", "เงินสดขั้นต่ำ")} v={`${macro.cashFloorPct}%`} />
+      <M l={tr(lang, "Liquidity target", "เป้าหมาย Liquidity")} v={`${macro.cashFloorPct}%`} />
     </div>
     <div className="notice" style={{ marginTop: 10 }}><strong>{tr(lang, "Base vision:", "มุมมองกรณีฐาน:")}</strong> {lang === "th" ? macro.visionTh : macro.vision}</div>
     <div className="grid cols-3" style={{ marginTop: 10 }}>{(macro.scenarios ?? []).map((s: any) => <div className="metric" key={s.name}><div className="label">{lang === "th" ? s.nameTh : s.name} · {s.probability}%</div><div style={{ fontSize: 12, lineHeight: 1.55, marginTop: 6 }}>{lang === "th" ? s.thesisTh : s.thesis}</div></div>)}</div>
     {(macro.headlines ?? []).length > 0 && <><h4 style={{ marginBottom: 6 }}>{tr(lang, "Official policy/news inputs", "ข่าวและข้อมูลนโยบายจากแหล่งทางการ")}</h4><ul style={{ fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>{macro.headlines.slice(0, 5).map((h: any, i: number) => <li key={i}>{h.title} <span className="muted">· {h.date}</span></li>)}</ul></>}
-    <div className="muted" style={{ fontSize: 11 }}>{tr(lang, "Macro has veto power: it changes position sizing, cash reserve and the hurdle for initiating new positions.", "ทีม Macro มีสิทธิ์ยับยั้งและปรับขนาดการลงทุน โดยมีผลต่อเงินสดสำรอง น้ำหนักสถานะ และเกณฑ์อนุมัติหุ้นใหม่")}</div>
+    <div className="muted" style={{ fontSize: 11 }}>{tr(lang, "Macro controls the target Liquidity Buffer, position sizing and the hurdle for initiating new positions.", "ทีม Macro ควบคุมเป้าหมาย Liquidity Buffer ขนาดสถานะ และเกณฑ์อนุมัติการลงทุนใหม่")}</div>
+  </div>;
+}
+
+function LiquidityPanel({ liquidity, plan, lang }: { liquidity: any; plan: any; lang: AppLang }) {
+  const status = liquidity.status === "EXCESS"
+    ? tr(lang, "Excess liquidity available", "มี Liquidity ส่วนเกินพร้อมใช้")
+    : liquidity.status === "BELOW TARGET"
+      ? tr(lang, "Below target — rebuild buffer", "ต่ำกว่าเป้าหมาย — ต้องเติม Buffer")
+      : tr(lang, "On target", "อยู่ในระดับเป้าหมาย");
+  return <div className="card" style={{ marginTop: 14, background: "rgba(8,20,35,.55)" }}>
+    <h3 className="sub">🛡️ {tr(lang, "Liquidity & Cash Buffer Committee", "คณะกรรมการ Liquidity และ Cash Buffer")}</h3>
+    <p className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+      {tr(lang, "SGOV, JAAA and approved short-duration instruments are managed as capital reserves, not scored as equities.", "SGOV, JAAA และตราสารอายุสั้นที่กำหนดจะถูกบริหารเป็นเงินทุนสำรอง ไม่ถูกนำไปให้คะแนนเหมือนหุ้น")}
+    </p>
+    <div className="grid cols-4">
+      <M l={tr(lang, "Current buffer", "Buffer ปัจจุบัน")} v={`${money(liquidity.currentUsd)} · ${liquidity.currentPct}%`} />
+      <M l={tr(lang, "Macro target", "เป้าหมายจาก Macro")} v={`${money(liquidity.targetUsd)} · ${liquidity.targetPct}%`} />
+      <M l={tr(lang, "Deployable excess", "ส่วนเกินที่นำไปลงทุนได้")} v={money(liquidity.deployableUsd)} />
+      <M l={tr(lang, "Status", "สถานะ")} v={status} />
+    </div>
+    {liquidity.reserveGapUsd > 0 && <div className="notice" style={{ marginTop: 10 }}><strong>{tr(lang, "Reserve gap", "เงินสำรองที่ขาด")}: </strong>{money(liquidity.reserveGapUsd)} · {tr(lang, "new deployment is restricted until the buffer is rebuilt.", "จำกัดการลงทุนใหม่จนกว่าจะเติม Buffer กลับถึงเป้าหมาย")}</div>}
+    <div className="table-wrap" style={{ marginTop: 10 }}><table className="tbl"><thead><tr><th>Ticker</th><th className="num">{tr(lang, "Market value", "มูลค่าตลาด")}</th><th>{tr(lang, "Portfolio role", "บทบาทในพอร์ต")}</th></tr></thead><tbody>{(liquidity.positions ?? []).map((x: any) => <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td className="num">{money(x.marketValue)}</td><td>{tr(lang, "Liquidity / Cash Buffer", "Liquidity / เงินทุนสำรอง")}</td></tr>)}{!(liquidity.positions ?? []).length && <tr><td colSpan={3} className="muted">{tr(lang, "No qualifying liquidity instruments are currently held.", "ขณะนี้ยังไม่มีตราสารที่เข้าเกณฑ์ Liquidity Sleeve")}</td></tr>}</tbody></table></div>
+    <div className="notice" style={{ marginTop: 10 }}>
+      <strong>{tr(lang, "Funding waterfall", "ลำดับแหล่งเงินทุน")}: </strong>
+      {tr(lang, "1) deployable liquidity above the Macro floor → 2) proceeds from approved trims/exits → 3) replacement of a weaker risk asset. Strong holdings are not sold merely to force a rebalance.", "1) Liquidity ส่วนเกินเหนือ Macro Floor → 2) เงินจากการลด/ออกที่ได้รับอนุมัติ → 3) สับเปลี่ยนจากสินทรัพย์เสี่ยงที่อ่อนกว่า โดยจะไม่ขายหุ้นแข็งแรงเพียงเพื่อบังคับ Rebalance")}
+    </div>
+    {plan && <p className="muted" style={{ fontSize: 11.5 }}>{tr(lang, "Planned liquidity use", "แผนใช้ Liquidity")}: {money(plan.fundedFromLiquidityUsd ?? 0)} · {tr(lang, "remaining after plan", "คงเหลือหลังแผน")} {money(plan.liquidityAfterUsd ?? 0)} ({plan.liquidityAfterPct ?? 0}%)</p>}
   </div>;
 }
 
 function OpportunityDecisionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
   return <><h3 className="sub">🧭 {tr(lang, "Opportunity-to-Portfolio Decisions", "ผลการนำ Opportunity Discovery เข้าปรับพอร์ต")}</h3>
-    <p className="muted" style={{ fontSize: 11.5 }}>{tr(lang, "Every discovered name is compared with the current portfolio. WATCH means capital is not approved yet; it does not mean the idea was excluded.", "หุ้นทุกตัวที่ค้นพบจะถูกเปรียบเทียบกับพอร์ตปัจจุบัน คำว่า WATCH หมายถึงยังไม่อนุมัติเงินลงทุน ไม่ได้หมายความว่าถูกตัดออกจากการวิเคราะห์พอร์ต")}</p>
-    <div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Portfolio decision", "มติสำหรับพอร์ต")}</th><th>{tr(lang, "Compared with", "เปรียบเทียบกับ")}</th><th className="num">{tr(lang, "Relative edge", "ความได้เปรียบ")}</th><th className="num">{tr(lang, "Weight / capital", "น้ำหนัก / เงินลงทุน")}</th><th>{tr(lang, "Reason and trigger", "เหตุผลและเงื่อนไข")}</th></tr></thead><tbody>
-      {rows.map((x: any) => <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td><strong>{translateDecision(x.decision, lang)}</strong></td><td>{x.comparedWith ?? "—"}</td><td className="num">{x.relativeEdge == null ? "—" : `${x.relativeEdge >= 0 ? "+" : ""}${x.relativeEdge.toFixed(1)}`}</td><td className="num">{x.proposedWeightPct ? `${x.proposedWeightPct.toFixed(1)}% · ${money(x.proposedCapitalUsd)}` : "—"}</td><td style={{ fontSize: 11.5, lineHeight: 1.55 }}>{lang === "th" ? x.reasonTh : x.reason}<br/><span className="muted"><strong>{tr(lang, "Trigger", "เงื่อนไข")}: </strong>{lang === "th" ? x.triggerTh : x.trigger}</span></td></tr>)}
-      {!rows.length && <tr><td colSpan={6} className="muted">{tr(lang, "No opportunity decisions returned.", "ยังไม่มีผลการตัดสินใจจากโอกาสลงทุน")}</td></tr>}
+    <p className="muted" style={{ fontSize: 11.5 }}>{tr(lang, "Every discovered name is compared with the current portfolio. Approved ideas draw from deployable liquidity first.", "หุ้นทุกตัวที่ค้นพบจะถูกเปรียบเทียบกับพอร์ต และ Candidate ที่ผ่านอนุมัติจะใช้ Liquidity ส่วนเกินเป็นแหล่งเงินทุนอันดับแรก")}</p>
+    <div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Portfolio decision", "มติสำหรับพอร์ต")}</th><th>{tr(lang, "Funding source", "แหล่งเงินทุน")}</th><th>{tr(lang, "Compared with", "เปรียบเทียบกับ")}</th><th className="num">{tr(lang, "Relative edge", "ความได้เปรียบ")}</th><th className="num">{tr(lang, "Weight / capital", "น้ำหนัก / เงินลงทุน")}</th><th>{tr(lang, "Reason and trigger", "เหตุผลและเงื่อนไข")}</th></tr></thead><tbody>
+      {rows.map((x: any) => <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td><strong>{translateDecision(x.decision, lang)}</strong></td><td style={{ fontSize: 11 }}>{x.fundingSource ?? "—"}</td><td>{x.comparedWith ?? "—"}</td><td className="num">{x.relativeEdge == null ? "—" : `${x.relativeEdge >= 0 ? "+" : ""}${x.relativeEdge.toFixed(1)}`}</td><td className="num">{x.proposedWeightPct ? `${x.proposedWeightPct.toFixed(1)}% · ${money(x.proposedCapitalUsd)}` : "—"}</td><td style={{ fontSize: 11.5, lineHeight: 1.55 }}>{lang === "th" ? x.reasonTh : x.reason}<br/><span className="muted"><strong>{tr(lang, "Trigger", "เงื่อนไข")}: </strong>{lang === "th" ? x.triggerTh : x.trigger}</span></td></tr>)}
+      {!rows.length && <tr><td colSpan={7} className="muted">{tr(lang, "No opportunity decisions returned.", "ยังไม่มีผลการตัดสินใจจากโอกาสลงทุน")}</td></tr>}
     </tbody></table></div></>;
 }
 
@@ -139,17 +173,17 @@ function translateAction(action: string, lang: AppLang) {
 
 function translateDecision(decision: string, lang: AppLang) {
   if (lang === "en") return decision;
-  const m: Record<string, string> = { "INITIATE FROM CASH": "เปิดสถานะจากเงินสด", "ROTATE / REPLACE": "สับเปลี่ยนจากหุ้นเดิม", "WATCH WITH TRIGGER": "เฝ้าดูพร้อมเงื่อนไขลงทุน", REJECT: "ปฏิเสธ" };
+  const m: Record<string, string> = { "INITIATE FROM LIQUIDITY": "เปิดสถานะจาก Liquidity", "ROTATE / REPLACE": "ใช้ Liquidity ก่อนแล้วสับเปลี่ยนส่วนที่เหลือ", "WATCH WITH TRIGGER": "เฝ้าดูพร้อมเงื่อนไขลงทุน", REJECT: "ปฏิเสธ" };
   return m[decision] ?? decision;
 }
 
 function translateProcess(x: string) {
-  if (x.startsWith("Macro")) return "ทีม Macro และ Market Regime กำหนดระดับความเสี่ยง เงินสดสำรอง และเพดานการลงทุนรวม";
-  if (x.startsWith("Every Opportunity")) return "หุ้นทุกตัวจาก Opportunity Discovery จะเข้าสู่การประชุมจัดสรรเงินทุน แม้เป็น WATCH ก็ยังถูกเปรียบเทียบกับพอร์ต เพียงแต่ยังไม่อนุมัติเงินลงทุน";
-  if (x.startsWith("Watchlist")) return "หุ้นจาก Watchlist และทีม Research จะเข้าสู่กลุ่มโอกาสเดียวกับผลสแกน Momentum หุ้นปันผลคุณภาพ และ Thematic";
+  if (x.startsWith("Macro")) return "ทีม Macro และ Market Regime กำหนดเป้าหมาย Liquidity Buffer ระดับความเสี่ยง และเพดานการลงทุนรวม";
+  if (x.startsWith("SGOV")) return "SGOV, JAAA และตราสารอายุสั้นที่กำหนดจะถูกบริหารเป็น Liquidity Sleeve ไม่ถูกจัดอันดับเหมือนหุ้น";
+  if (x.startsWith("Every Opportunity")) return "หุ้นทุกตัวจาก Opportunity Discovery จะเข้าสู่การประชุมจัดสรรเงินทุน แม้เป็น WATCH ก็ยังถูกเปรียบเทียบกับพอร์ต";
   if (x.startsWith("Research")) return "ทีม Research วิเคราะห์ธุรกิจ การแข่งขัน Thesis Catalyst ความเสี่ยง แบบจำลอง 5 ปี และ Valuation ของทุก Candidate";
-  if (x.startsWith("Specialist")) return "ทีมผู้เชี่ยวชาญให้คะแนนอย่างอิสระ ฝ่าย Risk มีสิทธิ์ยับยั้ง และคณะกรรมการสรุปเป็นอนุมัติ เฝ้าดู หรือปฏิเสธ";
-  if (x.startsWith("Portfolio Construction")) return "ทีมจัดพอร์ตเปรียบเทียบหุ้นใหม่นอกพอร์ตกับหุ้นที่ถืออยู่ทุกตัวจาก Replacement Alpha ผลตอบแทนคาดหวัง และต้นทุนค่าเสียโอกาส";
-  if (x.startsWith("Capital")) return "เงินทุนสามารถใช้เปิดสถานะใหม่ เพิ่มหุ้นเดิมที่ยังแข็งแรง ถือเป็นเงินสด ลดหุ้นอ่อนแอ หรือหมุนไปยังสินทรัพย์ที่มีคุณภาพสูงกว่า";
+  if (x.startsWith("Portfolio Construction")) return "ทีมจัดพอร์ตใช้ Liquidity ส่วนเกินเหนือ Macro Floor ก่อนพิจารณาขายสินทรัพย์เสี่ยง";
+  if (x.startsWith("Replacement Alpha")) return "Replacement Alpha จะสับเปลี่ยนจากสินทรัพย์เสี่ยงที่อ่อนกว่าเฉพาะเมื่อ Liquidity ส่วนเกินไม่พอและ Candidate มีความได้เปรียบชัดเจน";
+  if (x.startsWith("If the Liquidity")) return "หาก Liquidity Sleeve ต่ำกว่าเป้าหมาย ระบบจะจำกัดการลงทุนใหม่และให้ความสำคัญกับการเติม Buffer ก่อน";
   return x;
 }
