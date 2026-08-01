@@ -7,6 +7,7 @@ import PortfolioLedgerPanel from "./components/PortfolioLedgerPanel";
 import DividendLedgerPanel from "./components/DividendLedgerPanel";
 import CashLedgerPanel from "./components/CashLedgerPanel";
 import CashBufferPanel from "./components/CashBufferPanel";
+import PortfolioOptimizerPanel from "./components/PortfolioOptimizerPanel";
 import AlphaScannerV2 from "./components/AlphaScannerV2";
 import FundCommandCenter from "./components/FundCommandCenter";
 import ActiveFundManager from "./components/ActiveFundManager";
@@ -78,6 +79,7 @@ export default function Home() {
               <PortfolioLedgerPanel lang={lang} refreshKey={portfolioRefresh} />
               <CashLedgerPanel lang={lang} refreshKey={portfolioRefresh} />
               <CashBufferPanel lang={lang} refreshKey={portfolioRefresh} />
+              <PortfolioOptimizerPanel lang={lang} refreshKey={portfolioRefresh} />
               <DividendLedgerPanel lang={lang} refreshKey={portfolioRefresh} />
               <style jsx global>{`.card form.searchbar:has(input[type="date"]) { display: none !important; }.portfolio-legacy > div > .grid.cols-4:first-child { display: none !important; }`}</style>
               <div className="portfolio-legacy" key={portfolioRefresh}><PortfolioTab /></div>
