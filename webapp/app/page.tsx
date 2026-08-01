@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import ResearchTabV2 from "./components/ResearchTabV2";
 import PortfolioTab from "./components/PortfolioTab";
+import PortfolioTruthSummary from "./components/PortfolioTruthSummary";
 import AlphaScannerV2 from "./components/AlphaScannerV2";
 import FundCommandCenter from "./components/FundCommandCenter";
 import ActiveFundManager from "./components/ActiveFundManager";
@@ -91,8 +92,12 @@ export default function Home() {
                   <HoldingTransactionForm onSaved={() => setPortfolioRefresh((v) => v + 1)} />
                 </div>
               </div>
-              <style jsx global>{`.card form.searchbar:has(input[type="date"]) { display: none !important; }`}</style>
-              <div key={portfolioRefresh}><PortfolioTab /></div>
+              <PortfolioTruthSummary lang={lang} refreshKey={portfolioRefresh} />
+              <style jsx global>{`
+                .card form.searchbar:has(input[type="date"]) { display: none !important; }
+                .portfolio-legacy > div > .grid.cols-4:first-child { display: none !important; }
+              `}</style>
+              <div className="portfolio-legacy" key={portfolioRefresh}><PortfolioTab /></div>
             </>}
             {tab === "scanner" && <AlphaScannerV2 lang={lang} />}
           </main>
