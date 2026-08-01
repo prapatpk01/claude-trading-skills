@@ -12,6 +12,7 @@ import HoldingTransactionForm from "./components/HoldingTransactionForm";
 import TabNav, { type TabDef } from "./components/TabNav";
 import { InstitutionalPageHeader, InstitutionalSidebar, OpportunityWorkflow, type InstitutionalSection } from "./components/InstitutionalShell";
 import "./institutional-shell.css";
+import "./sentinel-v8-ui.css";
 
 export type AppLang = "en" | "th";
 
