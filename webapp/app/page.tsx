@@ -9,6 +9,7 @@ import CashLedgerPanel from "./components/CashLedgerPanel";
 import CashBufferPanel from "./components/CashBufferPanel";
 import PortfolioOptimizerPanel from "./components/PortfolioOptimizerPanel";
 import OpportunityAllocationPanel from "./components/OpportunityAllocationPanel";
+import MacroIntelligencePanel from "./components/MacroIntelligencePanel";
 import AlphaScannerV2 from "./components/AlphaScannerV2";
 import FundCommandCenter from "./components/FundCommandCenter";
 import ActiveFundManager from "./components/ActiveFundManager";
@@ -68,7 +69,7 @@ export default function Home() {
           <InstitutionalPageHeader section={tab} lang={lang} />
           {tab === "scanner" && <OpportunityWorkflow lang={lang} />}
           <main className="sentinel-main">
-            {tab === "command" && <FundCommandCenter onNavigate={navigate} lang={lang} />}
+            {tab === "command" && <><FundCommandCenter onNavigate={navigate} lang={lang} /><MacroIntelligencePanel lang={lang} /></>}
             {tab === "analyze" && <ResearchTabV2 lang={lang} />}
             {tab === "portfolio" && <>
               <ActiveFundManager lang={lang} />
