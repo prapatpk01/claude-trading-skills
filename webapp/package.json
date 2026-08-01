@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "validate:institutional": "node scripts/validate-v7.mjs && node scripts/validate-v8.mjs",
     "validate:v8": "node scripts/validate-v8.mjs",
-    "quality": "npm run validate:institutional && npm run typecheck && npm run build"
+    "audit:safety": "node scripts/audit-runtime-safety.mjs",
+    "quality": "npm run validate:institutional && npm run audit:safety && npm run typecheck && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
