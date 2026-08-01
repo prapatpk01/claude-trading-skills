@@ -35,23 +35,24 @@ async function crossCheckPeer(p:any){
 }
 
 /**
- * Sanitize an arbitrary research payload without forcing every caller to expose
- * the full ResearchPack type. Access is performed through a narrow runtime
- * record, while the original generic return type is preserved for callers.
+ * Sanitize an arbitrary research payload without requiring callers to expose
+ * a concrete ResearchPack interface. Runtime property access is isolated to a
+ * string-keyed record, while the original generic return type is preserved.
  */
 export async function sanitizeResearch<T>(research:T):Promise<T>{
   if(!research||typeof research!=="object")return research;
-  const record=research as Record<string,any>;
-  if(!Array.isArray(record.peers))return research;
+  const record:Record<string,any>=research as Record<string,any>;
+  const rawPeers=record["peers"];
+  if(!Array.isArray(rawPeers))return research;
 
   const checked:any[]=[];
-  for(let i=0;i<record.peers.length;i+=3){
-    checked.push(...await Promise.all(record.peers.slice(i,i+3).map(crossCheckPeer)));
+  for(let i=0;i<rawPeers.length;i+=3){
+    checked.push(...await Promise.all(rawPeers.slice(i,i+3).map(crossCheckPeer)));
   }
   const peers=checked.map((p:any)=>validatePeer({
     ticker:p.ticker,isSubject:!!p.isSubject,price:p.price??null,revenueTTM:p.revenueTTM??null,netIncomeTTM:p.netIncomeTTM??null,grossMargin:p.grossMargin??null,netMargin:p.netMargin??null,marketCap:p.marketCap??null,peTTM:p.peTTM??null,revenueCagrPct:p.revenueCagrPct??null,cagrYears:p.cagrYears??null,gaps:p.gaps??[]
   }));
-  const coverage=peerCoverage(peers,70),valid=peers.filter((p:any)=>p.comparable&&p.revenueTTM!=null&&p.revenueTTM>0),pool=valid.reduce((s:number,p:any)=>s+p.revenueTTM,0),subject=valid.find((p:any)=>p.isSubject),withGrowth=valid.filter((p:any)=>p.revenueCagrPct!=null),growthWeight=withGrowth.reduce((s:number,p:any)=>s+p.revenueTTM,0),poolCagr=growthWeight>0?withGrowth.reduce((s:number,p:any)=>s+p.revenueCagrPct*p.revenueTTM,0)/growthWeight:null,old=record.sizing??{};
+  const coverage=peerCoverage(peers,70),valid=peers.filter((p:any)=>p.comparable&&p.revenueTTM!=null&&p.revenueTTM>0),pool=valid.reduce((s:number,p:any)=>s+p.revenueTTM,0),subject=valid.find((p:any)=>p.isSubject),withGrowth=valid.filter((p:any)=>p.revenueCagrPct!=null),growthWeight=withGrowth.reduce((s:number,p:any)=>s+p.revenueTTM,0),poolCagr=growthWeight>0?withGrowth.reduce((s:number,p:any)=>s+p.revenueCagrPct*p.revenueTTM,0)/growthWeight:null,old=record["sizing"]??{};
   const sizing={...old,peerPoolRevenue:coverage.publishPool&&pool>0?pool:null,contributors:valid.length,unreadable:peers.length-valid.length,subjectSharePct:coverage.publishPool&&subject&&pool>0?subject.revenueTTM/pool*100:null,poolCagrPct:coverage.publishPool&&poolCagr!=null?Math.round(poolCagr*10)/10:null,coverage,definition:coverage.publishPool?`Comparable revenue pool using ${valid.length}/${peers.length} validated names. TTM revenue is cross-checked against the latest annual filing; margins are recomputed from the same numerator/denominator basis.`:coverage.note,limits:[...(Array.isArray(old.limits)?old.limits:[]),...peers.flatMap((p:any)=>(p.validationWarnings??[]).map((w:string)=>`${p.ticker}: ${w}`)).slice(0,16)]};
   return{...record,peers,sizing} as T;
 }
