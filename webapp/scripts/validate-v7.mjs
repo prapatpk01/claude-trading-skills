@@ -5,9 +5,11 @@ const root = process.cwd();
 const requiredFiles = [
   "lib/institutional/v7.ts",
   "app/api/v7/health/route.ts",
+  "app/api/v7/committee/route.ts",
   "app/api/watchlist/route.ts",
   "app/api/scan/route.ts",
   "lib/team/roster.ts",
+  "supabase/schema.sql",
 ];
 
 const failures = [];
@@ -42,6 +44,21 @@ requireText("app/api/v7/health/route.ts", [
   "deskVetoes",
   "humanApprovalRequired",
   "Cache-Control",
+]);
+
+requireText("app/api/v7/committee/route.ts", [
+  "runInstitutionalCommittee",
+  "institutional_decisions",
+  "persistenceWarning",
+  "Cache-Control",
+]);
+
+requireText("supabase/schema.sql", [
+  "institutional_decisions",
+  "human_approved",
+  "execution_status",
+  "portfolio_context",
+  "dissent",
 ]);
 
 requireText("app/api/watchlist/route.ts", ["upsert", "source", "entry_price", "stop_price", "target_price"]);
