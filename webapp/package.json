@@ -1,14 +1,16 @@
 {
   "name": "equity-research-web",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "private": true,
-  "description": "Institutional-grade equity research, portfolio tracking, and momentum scanner web app",
+  "description": "Sentinel Capital v7 institutional AI fund operating system",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate:institutional": "node scripts/validate-v7.mjs",
+    "quality": "npm run validate:institutional && npm run typecheck && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
