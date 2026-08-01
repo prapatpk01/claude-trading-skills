@@ -32,7 +32,23 @@ function evidenceForDividend(item: AnyRecord): string[] {
   if (!finite(item.yieldPct) && !finite(item.yield)) missing.push("dividend yield");
   if (!finite(item.distributionGrowthPct) && !finite(item.dividendGrowthPct)) missing.push("distribution growth");
   if (!text(item.dataQuality)) missing.push("data-quality classification");
-  return missing;
+
+  const price = finite(item.price) ? item.price : null;
+  const target = finite(item.targetPrice) ? item.targetPrice : null;
+  const upside = finite(item.upsidePct) ? item.upsidePct : null;
+  const dcf = finite(item.dcfFairValue) ? item.dcfFairValue : null;
+
+  if (price != null && target != null && target < price * 0.9) {
+    missing.push("target price is materially below current price");
+  }
+  if (upside != null && upside < -10) {
+    missing.push("valuation downside exceeds 10%");
+  }
+  if (target != null && dcf != null) {
+    const ratio = Math.max(target, dcf) / Math.max(0.01, Math.min(target, dcf));
+    if (ratio > 2) missing.push("DCF and target price conflict by more than 2×");
+  }
+  return [...new Set(missing)];
 }
 
 function scrubTradeFields(item: AnyRecord, missing: string[]): AnyRecord {
@@ -86,14 +102,22 @@ export function guardScanResult(mode: "momentum" | "dividend" | "thematic", inpu
       const missing = evidenceForDividend(raw);
       if (missing.length) {
         blockedCount += 1;
-        rejected.push({ ...raw, qualified: false, evidenceStatus: "BLOCKED", evidenceWarnings: missing, rejectionReason: `Evidence incomplete: ${missing.join(", ")}` });
+        rejected.push({
+          ...raw,
+          qualified: false,
+          targetPrice: null,
+          upsidePct: null,
+          evidenceStatus: "BLOCKED",
+          evidenceWarnings: missing,
+          rejectionReason: `Evidence or valuation consistency failed: ${missing.join(", ")}`,
+        });
       } else {
         picks.push({ ...raw, evidenceStatus: "VERIFIED", evidenceWarnings: [] });
       }
     }
     result.picks = picks;
     result.rejected = rejected;
-    if (!picks.length) result.noQualifiers = input.noQualifiers || "No dividend candidates passed the full evidence and durability gate.";
+    if (!picks.length) result.noQualifiers = input.noQualifiers || "No dividend candidates passed the full evidence, durability and valuation-consistency gates.";
   }
 
   if (mode === "thematic") {
@@ -105,7 +129,7 @@ export function guardScanResult(mode: "momentum" | "dividend" | "thematic", inpu
     if (!cleaned.length) warnings.push("Thematic portfolio withheld because no candidate had complete ticker, score and positive weight data.");
   }
 
-  if (blockedCount) warnings.push(`${blockedCount} candidate(s) were downgraded or withheld because required evidence was incomplete.`);
-  result.guard = { version: "v8.0", status: blockedCount ? "PARTIAL" : "PASS", blockedCount, warnings };
+  if (blockedCount) warnings.push(`${blockedCount} candidate(s) were downgraded or withheld because required evidence was incomplete or internally contradictory.`);
+  result.guard = { version: "v8.1", status: blockedCount ? "PARTIAL" : "PASS", blockedCount, warnings };
   return { result, warnings, blockedCount };
 }
