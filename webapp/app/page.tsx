@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import ResearchTabV2 from "./components/ResearchTabV2";
 import PortfolioTab from "./components/PortfolioTab";
 import PortfolioTruthSummary from "./components/PortfolioTruthSummary";
+import PortfolioLedgerPanel from "./components/PortfolioLedgerPanel";
 import AlphaScannerV2 from "./components/AlphaScannerV2";
 import FundCommandCenter from "./components/FundCommandCenter";
 import ActiveFundManager from "./components/ActiveFundManager";
@@ -93,6 +94,7 @@ export default function Home() {
                 </div>
               </div>
               <PortfolioTruthSummary lang={lang} refreshKey={portfolioRefresh} />
+              <PortfolioLedgerPanel lang={lang} refreshKey={portfolioRefresh} />
               <style jsx global>{`
                 .card form.searchbar:has(input[type="date"]) { display: none !important; }
                 .portfolio-legacy > div > .grid.cols-4:first-child { display: none !important; }
