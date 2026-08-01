@@ -5,7 +5,12 @@ import { buildAnalysis } from "./analyze";
 import { buildMacroOutlook, type MacroOutlook } from "./macroOutlook";
 
 export type FundAction = "INITIATE" | "ADD" | "HOLD" | "TRIM REVIEW" | "REPLACE" | "EXIT REVIEW" | "WATCH";
-export type OpportunityDecisionType = "INITIATE FROM CASH" | "ROTATE / REPLACE" | "WATCH WITH TRIGGER" | "REJECT";
+export type OpportunityDecisionType = "INITIATE FROM LIQUIDITY" | "ROTATE / REPLACE" | "WATCH WITH TRIGGER" | "REJECT";
+
+export interface PositionValue {
+  ticker: string;
+  marketValue: number;
+}
 
 export interface ActiveFundIdea {
   ticker: string; source: string[]; held: boolean; action: FundAction;
@@ -18,6 +23,7 @@ export interface ActiveFundIdea {
 export interface OpportunityDecision {
   ticker: string;
   decision: OpportunityDecisionType;
+  fundingSource: string;
   comparedWith: string | null;
   relativeEdge: number | null;
   proposedWeightPct: number;
@@ -28,19 +34,49 @@ export interface OpportunityDecision {
   triggerTh: string;
 }
 
+export interface LiquiditySleeve {
+  tickers: string[];
+  positions: PositionValue[];
+  currentUsd: number;
+  currentPct: number;
+  targetUsd: number;
+  targetPct: number;
+  deployableUsd: number;
+  reserveGapUsd: number;
+  status: "EXCESS" | "ON TARGET" | "BELOW TARGET";
+  fundingOrder: string[];
+}
+
 export interface ActiveFundResult {
   asOf: string; nav: number; macro: MacroOutlook;
+  liquidity: LiquiditySleeve;
   discovery: { momentum: number; dividend: number; thematic: number; watchlist: number; uniqueNew: number };
   newIdeas: ActiveFundIdea[]; existing: ActiveFundIdea[];
   opportunityDecisions: OpportunityDecision[];
   replacements: { from: string; to: string; reason: string; rotatePct: number; rotateUsd: number }[];
-  capitalPlan: { deployUsd: number; raiseUsd: number; cashAfterUsd: number; initiates: number; adds: number; holds: number; reviews: number };
+  capitalPlan: {
+    requestedDeployUsd: number; deployUsd: number; fundedFromLiquidityUsd: number; fundedFromRotationsUsd: number;
+    raiseUsd: number; liquidityAfterUsd: number; liquidityAfterPct: number;
+    initiates: number; adds: number; holds: number; reviews: number;
+  };
   process: string[]; warnings: string[];
 }
+
+/**
+ * Capital-preservation and near-cash instruments. These are not ranked as equity
+ * holdings and cannot be selected as the "weakest stock" in replacement alpha.
+ * BINC is intentionally excluded because its duration/credit risk makes it a
+ * strategic bond allocation rather than immediately deployable cash.
+ */
+export const LIQUIDITY_TICKERS = new Set([
+  "SGOV", "JAAA", "TBIL", "BIL", "SHV", "SHY", "USFR", "TFLO", "ICSH", "JPST", "MINT",
+]);
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 const num = (x: any): number | null => typeof x === "number" && Number.isFinite(x) ? x : null;
 const portfolioScore = (x: ActiveFundIdea) => x.conviction + Math.max(-20, Math.min(30, x.expectedReturnPct ?? 0)) * 0.5;
+const cleanTicker = (x: string) => String(x).trim().toUpperCase();
+const isLiquidityTicker = (ticker: string) => LIQUIDITY_TICKERS.has(cleanTicker(ticker));
 async function analyzeSafe(ticker: string) { try { return await buildAnalysis(ticker); } catch { return null; } }
 
 function sizeIdea(a: any, held: boolean, nav: number, macro: MacroOutlook): ActiveFundIdea {
@@ -54,14 +90,13 @@ function sizeIdea(a: any, held: boolean, nav: number, macro: MacroOutlook): Acti
     else if (c?.decision === "APPROVE" && exp != null && exp >= 15 + macroPenalty / 2) action = "ADD";
     else if (exp != null && exp < 0) action = "TRIM REVIEW";
     else action = "HOLD";
-  } else {
-    if (c?.decision === "APPROVE" && exp != null && exp >= initiateHurdle && macro.riskBudgetPct >= 30) action = "INITIATE";
-    else action = "WATCH";
+  } else if (c?.decision === "APPROVE" && exp != null && exp >= initiateHurdle && macro.riskBudgetPct >= 30) {
+    action = "INITIATE";
   }
   const rawWeight = action === "INITIATE" || action === "ADD" ? clamp((conv / 100) * 8 * mult, 1.5, 8) : 0;
   const targetWeight = rawWeight * macro.riskBudgetPct / 100;
   const reasons = [...(c?.reasons ?? [])];
-  reasons.push(`Macro regime: ${macro.regime}; risk budget ${macro.riskBudgetPct}%; cash floor ${macro.cashFloorPct}%.`);
+  reasons.push(`Macro regime: ${macro.regime}; risk budget ${macro.riskBudgetPct}%; liquidity floor ${macro.cashFloorPct}%.`);
   if (macro.score < 55 && !held) reasons.push(`New-position hurdle raised to ${initiateHurdle}% expected return by the Macro desk.`);
   return {
     ticker: a.ticker, source: [], held, action, conviction: conv, confidence: c?.confidence ?? "LOW",
@@ -72,8 +107,34 @@ function sizeIdea(a: any, held: boolean, nav: number, macro: MacroOutlook): Acti
   };
 }
 
-export async function runActiveFund(existingTickers: string[], nav: number, candidateTickers: string[] = []): Promise<ActiveFundResult> {
-  const held = new Set(existingTickers.map(x => x.toUpperCase())), warnings: string[] = [];
+function buildLiquiditySleeve(positions: PositionValue[], nav: number, macro: MacroOutlook): LiquiditySleeve {
+  const liquidityPositions = positions
+    .filter(x => isLiquidityTicker(x.ticker) && Number.isFinite(x.marketValue) && x.marketValue > 0)
+    .map(x => ({ ticker: cleanTicker(x.ticker), marketValue: Math.round(x.marketValue * 100) / 100 }))
+    .sort((a, b) => b.marketValue - a.marketValue);
+  const currentUsd = liquidityPositions.reduce((s, x) => s + x.marketValue, 0);
+  const targetPct = clamp(macro.cashFloorPct, 0, 100);
+  const targetUsd = nav * targetPct / 100;
+  const tolerance = Math.max(nav * 0.005, 25);
+  const deployableUsd = Math.max(0, currentUsd - targetUsd);
+  const reserveGapUsd = Math.max(0, targetUsd - currentUsd);
+  const status = deployableUsd > tolerance ? "EXCESS" : reserveGapUsd > tolerance ? "BELOW TARGET" : "ON TARGET";
+  return {
+    tickers: [...LIQUIDITY_TICKERS], positions: liquidityPositions,
+    currentUsd: Math.round(currentUsd), currentPct: nav > 0 ? Math.round(currentUsd / nav * 1000) / 10 : 0,
+    targetUsd: Math.round(targetUsd), targetPct,
+    deployableUsd: Math.round(deployableUsd), reserveGapUsd: Math.round(reserveGapUsd), status,
+    fundingOrder: liquidityPositions.map(x => x.ticker),
+  };
+}
+
+export async function runActiveFund(
+  existingTickers: string[], nav: number, candidateTickers: string[] = [], positionValues: PositionValue[] = []
+): Promise<ActiveFundResult> {
+  const allHeld = new Set(existingTickers.map(cleanTicker));
+  const riskTickers = existingTickers.map(cleanTicker).filter(t => !isLiquidityTicker(t));
+  const riskHeld = new Set(riskTickers);
+  const warnings: string[] = [];
   const [macro, mom, div, theme] = await Promise.all([
     buildMacroOutlook().catch(e => {
       warnings.push(`Macro outlook: ${e?.message ?? "failed"}`);
@@ -83,12 +144,16 @@ export async function runActiveFund(existingTickers: string[], nav: number, cand
     runDividendScan(DEFAULT_UNIVERSE, 5).catch(e => { warnings.push(`Dividend discovery: ${e?.message ?? "failed"}`); return null; }),
     runThematicPortfolio(8, "monthly").catch(e => { warnings.push(`Thematic discovery: ${e?.message ?? "failed"}`); return null; }),
   ]);
-
   warnings.push(...(macro.warnings ?? []));
+  const liquidity = buildLiquiditySleeve(positionValues, nav, macro);
+
   const sourceMap = new Map<string, Set<string>>();
   const add = (ticker: string | undefined, source: string) => {
-    if (!ticker) return; const t = ticker.toUpperCase(); if (held.has(t)) return;
-    if (!sourceMap.has(t)) sourceMap.set(t, new Set()); sourceMap.get(t)!.add(source);
+    if (!ticker) return;
+    const t = cleanTicker(ticker);
+    if (allHeld.has(t) || isLiquidityTicker(t)) return;
+    if (!sourceMap.has(t)) sourceMap.set(t, new Set());
+    sourceMap.get(t)!.add(source);
   };
   candidateTickers.forEach(t => add(t, "Watchlist / Research"));
   (mom?.setups ?? []).forEach((x: any) => add(x.ticker, "Momentum Scanner"));
@@ -100,84 +165,104 @@ export async function runActiveFund(existingTickers: string[], nav: number, cand
     return bw - aw || b[1].size - a[1].size;
   }).slice(0,15);
   const newAnalyses = await Promise.all(ranked.map(([t]) => analyzeSafe(t)));
-  const currentAnalyses = await Promise.all(existingTickers.slice(0,15).map(t => analyzeSafe(t)));
+  const currentAnalyses = await Promise.all(riskTickers.slice(0,15).map(t => analyzeSafe(t)));
   const newIdeas = newAnalyses.filter(Boolean).map((a:any,i) => { const x=sizeIdea(a,false,nav,macro); x.source=[...(ranked[i]?.[1]??[])]; return x; }).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
   const existing = currentAnalyses.filter(Boolean).map((a:any)=>sizeIdea(a,true,nav,macro)).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
 
   const approvedNew = newIdeas.filter(x=>x.action === "INITIATE");
   const weakest = [...existing].sort((a,b)=>portfolioScore(a)-portfolioScore(b));
+  let availableLiquidity = liquidity.deployableUsd;
+  const liquidityAllocations = new Map<string, number>();
+  for (const cand of approvedNew) {
+    const amount = Math.min(cand.capitalUsd, availableLiquidity);
+    if (amount > 0) {
+      liquidityAllocations.set(cand.ticker, Math.round(amount));
+      availableLiquidity -= amount;
+    }
+  }
+
   const replacements: ActiveFundResult["replacements"] = [];
   for (const cand of approvedNew) {
+    const unfunded = Math.max(0, cand.capitalUsd - (liquidityAllocations.get(cand.ticker) ?? 0));
+    if (unfunded <= 0) continue;
     const old = weakest.find(x => !replacements.some(r=>r.from===x.ticker) && cand.conviction-x.conviction>=10 && (cand.expectedReturnPct??-99)-(x.expectedReturnPct??-99)>=8);
     if (!old) continue;
-    const pct = clamp(cand.targetWeightPct,1.5,Math.min(6,cand.targetWeightPct));
-    replacements.push({ from:old.ticker, to:cand.ticker, reason:`${cand.ticker} has higher committee conviction (${cand.conviction} vs ${old.conviction}) and expected return (${cand.expectedReturnPct?.toFixed(1)??"—"}% vs ${old.expectedReturnPct?.toFixed(1)??"—"}%). Macro permits ${macro.riskBudgetPct}% of normal risk.`, rotatePct:Math.round(pct*10)/10, rotateUsd:Math.round(nav*pct/100) });
+    const pct = Math.min(clamp(cand.targetWeightPct,1.5,Math.min(6,cand.targetWeightPct)), nav > 0 ? unfunded / nav * 100 : 0);
+    const rotateUsd = Math.min(unfunded, Math.round(nav*pct/100));
+    if (rotateUsd <= 0) continue;
+    replacements.push({ from:old.ticker, to:cand.ticker, reason:`Liquidity above the Macro floor is insufficient for the full position. ${cand.ticker} also clears the conviction and expected-return gap versus ${old.ticker}.`, rotatePct:Math.round(pct*10)/10, rotateUsd });
   }
 
   const opportunityDecisions: OpportunityDecision[] = newIdeas.map(cand => {
     const old = weakest[0] ?? null;
-    const edge = old ? Math.round((portfolioScore(cand) - portfolioScore(old)) * 10) / 10 : null;
-    const replacement = replacements.find(r => r.to === cand.ticker);
-    if (replacement) {
+    const edge = old ? Math.round((portfolioScore(cand)-portfolioScore(old))*10)/10 : null;
+    const liquidityFunding = liquidityAllocations.get(cand.ticker) ?? 0;
+    const replacement = replacements.find(r=>r.to===cand.ticker);
+    if (cand.action === "INITIATE" && liquidityFunding > 0 && !replacement) {
       return {
-        ticker:cand.ticker, decision:"ROTATE / REPLACE", comparedWith:replacement.from, relativeEdge:edge,
-        proposedWeightPct:replacement.rotatePct, proposedCapitalUsd:replacement.rotateUsd,
-        reason:`The committee approved ${cand.ticker} and it clears both the conviction and expected-return gap versus ${replacement.from}.`,
-        reasonTh:`คณะกรรมการอนุมัติ ${cand.ticker} และมีทั้ง Conviction กับผลตอบแทนคาดหวังสูงกว่า ${replacement.from} ผ่านเกณฑ์สับเปลี่ยน`,
-        trigger:"Execute only after valuation, liquidity and portfolio-risk checks remain valid at the intended entry price.",
-        triggerTh:"ดำเนินการเมื่อ Valuation สภาพคล่อง และความเสี่ยงระดับพอร์ตยังผ่าน ณ ราคาเข้าที่กำหนด",
+        ticker:cand.ticker, decision:"INITIATE FROM LIQUIDITY", fundingSource:liquidity.fundingOrder.join(" → ") || "Liquidity sleeve",
+        comparedWith:old?.ticker??null, relativeEdge:edge, proposedWeightPct:cand.targetWeightPct, proposedCapitalUsd:liquidityFunding,
+        reason:`Approved opportunity funded from deployable liquidity above the ${liquidity.targetPct}% Macro floor. No risk holding needs to be sold.`,
+        reasonTh:`โอกาสนี้ผ่านการอนุมัติและใช้เงินจาก Liquidity Sleeve ส่วนที่เกิน Cash Buffer เป้าหมาย ${liquidity.targetPct}% จึงไม่จำเป็นต้องขายหุ้นเสี่ยงที่ยังแข็งแรง`,
+        trigger:"Deploy only the excess above the required liquidity floor and recheck price, valuation and portfolio risk before execution.",
+        triggerTh:"ใช้ได้เฉพาะเงินส่วนเกินเหนือ Liquidity Floor และต้องตรวจราคา Valuation กับความเสี่ยงพอร์ตก่อนดำเนินการ",
       };
     }
-    if (cand.action === "INITIATE") {
+    if (replacement) {
       return {
-        ticker:cand.ticker, decision:"INITIATE FROM CASH", comparedWith:old?.ticker ?? null, relativeEdge:edge,
-        proposedWeightPct:cand.targetWeightPct, proposedCapitalUsd:cand.capitalUsd,
-        reason:`Approved outside opportunity. It enters as a new position without forcing the sale of a stronger holding.`,
-        reasonTh:`เป็นโอกาสใหม่นอกพอร์ตที่ผ่านการอนุมัติ จึงเสนอเปิดสถานะจากเงินสดโดยไม่บังคับขายหุ้นเดิมที่ยังแข็งแรง`,
-        trigger:"Initiate only while expected return remains above the Macro-adjusted hurdle and cash stays above the required floor.",
-        triggerTh:"เปิดสถานะเมื่อผลตอบแทนคาดหวังยังสูงกว่าเกณฑ์ที่ทีม Macro กำหนด และเงินสดหลังลงทุนไม่ต่ำกว่า Cash Floor",
+        ticker:cand.ticker, decision:"ROTATE / REPLACE", fundingSource:`Liquidity excess ${liquidityFunding} USD + ${replacement.from}`,
+        comparedWith:replacement.from, relativeEdge:edge, proposedWeightPct:replacement.rotatePct, proposedCapitalUsd:liquidityFunding+replacement.rotateUsd,
+        reason:`Use deployable liquidity first, then fund the remaining approved allocation by rotating from ${replacement.from}.`,
+        reasonTh:`ใช้เงินส่วนเกินจาก Liquidity Sleeve ก่อน แล้วจึงจัดหาเงินส่วนที่เหลือด้วยการสับเปลี่ยนจาก ${replacement.from}`,
+        trigger:"Execute only if the candidate still clears replacement alpha after costs and the liquidity floor remains intact.",
+        triggerTh:"ดำเนินการเมื่อ Candidate ยังผ่าน Replacement Alpha หลังต้นทุน และ Liquidity Floor ไม่ถูกละเมิด",
       };
     }
     if (cand.committee === "REJECT" || cand.conviction < 45) {
       return {
-        ticker:cand.ticker, decision:"REJECT", comparedWith:old?.ticker ?? null, relativeEdge:edge,
+        ticker:cand.ticker, decision:"REJECT", fundingSource:"None", comparedWith:old?.ticker??null, relativeEdge:edge,
         proposedWeightPct:0, proposedCapitalUsd:0,
-        reason:"The opportunity was reviewed against the portfolio but failed the committee quality, valuation or risk hurdle.",
+        reason:"Reviewed against the portfolio but failed the committee quality, valuation or risk hurdle.",
         reasonTh:"นำมาเปรียบเทียบกับพอร์ตแล้ว แต่ไม่ผ่านเกณฑ์คุณภาพ Valuation หรือความเสี่ยงของคณะกรรมการ",
-        trigger:"Re-enter the research queue only after a material thesis, earnings, valuation or catalyst improvement.",
-        triggerTh:"นำกลับมาวิเคราะห์ใหม่เมื่อ Thesis ผลประกอบการ Valuation หรือ Catalyst ดีขึ้นอย่างมีนัยสำคัญ",
+        trigger:"Return only after a material thesis, earnings, valuation or catalyst improvement.",
+        triggerTh:"นำกลับมาวิเคราะห์เมื่อ Thesis ผลประกอบการ Valuation หรือ Catalyst ดีขึ้นอย่างมีนัยสำคัญ",
       };
     }
     const neededReturn = 8 + (macro.score < 38 ? 8 : macro.score < 55 ? 4 : 0);
     return {
-      ticker:cand.ticker, decision:"WATCH WITH TRIGGER", comparedWith:old?.ticker ?? null, relativeEdge:edge,
+      ticker:cand.ticker, decision:"WATCH WITH TRIGGER", fundingSource:"Liquidity sleeve after approval", comparedWith:old?.ticker??null, relativeEdge:edge,
       proposedWeightPct:0, proposedCapitalUsd:0,
-      reason:`The opportunity is included in portfolio construction, but the committee has not authorized capital yet. It is continuously compared with ${old?.ticker ?? "the current book"}.`,
-      reasonTh:`หลักทรัพย์นี้ถูกนำเข้ากระบวนการจัดพอร์ตแล้ว แต่คณะกรรมการยังไม่อนุมัติเงินลงทุน และจะเปรียบเทียบกับ ${old?.ticker ?? "พอร์ตปัจจุบัน"} ต่อเนื่อง`,
-      trigger:`Promote to INITIATE when committee status becomes APPROVE, expected return is at least ${neededReturn}%, and relative portfolio edge is positive after risk checks.`,
-      triggerTh:`เลื่อนเป็นเปิดสถานะใหม่เมื่อคณะกรรมการเปลี่ยนเป็น APPROVE ผลตอบแทนคาดหวังอย่างน้อย ${neededReturn}% และความได้เปรียบเทียบพอร์ตเป็นบวกหลังผ่าน Risk Check`,
+      reason:`Included in portfolio construction, but capital is not authorized. The liquidity sleeve is reserved until all gates clear.`,
+      reasonTh:`ถูกนำเข้ากระบวนการจัดพอร์ตแล้ว แต่ยังไม่อนุมัติเงินลงทุน Liquidity Sleeve จะยังถูกกันไว้จนกว่าจะผ่านทุก Gate`,
+      trigger:`Promote when committee status is APPROVE, expected return is at least ${neededReturn}%, relative edge is positive, and deployable liquidity is available.`,
+      triggerTh:`เลื่อนเป็นลงทุนเมื่อคณะกรรมการเป็น APPROVE ผลตอบแทนคาดหวังอย่างน้อย ${neededReturn}% ความได้เปรียบเป็นบวก และมี Liquidity ส่วนเกินพร้อมใช้`,
     };
   });
 
-  const deployUsd = approvedNew.reduce((s,x)=>s+x.capitalUsd,0) + existing.filter(x=>x.action==="ADD").reduce((s,x)=>s+x.capitalUsd,0);
-  const raiseUsd = replacements.reduce((s,x)=>s+x.rotateUsd,0);
-  const minimumCash = nav * macro.cashFloorPct / 100;
-  const maxDeployable = Math.max(0, nav - minimumCash);
-  const cappedDeploy = Math.min(deployUsd, maxDeployable);
+  const requestedDeployUsd = approvedNew.reduce((s,x)=>s+x.capitalUsd,0) + existing.filter(x=>x.action==="ADD").reduce((s,x)=>s+x.capitalUsd,0);
+  const fundedFromLiquidityUsd = [...liquidityAllocations.values()].reduce((s,x)=>s+x,0);
+  const fundedFromRotationsUsd = replacements.reduce((s,x)=>s+x.rotateUsd,0);
+  const deployUsd = Math.min(requestedDeployUsd, fundedFromLiquidityUsd + fundedFromRotationsUsd);
+  const liquidityAfterUsd = Math.max(liquidity.targetUsd, liquidity.currentUsd-fundedFromLiquidityUsd);
 
   return {
-    asOf:new Date().toISOString(), nav, macro,
-    discovery:{ momentum:mom?.setups?.length??0, dividend:div?.picks?.length??0, thematic:theme?.holdings?.length??0, watchlist:candidateTickers.filter(x=>!held.has(x)).length, uniqueNew:sourceMap.size },
+    asOf:new Date().toISOString(), nav, macro, liquidity,
+    discovery:{ momentum:mom?.setups?.length??0, dividend:div?.picks?.length??0, thematic:theme?.holdings?.length??0, watchlist:candidateTickers.filter(x=>!allHeld.has(cleanTicker(x))).length, uniqueNew:sourceMap.size },
     newIdeas, existing, opportunityDecisions, replacements,
-    capitalPlan:{ deployUsd:cappedDeploy, raiseUsd, cashAfterUsd:Math.max(minimumCash, nav + raiseUsd - cappedDeploy), initiates:approvedNew.length, adds:existing.filter(x=>x.action==="ADD").length, holds:existing.filter(x=>x.action==="HOLD").length, reviews:existing.filter(x=>x.action==="TRIM REVIEW"||x.action==="EXIT REVIEW").length },
+    capitalPlan:{
+      requestedDeployUsd, deployUsd, fundedFromLiquidityUsd, fundedFromRotationsUsd,
+      raiseUsd:fundedFromRotationsUsd, liquidityAfterUsd:Math.round(liquidityAfterUsd), liquidityAfterPct:nav>0?Math.round(liquidityAfterUsd/nav*1000)/10:0,
+      initiates:approvedNew.length, adds:existing.filter(x=>x.action==="ADD").length, holds:existing.filter(x=>x.action==="HOLD").length,
+      reviews:existing.filter(x=>x.action==="TRIM REVIEW"||x.action==="EXIT REVIEW").length,
+    },
     process:[
-      "Macro and market regime set risk appetite, cash reserve and maximum gross deployment.",
-      "Every Opportunity Discovery candidate enters the allocation meeting, including WATCH names; WATCH means no capital yet, not exclusion from portfolio analysis.",
-      "Watchlist and Research candidates enter the same opportunity pool as Momentum, Dividend Quality and Thematic scans.",
+      "Macro and market regime set the target Liquidity Buffer, risk appetite and maximum gross deployment.",
+      "SGOV, JAAA and approved short-duration instruments are managed as the Liquidity Sleeve, not ranked as equity holdings.",
+      "Every Opportunity Discovery candidate enters the allocation meeting, including WATCH names; WATCH means no capital yet, not exclusion.",
       "Research underwrites fundamentals, competition, thesis, catalysts, risks, five-year model and valuation for every candidate.",
-      "Specialist desks score independently; Risk may veto; the Investment Committee returns APPROVE, WATCH or REJECT.",
-      "Portfolio Construction compares every outside idea against current holdings using replacement alpha, expected return and opportunity cost.",
-      "Capital may initiate a new position, add to an existing winner, hold cash, trim a weak holding or rotate from a lower-conviction asset."
+      "Portfolio Construction uses deployable liquidity above the Macro floor before considering the sale of a risk holding.",
+      "Replacement Alpha may rotate from a weaker risk asset only when excess liquidity is insufficient and the candidate clears a meaningful edge.",
+      "If the Liquidity Sleeve is below target, new deployment is restricted and the committee prioritizes rebuilding the buffer."
     ], warnings,
   };
 }
