@@ -17,7 +17,10 @@ async function crossCheckPeer(p:any){
       const ttm=finite(row.revenueTTM)&&row.revenueTTM>0?row.revenueTTM:null;
       const ratio=ttm!=null?ttm/annualRevenue:null;
       if(ratio==null||ratio<0.65||ratio>1.8){
-        if(ttm!=null)row.gaps.push(`TTM revenue failed annual cross-check (${ratio.toFixed(2)}× latest annual revenue); latest annual revenue used as conservative fallback.`);
+        if(ttm!=null){
+          const ratioText=ratio!=null?ratio.toFixed(2):"unavailable";
+          row.gaps.push(`TTM revenue failed annual cross-check (${ratioText}× latest annual revenue); latest annual revenue used as conservative fallback.`);
+        }
         row.revenueTTM=annualRevenue;
         if(annualNet!=null)row.netIncomeTTM=annualNet;
       }
