@@ -51,7 +51,7 @@ export default function Home() {
       {tab === "command" && <FundCommandCenter onNavigate={setTab} lang={lang} />}
       {tab === "analyze" && <ResearchTabV2 lang={lang} />}
       {tab === "portfolio" && <>
-        <ActiveFundManager />
+        <ActiveFundManager lang={lang} />
         <HoldingsMarketMonitor />
         <DividendCalendarPanel lang={lang} />
         <HoldingsIntelligence lang={lang} />
