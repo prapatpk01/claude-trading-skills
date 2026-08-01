@@ -5,11 +5,93 @@ import { sanitizeResearch } from "@/lib/sanitizeResearch";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function finite(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function applyEvidenceGate(result: any) {
+  const data = result?.data ?? {};
+  const financials = data.financials ?? {};
+  const income = Array.isArray(financials.income) ? financials.income : [];
+  const cashflow = Array.isArray(financials.cashflow) ? financials.cashflow : [];
+  const balance = Array.isArray(financials.balance) ? financials.balance : [];
+  const quarters = Array.isArray(data.quarters) ? data.quarters : [];
+  const externalPeers = Array.isArray(result?.research?.peers)
+    ? result.research.peers.filter((p: any) => p && !p.isSubject && p.ticker)
+    : [];
+
+  const checks = {
+    currentPrice: finite(data.quote?.price),
+    annualIncome: income.length >= 2 && finite(income[0]?.totalRevenue),
+    cashflow: cashflow.length >= 1 && finite(cashflow[0]?.operatingCashflow),
+    balance: balance.length >= 1 && [balance[0]?.cashAndEquivalents, balance[0]?.totalAssets, balance[0]?.totalShareholderEquity].some(finite),
+    quarterlyTrend: quarters.length >= 2,
+    peerEvidence: externalPeers.length >= 2,
+    valuationEvidence: Boolean(result?.dcf || result?.multiples),
+  };
+
+  const evidenceCount = Object.values(checks).filter(Boolean).length;
+  const evidenceTotal = Object.keys(checks).length;
+  const evidencePct = Math.round((evidenceCount / evidenceTotal) * 100);
+  const hardBlocks: string[] = [];
+
+  if (!checks.currentPrice) hardBlocks.push("current price is unavailable");
+  if (!checks.annualIncome) hardBlocks.push("annual income statement history is insufficient");
+  if (!checks.cashflow) hardBlocks.push("cash-flow statement history is insufficient");
+  if (!checks.balance) hardBlocks.push("balance-sheet evidence is insufficient");
+  if (evidenceCount < 4) hardBlocks.push("verified evidence coverage is below the institutional minimum");
+
+  const committee = result.committee ?? {};
+  const deskScores = { ...(committee.deskScores ?? {}), data: evidencePct };
+  const priorDissent = Array.isArray(committee.dissent) ? committee.dissent : [];
+  const priorReasons = Array.isArray(committee.reasons) ? committee.reasons : [];
+
+  if (hardBlocks.length) {
+    result.committee = {
+      ...committee,
+      decision: "REJECT",
+      conviction: Math.min(Number(committee.conviction) || 0, 35),
+      confidence: "LOW",
+      deskScores,
+      reasons: priorReasons.filter((x: string) => !x.toLowerCase().startsWith("data ")).slice(0, 3),
+      dissent: [...hardBlocks.map((x) => `Hard block: ${x}`), ...priorDissent].slice(0, 8),
+      hardBlocks,
+      sizeMultiplier: 0,
+    };
+
+    // Do not expose synthetic price targets as investment-ready outputs when
+    // the fundamental evidence needed to support them is absent.
+    result.targetPrice = null;
+    result.upsidePct = null;
+    result.expectedReturnPct = null;
+    result.signal = "HOLD";
+    result.signalReasons = ["Evidence gate: research is incomplete and is not investment-ready."];
+  } else {
+    result.committee = {
+      ...committee,
+      deskScores,
+      hardBlocks: [],
+      confidence: evidencePct >= 86 && committee.confidence === "HIGH" ? "HIGH" : committee.confidence ?? "MEDIUM",
+    };
+  }
+
+  result.evidenceCoverage = {
+    checks,
+    passed: evidenceCount,
+    total: evidenceTotal,
+    percent: evidencePct,
+    hardBlocks,
+  };
+
+  return result;
+}
+
 export async function GET(req: NextRequest) {
   const ticker = req.nextUrl.searchParams.get("ticker")?.trim().toUpperCase();
   if (!ticker || !/^[A-Z.\-]{1,10}$/.test(ticker)) {
     return NextResponse.json({ error: "Provide a valid ticker (?ticker=NVDA)" }, { status: 400 });
   }
+
   try {
     const result = await buildAnalysis(ticker);
     if (!result.data.quote && result.data.candles.length === 0) {
@@ -18,8 +100,9 @@ export async function GET(req: NextRequest) {
         { status: 404 }
       );
     }
+
     if (result.research) result.research = await sanitizeResearch(result.research);
-    return NextResponse.json(result);
+    return NextResponse.json(applyEvidenceGate(result));
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analysis failed" }, { status: 500 });
   }
