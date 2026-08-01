@@ -7,26 +7,31 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const OPTIONAL_COLUMNS = ["opened_at", "closed_at"];
+const roundShares = (v: number) => Math.round(v * 1e7) / 1e7;
+
 function isMissingColumn(msg: string): boolean {
   const m = msg.toLowerCase();
-  return OPTIONAL_COLUMNS.some((c) => m.includes(c)) && (m.includes("column") || m.includes("schema cache") || m.includes("does not exist"));
+  return OPTIONAL_COLUMNS.some((c) => m.includes(c)) &&
+    (m.includes("column") || m.includes("schema cache") || m.includes("does not exist"));
 }
-function withoutOptional<T extends Record<string, any>>(row: T): T {
-  const copy: Record<string, any> = { ...row };
+
+function withoutOptional<T extends Record<string, unknown>>(row: T): T {
+  const copy: Record<string, unknown> = { ...row };
   for (const c of OPTIONAL_COLUMNS) delete copy[c];
   return copy as T;
 }
-const optNum = (v: any): number | null => {
+
+const optNum = (v: unknown): number | null => {
   if (v === null || v === undefined || String(v).trim() === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
-const optDate = (v: any): string | null => {
+
+const optDate = (v: unknown): string | null => {
   if (v === null || v === undefined || String(v).trim() === "") return null;
   const s = String(v).trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 };
-const roundShares = (v: number) => Math.round(v * 1e7) / 1e7;
 
 function writeClientOrResponse() {
   const admin = getSupabaseAdmin();
@@ -43,6 +48,19 @@ function writeClientOrResponse() {
   return { admin: null, error: null as NextResponse | null };
 }
 
+function rpcStatus(message: string): number {
+  const m = message.toLowerCase();
+  if (
+    m.includes("invalid ticker") ||
+    m.includes("shares must") ||
+    m.includes("price must") ||
+    m.includes("side must") ||
+    m.includes("no open holding") ||
+    m.includes("cannot sell")
+  ) return 400;
+  return 500;
+}
+
 export async function GET() {
   const sb = getSupabase();
   if (sb) {
@@ -57,113 +75,111 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const action = String(body.action ?? "buy").toLowerCase() === "sell" ? "sell" : "buy";
   const ticker = String(body.ticker ?? "").trim().toUpperCase();
-  if (!/^[A-Z.\-]{1,10}$/.test(ticker)) return NextResponse.json({ error: "Enter a valid ticker symbol." }, { status: 400 });
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) {
+    return NextResponse.json({ error: "Enter a valid ticker symbol." }, { status: 400 });
+  }
 
   const shares = optNum(body.shares);
   const tradePrice = optNum(body.avg_cost);
-  if (shares === null || shares <= 0) return NextResponse.json({ error: "Shares must be a number greater than zero." }, { status: 400 });
-  if (tradePrice === null || tradePrice < 0) return NextResponse.json({ error: action === "sell" ? "Sell price must be a valid number." : "Average cost must be a valid number." }, { status: 400 });
-  if (Math.abs(shares - roundShares(shares)) > 1e-10) return NextResponse.json({ error: "Shares support up to 7 decimal places." }, { status: 400 });
+  if (shares === null || shares <= 0) {
+    return NextResponse.json({ error: "Shares must be a number greater than zero." }, { status: 400 });
+  }
+  if (tradePrice === null || tradePrice < 0) {
+    return NextResponse.json(
+      { error: action === "sell" ? "Sell price must be a valid number." : "Average cost must be a valid number." },
+      { status: 400 },
+    );
+  }
+  if (Math.abs(shares - roundShares(shares)) > 1e-10) {
+    return NextResponse.json({ error: "Shares support up to 7 decimal places." }, { status: 400 });
+  }
 
   const txDate = optDate(body.transaction_date) ?? optDate(body.opened_at) ?? new Date().toISOString().slice(0, 10);
   const { admin: sb, error: writeError } = writeClientOrResponse();
   if (writeError) return writeError;
 
-  if (action === "sell") {
-    if (sb) {
-      const { data: rows, error: readError } = await sb.from("holdings").select("*").eq("ticker", ticker);
-      if (readError) return NextResponse.json({ error: `Supabase: ${readError.message}` }, { status: 500 });
-      const existing = rows ? findOpenLot(rows as any[], ticker) : undefined;
-      if (!existing) return NextResponse.json({ error: `${ticker} has no open holding to sell.` }, { status: 400 });
-      const held = Number((existing as any).shares) || 0;
-      if (shares > held + 1e-7) return NextResponse.json({ error: `Cannot sell ${shares} shares; only ${held} are held.` }, { status: 400 });
-      const remaining = roundShares(Math.max(0, held - shares));
-      const closed = remaining <= 0;
-      const patch: Record<string, any> = closed
-        ? { shares: held, closed_at: txDate, notes: body.thesis?.trim() || (existing as any).notes || null }
-        : { shares: remaining, notes: body.thesis?.trim() || (existing as any).notes || null };
-      let { data, error } = await sb.from("holdings").update(patch).eq("id", (existing as any).id).select().single();
-      if (error && isMissingColumn(error.message)) {
-        if (closed) {
-          return NextResponse.json({ error: "Closing positions requires the closed_at migration in supabase/schema.sql." }, { status: 400 });
-        }
-        ({ data, error } = await sb.from("holdings").update(withoutOptional(patch)).eq("id", (existing as any).id).select().single());
-      }
-      if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
-      return NextResponse.json({ holding: data, action: "sell", soldShares: shares, sellPrice: tradePrice, remainingShares: remaining, closed });
+  if (sb) {
+    const { data, error } = await sb.rpc("execute_portfolio_trade", {
+      p_ticker: ticker,
+      p_side: action.toUpperCase(),
+      p_shares: roundShares(shares),
+      p_price: tradePrice,
+      p_trade_date: txDate,
+      p_notes: String(body.notes ?? body.thesis ?? "").trim() || null,
+      p_thesis: String(body.thesis ?? "").trim() || null,
+      p_target_price: optNum(body.target_price),
+    });
+
+    if (error) {
+      return NextResponse.json(
+        { error: `Supabase transaction: ${error.message}` },
+        { status: rpcStatus(error.message) },
+      );
     }
 
+    return NextResponse.json({
+      ...(data as Record<string, unknown>),
+      action,
+      backend: "supabase",
+      atomic: true,
+    });
+  }
+
+  // Local development fallback only. Production writes never fall back to memory
+  // when Supabase is configured because that would create a split-brain portfolio.
+  if (action === "sell") {
     const existing = findOpenLot(memStore.holdings, ticker);
     if (!existing) return NextResponse.json({ error: `${ticker} has no open holding to sell.` }, { status: 400 });
     const held = Number(existing.shares) || 0;
-    if (shares > held + 1e-7) return NextResponse.json({ error: `Cannot sell ${shares} shares; only ${held} are held.` }, { status: 400 });
+    if (shares > held + 1e-7) {
+      return NextResponse.json({ error: `Cannot sell ${shares} shares; only ${held} are held.` }, { status: 400 });
+    }
     const remaining = roundShares(Math.max(0, held - shares));
     const closed = remaining <= 0;
-    const updated = memStore.updateHolding(existing.id, closed
-      ? { closed_at: txDate, notes: body.thesis?.trim() || existing.notes || null }
-      : { shares: remaining, notes: body.thesis?.trim() || existing.notes || null });
-    return NextResponse.json({ holding: updated, action: "sell", soldShares: shares, sellPrice: tradePrice, remainingShares: remaining, closed, backend: "memory" });
+    const updated = memStore.updateHolding(
+      existing.id,
+      closed
+        ? { closed_at: txDate, notes: String(body.thesis ?? "").trim() || existing.notes || null }
+        : { shares: remaining, notes: String(body.thesis ?? "").trim() || existing.notes || null },
+    );
+    return NextResponse.json({ holding: updated, action, remainingShares: remaining, closed, backend: "memory", atomic: false });
   }
 
   const row = {
     ticker,
     shares: roundShares(shares),
     avg_cost: tradePrice,
-    notes: body.notes?.trim() || null,
-    thesis: body.thesis?.trim() || null,
+    notes: String(body.notes ?? "").trim() || null,
+    thesis: String(body.thesis ?? "").trim() || null,
     target_price: optNum(body.target_price),
     opened_at: txDate,
-    closed_at: optDate(body.closed_at),
+    closed_at: null,
   };
-
-  if (sb) {
-    const { data: openRows, error: openReadError } = await sb.from("holdings").select("*").eq("ticker", ticker);
-    if (openReadError) return NextResponse.json({ error: `Supabase: ${openReadError.message}` }, { status: 500 });
-    const existing = openRows ? findOpenLot(openRows as any[], ticker) : undefined;
-    if (existing) {
-      const merged = mergeLot(existing as any, row);
-      const patch: Record<string, any> = {
-        shares: roundShares(merged.shares),
-        avg_cost: merged.avg_cost,
-        target_price: merged.target_price,
-        thesis: merged.thesis,
-        notes: merged.notes,
-        opened_at: merged.opened_at,
-      };
-      let { data, error } = await sb.from("holdings").update(patch).eq("id", (existing as any).id).select().single();
-      if (error && isMissingColumn(error.message)) ({ data, error } = await sb.from("holdings").update(withoutOptional(patch)).eq("id", (existing as any).id).select().single());
-      if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
-      return NextResponse.json({ holding: data, merged: true, mergeSummary: merged.summary });
-    }
-    let { data, error } = await sb.from("holdings").insert(row).select().single();
-    if (error && isMissingColumn(error.message)) {
-      ({ data, error } = await sb.from("holdings").insert(withoutOptional(row)).select().single());
-      if (!error) return NextResponse.json({ holding: data, warning: "Saved without the position dates — run the migration in supabase/schema.sql to enable them." });
-    }
-    if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
-    return NextResponse.json({ holding: data });
-  }
-
-  const existingMem = findOpenLot(memStore.holdings, ticker);
-  if (existingMem) {
-    const merged = mergeLot(existingMem, row);
-    const updated = memStore.updateHolding(existingMem.id, {
-      shares: roundShares(merged.shares), avg_cost: merged.avg_cost, target_price: merged.target_price,
-      thesis: merged.thesis, notes: merged.notes, opened_at: merged.opened_at,
+  const existing = findOpenLot(memStore.holdings, ticker);
+  if (existing) {
+    const merged = mergeLot(existing, row);
+    const updated = memStore.updateHolding(existing.id, {
+      shares: roundShares(merged.shares),
+      avg_cost: merged.avg_cost,
+      target_price: merged.target_price,
+      thesis: merged.thesis,
+      notes: merged.notes,
+      opened_at: merged.opened_at,
     });
-    return NextResponse.json({ holding: updated, merged: true, mergeSummary: merged.summary, backend: "memory" });
+    return NextResponse.json({ holding: updated, action, merged: true, mergeSummary: merged.summary, backend: "memory", atomic: false });
   }
-  return NextResponse.json({ holding: memStore.addHolding(row), backend: "memory" });
+  return NextResponse.json({ holding: memStore.addHolding(row), action, backend: "memory", atomic: false });
 }
 
 export async function PATCH(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const id = String(body.id ?? "");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  const patch: Record<string, any> = {};
+
+  const patch: Record<string, unknown> = {};
   if (body.ticker !== undefined) {
     const t = String(body.ticker).trim().toUpperCase();
-    if (!/^[A-Z.\-]{1,10}$/.test(t)) return NextResponse.json({ error: "Enter a valid ticker symbol." }, { status: 400 });
+    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(t)) return NextResponse.json({ error: "Enter a valid ticker symbol." }, { status: 400 });
     patch.ticker = t;
   }
   if (body.shares !== undefined) {
@@ -190,16 +206,18 @@ export async function PATCH(req: NextRequest) {
     let { data, error } = await sb.from("holdings").update(patch).eq("id", id).select().single();
     if (error && isMissingColumn(error.message)) {
       const reduced = withoutOptional(patch);
-      if (!Object.keys(reduced).length) return NextResponse.json({ error: "Position dates need the migration in supabase/schema.sql." }, { status: 400 });
+      if (!Object.keys(reduced).length) {
+        return NextResponse.json({ error: "Position dates need the migration in supabase/schema.sql." }, { status: 400 });
+      }
       ({ data, error } = await sb.from("holdings").update(reduced).eq("id", id).select().single());
-      if (!error) return NextResponse.json({ holding: data, warning: "Saved without the position dates — run the migration in supabase/schema.sql to enable them." });
     }
     if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
     return NextResponse.json({ holding: data });
   }
-  const updated = memStore.updateHolding(id, patch as any);
+
+  const updated = memStore.updateHolding(id, patch as never);
   if (!updated) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json({ holding: updated });
+  return NextResponse.json({ holding: updated, backend: "memory" });
 }
 
 export async function DELETE(req: NextRequest) {
@@ -212,5 +230,5 @@ export async function DELETE(req: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   }
-  return NextResponse.json({ ok: memStore.deleteHolding(id) });
+  return NextResponse.json({ ok: memStore.deleteHolding(id), backend: "memory" });
 }
