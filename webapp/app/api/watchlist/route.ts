@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase } from "@/lib/supabase";
+import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -46,7 +46,6 @@ export async function POST(req: NextRequest) {
   const row = {
     ticker,
     reason: body.reason?.trim() || null,
-    // alert_price mirrors the target so existing installs keep working
     alert_price: optNum(body.alert_price) ?? target,
     target_price: target,
     stop_price: optNum(body.stop_price),
@@ -54,33 +53,40 @@ export async function POST(req: NextRequest) {
     source: body.source?.trim() || null,
   };
 
-  const sb = getSupabase();
-  if (sb) {
-    let { data, error } = await sb.from("watchlist").upsert(row, { onConflict: "ticker" }).select().single();
-    if (error && isMissingColumn(error.message)) {
-      ({ data, error } = await sb.from("watchlist").upsert(withoutOptional(row), { onConflict: "ticker" }).select().single());
-      if (!error) {
-        return NextResponse.json({
-          item: data,
-          warning:
-            "Saved without the target/stop levels — run the watchlist migration at the end of supabase/schema.sql to track outcomes.",
-        });
-      }
-    }
-    if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
-    return NextResponse.json({ item: data });
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    return NextResponse.json(
+      { error: "Secure database writes are unavailable because SUPABASE_SERVICE_ROLE_KEY is not configured." },
+      { status: 503 },
+    );
   }
-  return NextResponse.json({ item: memStore.addWatch(row) });
+
+  let { data, error } = await sb.from("watchlist").upsert(row, { onConflict: "ticker" }).select().single();
+  if (error && isMissingColumn(error.message)) {
+    ({ data, error } = await sb.from("watchlist").upsert(withoutOptional(row), { onConflict: "ticker" }).select().single());
+    if (!error) {
+      return NextResponse.json({
+        item: data,
+        warning:
+          "Saved without the target/stop levels — run the watchlist migration at the end of supabase/schema.sql to track outcomes.",
+      });
+    }
+  }
+  if (error) return NextResponse.json({ error: `Supabase: ${error.message}` }, { status: 500 });
+  return NextResponse.json({ item: data });
 }
 
 export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  const sb = getSupabase();
-  if (sb) {
-    const { error } = await sb.from("watchlist").delete().eq("id", id);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ ok: true });
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    return NextResponse.json(
+      { error: "Secure database writes are unavailable because SUPABASE_SERVICE_ROLE_KEY is not configured." },
+      { status: 503 },
+    );
   }
-  return NextResponse.json({ ok: memStore.deleteWatch(id) });
+  const { error } = await sb.from("watchlist").delete().eq("id", id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
 }
