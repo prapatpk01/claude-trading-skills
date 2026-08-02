@@ -11,17 +11,38 @@ const RESERVES = new Set(["SGOV","BIL","SHV","USFR","TFLO","ICSH","JPST","JAAA"]
 const MAX_SINGLE_NAME_PCT = 20;
 const REVIEW_SINGLE_NAME_PCT = 15;
 
+async function internalJson(req: NextRequest, path: string) {
+  const cookie = req.headers.get("cookie") ?? "";
+  const authorization = req.headers.get("authorization") ?? "";
+  const response = await fetch(new URL(path, req.nextUrl.origin), {
+    cache: "no-store",
+    headers: {
+      ...(cookie ? { cookie } : {}),
+      ...(authorization ? { authorization } : {}),
+      accept: "application/json",
+    },
+  });
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.text();
+  if (!contentType.includes("application/json")) {
+    throw new Error(`${path} returned ${response.status} ${contentType || "non-JSON"}; preview authentication may not have been forwarded.`);
+  }
+  let json: any;
+  try { json = body ? JSON.parse(body) : {}; }
+  catch { throw new Error(`${path} returned malformed JSON.`); }
+  if (!response.ok) throw new Error(json?.error ?? `${path} returned ${response.status}`);
+  return json;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const sb = getSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-    const [{ data, error }, bufferRes] = await Promise.all([
+    const [{ data, error }, buffer] = await Promise.all([
       sb.from("holdings").select("ticker,shares,avg_cost,closed_at"),
-      fetch(new URL("/api/portfolio/cash-buffer", req.nextUrl.origin), { cache: "no-store" }),
+      internalJson(req, "/api/portfolio/cash-buffer"),
     ]);
     if (error) throw new Error(error.message);
-    const buffer = await bufferRes.json();
-    if (!bufferRes.ok) throw new Error(buffer.error || "Cash buffer analysis unavailable");
     if (!buffer.verified || buffer.totalNav == null) {
       return NextResponse.json({ version:"v8.3", status:"BLOCKED", reason:"Portfolio prices are incomplete.", missingPrices:buffer.missingPrices ?? [], proposals:[] });
     }
