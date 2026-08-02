@@ -1,0 +1,2 @@
+Production redeploy requested at 2026-08-03 01:15 Asia/Seoul.
+Target commit before trigger: 9af7bba7ad45c6c81ddd786a4d69506a6e087b6d.
