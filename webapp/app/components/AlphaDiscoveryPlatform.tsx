@@ -4,7 +4,7 @@ import {useState} from "react";
 import type {AppLang} from "../page";
 
 const tr=(l:AppLang,en:string,th:string)=>l==="th"?th:en;
-type Mode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"multifactor";
+type Mode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"thematic"|"multifactor";
 const modes:{id:Mode;icon:string;en:string;th:string;note:string}[]=[
  {id:"momentum",icon:"🚀",en:"Momentum",th:"โมเมนตัม",note:"Relative strength, trend and volume expansion"},
  {id:"growth",icon:"📈",en:"Growth",th:"เติบโต",note:"Revenue, earnings and margin expansion"},
@@ -13,35 +13,54 @@ const modes:{id:Mode;icon:string;en:string;th:string;note:string}[]=[
  {id:"dividend",icon:"💵",en:"Dividend",th:"ปันผล",note:"Yield, payout safety, coverage and durability"},
  {id:"institutional",icon:"🏛",en:"Institutional Interest",th:"แรงสะสมสถาบัน",note:"Volume, relative strength and accumulation proxy"},
  {id:"ai",icon:"🧠",en:"AI / Innovation",th:"AI / นวัตกรรม",note:"Semiconductor, cloud, cyber and automation"},
+ {id:"thematic",icon:"🔥",en:"Thematic Portfolio",th:"พอร์ตตามธีม",note:"Theme-first universe, then theme-specific ranking"},
  {id:"multifactor",icon:"◈",en:"Multi-Factor",th:"หลายปัจจัย",note:"Balanced composite across independent engines"},
 ];
 const sectors=["All","Technology","Communication","Consumer","Financials","Healthcare","Industrials","Energy","Utilities","RealEstate","Materials"];
+const themes=[
+ ["biotech","Biotech · XBI"],
+ ["regional-banks","Regional Banks · KRE"],
+ ["aerospace-defense","Aerospace & Defence · ITA"],
+ ["semiconductors","Semiconductors · SOXX"],
+ ["cloud-software","Cloud & Software · IGV"],
+ ["cybersecurity","Cybersecurity · CIBR"],
+ ["ai-infrastructure","AI Infrastructure · AIQ"],
+ ["energy-transition","Energy Transition · ICLN"],
+] as const;
 const money=(v:any)=>Number.isFinite(Number(v))?new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(Number(v)):"—";
 const pct=(v:any)=>Number.isFinite(Number(v))?`${Number(v)>=0?"+":""}${Number(v).toFixed(1)}%`:"—";
+const scoreKey=(mode:string)=>mode==="multifactor"||mode==="thematic"?"composite":mode;
+async function safeJson(r:Response){const text=await r.text();const type=r.headers.get("content-type")??"";if(!type.includes("application/json"))throw new Error(`Scanner returned ${r.status} ${type||"non-JSON response"}`);try{return JSON.parse(text)}catch{throw new Error("Scanner returned invalid JSON")}}
 
 export default function AlphaDiscoveryPlatform({lang}:{lang:AppLang}){
- const[mode,setMode]=useState<Mode>("multifactor");const[sector,setSector]=useState("All");const[tickers,setTickers]=useState("");const[loading,setLoading]=useState(false);const[result,setResult]=useState<any>(null);const[error,setError]=useState<string|null>(null);
- async function scan(){setLoading(true);setError(null);try{const q=new URLSearchParams({mode,sector,top:"10"});if(tickers.trim())q.set("tickers",tickers);const r=await fetch(`/api/alpha-discovery?${q}`,{cache:"no-store"});const j=await r.json();if(!r.ok)throw new Error(j.error??"Scan failed");setResult(j)}catch(e:any){setError(e.message)}finally{setLoading(false)}}
+ const[mode,setMode]=useState<Mode>("multifactor");const[sector,setSector]=useState("All");const[theme,setTheme]=useState("biotech");const[tickers,setTickers]=useState("");const[loading,setLoading]=useState(false);const[result,setResult]=useState<any>(null);const[error,setError]=useState<string|null>(null);
+ async function scan(){setLoading(true);setError(null);try{const q=new URLSearchParams({mode,sector,theme,top:"10"});if(tickers.trim())q.set("tickers",tickers);const r=await fetch(`/api/alpha-discovery?${q}`,{cache:"no-store"});const j=await safeJson(r);if(!r.ok)throw new Error(j.error??"Scan failed");setResult(j)}catch(e:any){setError(e.message)}finally{setLoading(false)}}
+ const selected=modes.find(x=>x.id===mode);
  return <div>
   <section className="card" style={{borderTop:"2px solid var(--accent)"}}>
-   <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}><div><h2 className="section" style={{margin:0}}>📡 {tr(lang,"Institutional Alpha Discovery","ระบบค้นหา Alpha ระดับสถาบัน")}</h2><p className="muted" style={{margin:"6px 0 0"}}>{tr(lang,"Eight independent engines with separate universes, filters and rankings.","8 เครื่องยนต์อิสระ ใช้ Universe, Filter และ Ranking คนละชุด")}</p></div><span className="tag">v11 Alpha Core</span></div>
-   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:9,marginTop:14}}>{modes.map(m=><button key={m.id} className={`btn ${mode===m.id?"":"ghost"}`} style={{textAlign:"left",minHeight:68}} onClick={()=>{setMode(m.id);setResult(null)}}><strong>{m.icon} {tr(lang,m.en,m.th)}</strong><small style={{display:"block",opacity:.72,marginTop:5}}>{m.note}</small></button>)}</div>
-   <div className="notice" style={{marginTop:14}}>{mode==="institutional"?tr(lang,"Accumulation proxy only; verified institutional ownership requires filing evidence.","เป็นเพียงสัญญาณประมาณการสะสม การถือครองจริงต้องมี Filing ยืนยัน"):tr(lang,`Active engine: ${modes.find(x=>x.id===mode)?.en}. A stock may appear in multiple engines only when it passes each engine's independent gate.`,`เครื่องยนต์ที่เลือก: ${modes.find(x=>x.id===mode)?.th} หุ้นจะซ้ำได้เฉพาะเมื่อผ่านเกณฑ์อิสระของหลาย Engine จริง`)}</div>
-   <div className="searchbar" style={{marginTop:14}}><select value={sector} onChange={e=>setSector(e.target.value)}>{sectors.map(s=><option key={s}>{s}</option>)}</select><input value={tickers} onChange={e=>setTickers(e.target.value)} placeholder={tr(lang,"Optional tickers: QCOM, GD, USB…","ระบุหุ้นเองได้: QCOM, GD, USB…")} style={{flex:1,minWidth:220}}/><button className="btn" onClick={scan} disabled={loading}>{loading?tr(lang,"Analyzing…","กำลังวิเคราะห์…"):tr(lang,"Run Independent Scan","เริ่มสแกนอิสระ")}</button></div>
+   <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}><div><h2 className="section" style={{margin:0}}>📡 {tr(lang,"Institutional Alpha Discovery","ระบบค้นหา Alpha ระดับสถาบัน")}</h2><p className="muted" style={{margin:"6px 0 0"}}>{tr(lang,"Nine independent engines. Each control changes the API universe, qualification gate and ranking model.","9 เครื่องยนต์อิสระ ทุกปุ่มเปลี่ยน Universe, Gate และ Ranking ที่ API จริง")}</p></div><span className="tag">v11 Alpha Core</span></div>
+   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:9,marginTop:14}}>{modes.map(m=><button key={m.id} className={`btn ${mode===m.id?"":"ghost"}`} style={{textAlign:"left",minHeight:68}} onClick={()=>{setMode(m.id);setResult(null);setError(null);if(m.id==="thematic")setSector("All")}}><strong>{m.icon} {tr(lang,m.en,m.th)}</strong><small style={{display:"block",opacity:.72,marginTop:5}}>{m.note}</small></button>)}</div>
+   <div className="notice" style={{marginTop:14}}>{mode==="institutional"?tr(lang,"Accumulation proxy only; verified institutional ownership requires filing evidence.","เป็นเพียงสัญญาณประมาณการสะสม การถือครองจริงต้องมี Filing ยืนยัน"):mode==="thematic"?tr(lang,"The selected theme creates a hard constituent universe before ranking. A stock outside that theme cannot enter the result.","ระบบสร้าง Universe ของธีมก่อนจัดอันดับ หุ้นนอกธีมจะไม่สามารถเข้าผลลัพธ์ได้"):tr(lang,`Active engine: ${selected?.en}. Results come only from this engine's independent universe and gate.`,`เครื่องยนต์ที่เลือก: ${selected?.th} ผลลัพธ์มาจาก Universe และ Gate ของ Engine นี้เท่านั้น`)}</div>
+   <div className="searchbar" style={{marginTop:14}}>
+    {mode==="thematic"?<select value={theme} onChange={e=>{setTheme(e.target.value);setResult(null)}}>{themes.map(([id,label])=><option value={id} key={id}>{label}</option>)}</select>:<select value={sector} onChange={e=>{setSector(e.target.value);setResult(null)}}>{sectors.map(s=><option key={s}>{s}</option>)}</select>}
+    <input value={tickers} onChange={e=>setTickers(e.target.value)} placeholder={tr(lang,"Optional override tickers (replaces engine universe)","ระบุหุ้นเองได้ โดยจะแทนที่ Universe ของ Engine")} style={{flex:1,minWidth:220}}/>
+    <button className="btn" onClick={scan} disabled={loading}>{loading?tr(lang,"Analyzing…","กำลังวิเคราะห์…"):tr(lang,`Run ${selected?.en??"Factor"} Scan`, `เริ่มสแกน ${selected?.th??"ปัจจัย"}`)}</button>
+   </div>
+   {tickers.trim()&&<p className="muted" style={{fontSize:11,marginTop:8}}>{tr(lang,"Manual tickers override the selected engine universe. Clear this field for a true engine scan.","เมื่อระบุหุ้นเอง ระบบจะใช้รายการนี้แทน Universe ของ Engine กรุณาล้างช่องเพื่อสแกนแบบ Engine จริง")}</p>}
    {error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}
   </section>
   {result&&<FactorResults result={result} lang={lang}/>} 
  </div>
 }
 
-function FactorResults({result,lang}:{result:any;lang:AppLang}){const stats=result.stats??{};return <>
- <section className="card"><div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><h3 className="sub" style={{margin:0}}>{String(result.mode).toUpperCase()} ENGINE</h3><span className="tag">{result.universeSource}</span></div><div className="grid cols-4" style={{marginTop:12}}><Metric label="Universe" value={String(stats.universe??0)}/><Metric label="Analyzed" value={String(stats.analyzed??0)}/><Metric label="Qualified" value={String(stats.qualified??0)}/><Metric label="Returned" value={String(stats.returned??0)}/></div><p className="muted" style={{fontSize:12,lineHeight:1.6}}>{result.methodology}</p></section>
- {(result.picks??[]).map((p:any,i:number)=><article className="card setup-card" key={p.ticker} style={{borderTop:i===0?"2px solid var(--green)":"1px solid var(--border-strong)"}}><div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><div className="muted" style={{fontSize:10}}>#{i+1} · {p.sector}</div><h2 className="section" style={{margin:"4px 0"}}>{p.ticker} · {p.name}</h2><p className="muted" style={{maxWidth:760,fontSize:11,lineHeight:1.55}}>{p.thesis}</p><div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{(p.engines??[]).map((x:string)=><span className="tag" key={x}>{x}</span>)}</div></div><div className="badge-score">{p[result.mode==="multifactor"?"composite":result.mode]}<span style={{fontSize:13}}>/100</span><small style={{display:"block",fontSize:10}}>Consensus {p.consensusCount??0}/7</small></div></div>
+function FactorResults({result,lang}:{result:any;lang:AppLang}){const stats=result.stats??{};const key=scoreKey(String(result.mode));return <>
+ <section className="card"><div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><h3 className="sub" style={{margin:0}}>{String(result.mode).toUpperCase()} ENGINE{result.theme?` · ${result.theme.label} (${result.theme.benchmark})`:""}</h3><span className="tag">{result.universeSource}</span></div><div className="grid cols-4" style={{marginTop:12}}><Metric label="Universe" value={String(stats.universe??0)}/><Metric label="Analyzed" value={String(stats.analyzed??0)}/><Metric label="Qualified" value={String(stats.qualified??0)}/><Metric label="Returned" value={String(stats.returned??0)}/></div><p className="muted" style={{fontSize:12,lineHeight:1.6}}>{result.methodology}</p></section>
+ {(result.picks??[]).map((p:any,i:number)=><article className="card setup-card" key={p.ticker} style={{borderTop:i===0?"2px solid var(--green)":"1px solid var(--border-strong)"}}><div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><div className="muted" style={{fontSize:10}}>#{i+1} · {p.sector}{result.theme?` · ${result.theme.label}`:""}</div><h2 className="section" style={{margin:"4px 0"}}>{p.ticker} · {p.name}</h2><p className="muted" style={{maxWidth:760,fontSize:11,lineHeight:1.55}}>{p.thesis}</p><div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{(p.engines??[]).map((x:string)=><span className="tag" key={x}>{x}</span>)}</div></div><div className="badge-score">{p[key]??p.composite}<span style={{fontSize:13}}>/100</span><small style={{display:"block",fontSize:10}}>Consensus {p.consensusCount??0}/7</small></div></div>
  <div className="grid cols-4" style={{marginTop:12}}><Metric label="Momentum" value={`${p.momentum}/100`}/><Metric label="Growth" value={`${p.growth}/100`}/><Metric label="Quality" value={`${p.quality}/100`}/><Metric label="Value" value={`${p.value}/100`}/></div>
  <div className="grid cols-4" style={{marginTop:9}}><Metric label="Dividend" value={`${p.dividend}/100`}/><Metric label="Institutional" value={`${p.institutional}/100`}/><Metric label="AI / Innovation" value={`${p.ai}/100`}/><Metric label="Composite" value={`${p.composite}/100`}/></div>
  <div className="grid cols-4" style={{marginTop:9}}><Metric label={tr(lang,"Price","ราคา")} value={money(p.price)}/><Metric label={tr(lang,"Expected return","ผลตอบแทนคาดหวัง")} value={pct(p.expectedReturnPct)}/><Metric label="Target" value={money(p.targetPrice)}/><Metric label="Data quality" value={String(p.dataQuality??"—")}/></div>
  {(p.reasons??[]).length>0&&<div className="notice" style={{marginTop:12}}><strong>{tr(lang,"Why discovered","เหตุผลที่ค้นพบ")}</strong><br/>{p.reasons.join(" · ")}</div>}
- <div style={{marginTop:12}}><Watchlist ticker={p.ticker} source={`${result.mode} independent engine v11`} reason={`${result.mode} score ${p[result.mode==="multifactor"?"composite":result.mode]}/100; consensus ${p.consensusCount??0}/7; composite ${p.composite}/100.`} target={p.targetPrice} lang={lang}/></div></article>)}
+ <div style={{marginTop:12}}><Watchlist ticker={p.ticker} source={`${result.mode} independent engine v11`} reason={`${result.mode} score ${p[key]??p.composite}/100; consensus ${p.consensusCount??0}/7; composite ${p.composite}/100.`} target={p.targetPrice} lang={lang}/></div></article>)}
  {!(result.picks??[]).length&&<section className="card"><p className="muted">{tr(lang,"No securities passed this engine's independent qualification gate.","ไม่มีหุ้นผ่านเกณฑ์อิสระของ Engine นี้")}</p></section>}
  </>}
 function Metric({label,value}:{label:string;value:string}){return <div className="metric"><span>{label}</span><strong>{value}</strong></div>}
