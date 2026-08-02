@@ -1,8 +1,8 @@
 {
   "name": "sentinel-investment-web",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
-  "description": "Sentinel Investment OS v10.1 unified fund operating cycle with evidence-first governance and mandatory human oversight",
+  "description": "Sentinel Investment OS v10.2 committee state machine with human-approved trade tickets and synchronized portfolio refresh",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
