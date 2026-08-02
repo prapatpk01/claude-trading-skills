@@ -49,7 +49,7 @@ export async function GET() {
   return NextResponse.json(
     {
       ok: ready,
-      release: "Sentinel-v8.1-foundation",
+      release: "Sentinel-Investment-OS-v10.0",
       checkedAt: new Date().toISOString(),
       checks: {
         ...checks,
