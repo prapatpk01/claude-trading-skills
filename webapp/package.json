@@ -1,8 +1,8 @@
 {
   "name": "sentinel-investment-web",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "Sentinel Investment OS v10.0 final AI CIO investment operating system with evidence-first governance and mandatory human oversight",
+  "description": "Sentinel Investment OS v10.1 unified fund operating cycle with evidence-first governance and mandatory human oversight",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
