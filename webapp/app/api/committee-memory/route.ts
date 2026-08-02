@@ -1,57 +1,12 @@
-import {NextRequest,NextResponse} from "next/server";
-import {getSupabase,getSupabaseAdmin} from "@/lib/supabase";
-
-export const runtime="nodejs";
-export const dynamic="force-dynamic";
-
-type MeetingStatus="APPROVED"|"PARTIALLY_EXECUTED"|"EXECUTED_WITHIN_TOLERANCE"|"MATERIAL_DEVIATION"|"SUPERSEDED"|"CANCELLED"|"CLOSED";
-type MemoryRow={id:string;meeting_code:string;status:MeetingStatus;summary:any;resolution:any[];actual:any[];variance:any;portfolio_before:any;portfolio_after:any;macro:any;learning:any;created_at:string;updated_at:string};
-
-const memory:MemoryRow[]=(globalThis as any).__sentinelCommitteeMemory??((globalThis as any).__sentinelCommitteeMemory=[]);
-const now=()=>new Date().toISOString();
-const num=(v:any)=>{const n=Number(v);return Number.isFinite(n)?n:0};
-const code=()=>`IC-${new Date().toISOString().slice(0,10).replaceAll("-","")}-${String(Date.now()).slice(-6)}`;
-
-function reconcile(resolution:any[],actual:any[]){
- const items=resolution.map((plan:any)=>{
-  const ticker=String(plan.ticker??"").toUpperCase();const action=String(plan.action??"").toUpperCase();
-  const matches=actual.filter((x:any)=>String(x.ticker??"").toUpperCase()===ticker&&String(x.action??"").toUpperCase()===action);
-  const planned=Math.abs(num(plan.amount));const executed=matches.reduce((s:number,x:any)=>s+Math.abs(num(x.amount)),0);
-  const varianceUsd=executed-planned;const variancePct=planned>0?varianceUsd/planned*100:executed===0?0:100;
-  const status=executed===0?"PARTIALLY_EXECUTED":Math.abs(variancePct)<=10?"EXECUTED_WITHIN_TOLERANCE":"MATERIAL_DEVIATION";
-  return{ticker,action,plannedUsd:planned,actualUsd:executed,varianceUsd,variancePct:Math.round(variancePct*10)/10,status};
- });
- const material=items.some(x=>x.status==="MATERIAL_DEVIATION");const partial=items.some(x=>x.status==="PARTIALLY_EXECUTED");
- return{items,status:material?"MATERIAL_DEVIATION":partial?"PARTIALLY_EXECUTED":"EXECUTED_WITHIN_TOLERANCE",tolerancePct:10,acceptActualAsBaseline:!material};
-}
-
-async function readRows(limit=20){
- const sb=getSupabase();
- if(sb){const{data,error}=await sb.from("committee_meetings").select("*").order("created_at",{ascending:false}).limit(limit);if(!error)return data??[];}
- return [...memory].sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,limit);
-}
-
-export async function GET(req:NextRequest){
- const limit=Math.min(50,Math.max(1,Number(req.nextUrl.searchParams.get("limit")??20)));
- const rows=await readRows(limit);
- return NextResponse.json({meetings:rows,latest:rows[0]??null,retention:{workingDays:30,candidateDays:60,macroDays:90,permanent:["final resolution","active thesis","material deviation","learning aggregate"]}});
-}
-
-export async function POST(req:NextRequest){
- const body=await req.json().catch(()=>({}));const operation=String(body.operation??"create");const admin=getSupabaseAdmin();
- if(operation==="reconcile"){
-  const id=String(body.id??"");if(!id)return NextResponse.json({error:"meeting id required"},{status:400});
-  const rows=await readRows(50);const row=rows.find((x:any)=>String(x.id)===id);if(!row)return NextResponse.json({error:"meeting not found"},{status:404});
-  const actual=Array.isArray(body.actual)?body.actual:[];const variance=reconcile(Array.isArray(row.resolution)?row.resolution:[],actual);const patch={actual,variance,status:variance.status,portfolio_after:body.portfolioAfter??row.portfolio_after??{},updated_at:now()};
-  if(admin){const{data,error}=await admin.from("committee_meetings").update(patch).eq("id",id).select().single();if(error)return NextResponse.json({error:error.message},{status:500});return NextResponse.json({meeting:data});}
-  const index=memory.findIndex(x=>x.id===id);if(index>=0)memory[index]={...memory[index],...patch} as MemoryRow;return NextResponse.json({meeting:memory[index]});
- }
- const created=now();const row={meeting_code:String(body.meetingCode??code()),status:String(body.status??"APPROVED"),summary:body.summary??{},resolution:Array.isArray(body.resolution)?body.resolution:[],actual:[],variance:{status:"PENDING",tolerancePct:10},portfolio_before:body.portfolioBefore??{},portfolio_after:{},macro:body.macro??{},learning:body.learning??{},created_at:created,updated_at:created};
- if(admin){const{data,error}=await admin.from("committee_meetings").insert(row).select().single();if(error)return NextResponse.json({error:error.message,migrationRequired:/committee_meetings/i.test(error.message)},{status:500});return NextResponse.json({meeting:data});}
- const local={id:crypto.randomUUID(),...row} as MemoryRow;memory.push(local);return NextResponse.json({meeting:local,backend:"memory"});
-}
-
-export async function DELETE(){
- const cutoff=Date.now()-30*86400000;const before=memory.length;for(let i=memory.length-1;i>=0;i--){const x=memory[i];const permanent=["MATERIAL_DEVIATION","SUPERSEDED"].includes(x.status)||Boolean(x.learning&&Object.keys(x.learning).length);if(!permanent&&new Date(x.updated_at).getTime()<cutoff)memory.splice(i,1);}
- return NextResponse.json({ok:true,deleted:before-memory.length,policy:"Closed working detail older than 30 days is removed; compact resolutions, thesis changes, material deviations and learning remain."});
-}
+import {NextRequest,NextResponse} from"next/server";
+import{getSupabase,getSupabaseAdmin}from"@/lib/supabase";
+export const runtime="nodejs";export const dynamic="force-dynamic";
+type Row={id:string;meeting_code:string;status:string;summary:any;resolution:any[];actual:any[];variance:any;portfolio_before:any;portfolio_after:any;macro:any;learning:any;created_at:string;updated_at:string;backend?:string};
+const mem:Row[]=(globalThis as any).__sentinelCommitteeMemory??((globalThis as any).__sentinelCommitteeMemory=[]),now=()=>new Date().toISOString(),n=(v:any)=>Number.isFinite(Number(v))?Number(v):0,meetingCode=()=>`IC-${new Date().toISOString().slice(0,10).replaceAll("-","")}-${String(Date.now()).slice(-6)}`;
+function reconcile(plan:any[],actual:any[]){const items=plan.map(p=>{const ticker=String(p.ticker??"").toUpperCase(),action=String(p.action??"").toUpperCase(),planned=Math.abs(n(p.amount)),done=actual.filter(x=>String(x.ticker??"").toUpperCase()===ticker&&String(x.action??"").toUpperCase()===action).reduce((s,x)=>s+Math.abs(n(x.amount)),0),pct=planned?(done-planned)/planned*100:0,status=done===0?"PARTIALLY_EXECUTED":Math.abs(pct)<=10?"EXECUTED_WITHIN_TOLERANCE":"MATERIAL_DEVIATION";return{ticker,action,plannedUsd:planned,actualUsd:done,varianceUsd:done-planned,variancePct:Math.round(pct*10)/10,status}});const material=items.some(x=>x.status==="MATERIAL_DEVIATION"),partial=items.some(x=>x.status==="PARTIALLY_EXECUTED");return{items,status:material?"MATERIAL_DEVIATION":partial?"PARTIALLY_EXECUTED":"EXECUTED_WITHIN_TOLERANCE",tolerancePct:10,acceptActualAsBaseline:!material}}
+function mapLegacy(x:any):Row|null{const m=x?.audit?.committee_memory;if(!m)return null;return{id:x.id,...m,created_at:x.created_at,updated_at:m.updated_at??x.created_at,backend:"institutional_decisions"}}
+async function rows(limit=20){const sb=getSupabase();if(sb){const direct=await sb.from("committee_meetings").select("*").order("created_at",{ascending:false}).limit(limit);if(!direct.error)return direct.data??[];const legacy=await sb.from("institutional_decisions").select("id,audit,created_at").eq("ticker","__PORTFOLIO_MEMORY__").order("created_at",{ascending:false}).limit(limit);if(!legacy.error)return(legacy.data??[]).map(mapLegacy).filter(Boolean)}return[...mem].sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,limit)}
+export async function GET(req:NextRequest){const limit=Math.min(50,Math.max(1,n(req.nextUrl.searchParams.get("limit")??20)));const data=await rows(limit);return NextResponse.json({meetings:data,latest:data[0]??null,retention:{workingDays:30,candidateDays:60,macroDays:90,permanent:["resolution","active thesis","material deviation","learning"]}})}
+export async function POST(req:NextRequest){const body=await req.json().catch(()=>({})),admin=getSupabaseAdmin(),operation=String(body.operation??"create");if(operation==="reconcile"){const id=String(body.id??"");const current=(await rows(50)).find((x:any)=>String(x.id)===id);if(!current)return NextResponse.json({error:"meeting not found"},{status:404});const actual=Array.isArray(body.actual)?body.actual:[],variance=reconcile(current.resolution??[],actual),patch={actual,variance,status:variance.status,portfolio_after:body.portfolioAfter??current.portfolio_after??{},updated_at:now()};if(admin){const direct=await admin.from("committee_meetings").update(patch).eq("id",id).select().single();if(!direct.error)return NextResponse.json({meeting:direct.data});const legacyAudit={committee_memory:{...current,...patch}};const legacy=await admin.from("institutional_decisions").update({audit:legacyAudit,execution_status:variance.status}).eq("id",id).select("id,audit,created_at").single();if(!legacy.error)return NextResponse.json({meeting:mapLegacy(legacy.data)})}const i=mem.findIndex(x=>x.id===id);if(i>=0)mem[i]={...mem[i],...patch};return NextResponse.json({meeting:mem[i]})}
+ const created=now(),base={meeting_code:String(body.meetingCode??meetingCode()),status:String(body.status??"APPROVED"),summary:body.summary??{},resolution:Array.isArray(body.resolution)?body.resolution:[],actual:[],variance:{status:"PENDING",tolerancePct:10},portfolio_before:body.portfolioBefore??{},portfolio_after:{},macro:body.macro??{},learning:body.learning??{},created_at:created,updated_at:created};if(admin){const direct=await admin.from("committee_meetings").insert(base).select().single();if(!direct.error)return NextResponse.json({meeting:direct.data});const legacyRow={ticker:"__PORTFOLIO_MEMORY__",requested_action:"PORTFOLIO_REBALANCE",final_action:"MEETING_MEMORY",approved:true,conviction:0,confidence:0,proposed_weight_pct:0,funding_source:"MULTI_SOURCE",evidence:[],votes:[],issues:[],dissent:[],portfolio_context:base.portfolio_before,audit:{committee_memory:base},human_approved:true,human_approved_at:created,human_approved_by:"portfolio_owner",execution_status:"APPROVED"};const legacy=await admin.from("institutional_decisions").insert(legacyRow).select("id,audit,created_at").single();if(!legacy.error)return NextResponse.json({meeting:mapLegacy(legacy.data),backend:"institutional_decisions"});return NextResponse.json({error:legacy.error?.message??direct.error.message},{status:500})}const local={id:crypto.randomUUID(),...base} as Row;mem.push(local);return NextResponse.json({meeting:local,backend:"memory"})}
+export async function DELETE(){const cutoff=Date.now()-30*86400000,before=mem.length;for(let i=mem.length-1;i>=0;i--){const x=mem[i],keep=["MATERIAL_DEVIATION","SUPERSEDED"].includes(x.status)||Object.keys(x.learning??{}).length>0;if(!keep&&new Date(x.updated_at).getTime()<cutoff)mem.splice(i,1)}return NextResponse.json({ok:true,deleted:before-mem.length})}
