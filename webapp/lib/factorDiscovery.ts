@@ -13,6 +13,8 @@ export const ENGINE_UNIVERSES:Record<FactorMode,string[]>={
  multifactor:["MSFT","GOOGL","META","QCOM","AVGO","AMZN","MELI","V","MA","COST","UNH","LLY","REGN","VRTX","ISRG","JPM","GD","USB","CAT","GE","ETN","LMT","RTX","CVX","XOM","TXN","HD","WMT","PG","KO"]
 };
 
+export const FACTOR_UNIVERSE=Array.from(new Set(Object.values(ENGINE_UNIVERSES).flat()));
+
 const clamp=(x:number)=>Math.max(0,Math.min(100,Math.round(x)));
 const n=(v:any):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
 const growthPct=(rows:any[],field:string)=>{const a=n(rows?.[0]?.[field]),b=n(rows?.[1]?.[field]);return a!=null&&b!=null&&b!==0?(a/b-1)*100:null};
