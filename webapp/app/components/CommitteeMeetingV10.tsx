@@ -27,7 +27,16 @@ const pct=(v:number|null)=>v==null?"—":`${v>=0?"+":""}${v.toFixed(1)}%`;
 const text=(v:unknown,fallback:string)=>typeof v==="string"&&v.trim()?v:fallback;
 const supportive=(v:VoteLabel)=>v==="STRONG BUY"||v==="BUY";
 const voteClass=(v:VoteLabel)=>v.toLowerCase().replaceAll(" ","");
-async function readJson(path:string){const r=await fetch(path,{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j?.error??`${path} returned ${r.status}`);return j}
+async function readJson(path:string){
+ const r=await fetch(path,{cache:"no-store",credentials:"same-origin",headers:{Accept:"application/json"}});
+ const type=r.headers.get("content-type")??"";
+ const raw=await r.text();
+ if(!type.includes("application/json"))throw new Error(`${path} returned ${r.status} ${type||"non-JSON response"}`);
+ let j:any={};
+ try{j=raw?JSON.parse(raw):{}}catch{throw new Error(`${path} returned invalid JSON`)}
+ if(!r.ok)throw new Error(j?.error??`${path} returned ${r.status}`);
+ return j;
+}
 function normalizeAction(raw:string,isNew:boolean):Action{const a=raw.toUpperCase();if(a.includes("TRIM")||a.includes("REDUCE"))return"TRIM";if(a.includes("EXIT")||a.includes("SELL"))return"EXIT";if(a.includes("REJECT"))return"REJECT";if(a.includes("HOLD")||a.includes("WATCH"))return"HOLD";if(isNew||a.includes("OPEN")||a.includes("INITIATE"))return"OPEN NEW";return"ADD EXISTING"}
 function votesFor(p:Proposal,ctx:any):Ballot{
  const macro=String(ctx?.macroAction??"").toUpperCase();const reserve=finite(ctx?.deployable)??0;const weight=p.weight??0;const positive=p.action==="OPEN NEW"||p.action==="ADD EXISTING";
@@ -53,7 +62,20 @@ function votesFor(p:Proposal,ctx:any):Ballot{
 
 export default function CommitteeMeetingV10({lang}:{lang:AppLang}){
  const[data,setData]=useState<any>(null);const[loading,setLoading]=useState(true);const[error,setError]=useState<string|null>(null);const[selected,setSelected]=useState<Record<string,boolean>>({});
- useEffect(()=>{let active=true;Promise.all([readJson("/api/v10/cio"),readJson("/api/portfolio/opportunity-allocation"),readJson("/api/portfolio/optimizer"),readJson("/api/portfolio"),readJson("/api/portfolio/cash-buffer"),readJson("/api/committee-memory?limit=1")]).then(([cio,allocation,optimizer,portfolio,buffer,memory])=>{if(active)setData({cio,allocation,optimizer,portfolio,buffer,memory})}).catch(e=>{if(active)setError(e.message)}).finally(()=>{if(active)setLoading(false)});return()=>{active=false}},[]);
+ useEffect(()=>{let active=true;const endpoints=[
+  ["cio","/api/v10/cio"],
+  ["allocation","/api/portfolio/opportunity-allocation"],
+  ["optimizer","/api/portfolio/optimizer"],
+  ["portfolio","/api/portfolio"],
+  ["buffer","/api/portfolio/cash-buffer"],
+  ["memory","/api/committee-memory?limit=1"],
+ ] as const;
+ Promise.allSettled(endpoints.map(([,path])=>readJson(path))).then(results=>{
+  if(!active)return;
+  const next:Record<string,any>={};const failures:string[]=[];
+  results.forEach((result,index)=>{const [key,path]=endpoints[index];if(result.status==="fulfilled")next[key]=result.value;else{next[key]={};failures.push(`${path}: ${result.reason instanceof Error?result.reason.message:String(result.reason)}`)}});
+  setData(next);setError(failures.length?`Partial committee data (${failures.length}/${endpoints.length} unavailable): ${failures.join(" · ")}`:null);
+ }).finally(()=>{if(active)setLoading(false)});return()=>{active=false}},[]);
  const proposals=useMemo<Proposal[]>(()=>{
   if(!data)return[];const held=new Set((Array.isArray(data.portfolio?.holdings)?data.portfolio.holdings:[]).filter((h:any)=>!h.closed_at).map((h:any)=>String(h.ticker??"").toUpperCase()));const out:Proposal[]=[];
   for(const x of Array.isArray(data.allocation?.allocations)?data.allocation.allocations:[]){const ticker=String(x?.ticker??"").toUpperCase();const amount=finite(x?.approvedCapitalUsd)??0;if(!ticker||amount<=0)continue;const isNew=!held.has(ticker);out.push({ticker,action:isNew?"OPEN NEW":"ADD EXISTING",amount,weight:finite(x?.proposedWeightPct),currentPrice:finite(x?.currentPrice),targetPrice:finite(x?.targetPrice),expectedReturn:finite(x?.expectedReturnPct),conviction:finite(x?.conviction),reason:text(x?.thesis,"Research candidate cleared the allocation bridge."),isNew,source:"CURRENT"})}
