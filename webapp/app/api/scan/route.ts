@@ -4,28 +4,36 @@ import { runMomentumV62, MOMENTUM_V62_UNIVERSE } from "@/lib/momentumV62";
 import { runThematicPortfolio, type RebalanceCadence } from "@/lib/thematicPortfolio";
 import { universeForSector } from "@/lib/sectorUniverse";
 import { guardScanResult } from "@/lib/scanGuard";
+import { runFactorDiscovery, FACTOR_UNIVERSE, type FactorMode } from "@/lib/factorDiscovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+type Mode="momentum"|"dividend"|"thematic"|FactorMode;
+const FACTOR_MODES=new Set<Mode>(["growth","quality","value","institutional","ai","multifactor"]);
+
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get("tickers");
-  const rawMode = req.nextUrl.searchParams.get("mode");
-  const mode: "momentum"|"dividend"|"thematic" = rawMode === "dividend" ? "dividend" : rawMode === "thematic" ? "thematic" : "momentum";
+  const requested=String(req.nextUrl.searchParams.get("mode")??"momentum").toLowerCase() as Mode;
+  const mode:Mode=["momentum","dividend","thematic","growth","quality","value","institutional","ai","multifactor"].includes(requested)?requested:"momentum";
   const sector = req.nextUrl.searchParams.get("sector") || "All";
-  const topN = Math.min(10, Math.max(1, parseInt(req.nextUrl.searchParams.get("top") ?? "5", 10) || 5));
+  const topN = Math.min(20, Math.max(1, parseInt(req.nextUrl.searchParams.get("top") ?? "10", 10) || 10));
   try {
     const explicit = raw ? raw.split(",").map(t=>t.trim().toUpperCase()).filter(t=>/^[A-Z.\-]{1,10}$/.test(t)).slice(0,30) : null;
-    if (raw && !explicit?.length) {
-      return NextResponse.json({ error: "No valid US-listed ticker symbols were supplied." }, { status: 400 });
-    }
+    if (raw && !explicit?.length) return NextResponse.json({ error: "No valid US-listed ticker symbols were supplied." }, { status: 400 });
 
     if (mode === "thematic") {
       const holdings = Math.min(10, Math.max(5, parseInt(req.nextUrl.searchParams.get("holdings") ?? "8", 10) || 8));
       const cadence: RebalanceCadence = req.nextUrl.searchParams.get("cadence") === "quarterly" ? "quarterly" : "monthly";
       const rawResult = await runThematicPortfolio(holdings, cadence);
       return NextResponse.json(guardScanResult("thematic", rawResult as any).result);
+    }
+
+    if (FACTOR_MODES.has(mode)) {
+      const sectorUniverse=sector==="All"?[]:universeForSector(sector);
+      const universe=explicit?.length?explicit:sectorUniverse.length?sectorUniverse:FACTOR_UNIVERSE;
+      return NextResponse.json(await runFactorDiscovery(mode as FactorMode,universe,topN));
     }
 
     if (mode === "dividend") {
