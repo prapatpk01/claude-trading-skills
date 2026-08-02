@@ -1,3 +1,4 @@
+// Production redeploy trigger: 2026-08-03
 import {NextRequest,NextResponse} from "next/server";
 import {runFactorDiscovery,ENGINE_UNIVERSES,type FactorMode} from "@/lib/factorDiscovery";
 import {universeForSector} from "@/lib/sectorUniverse";
