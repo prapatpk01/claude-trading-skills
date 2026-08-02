@@ -16,6 +16,15 @@ async function readJson(origin: string, path: string): Promise<{ ok: boolean; st
   }
 }
 
+function macroRegimeLabel(data: Json): string {
+  const regime = data?.regime;
+  if (typeof regime === "string") return regime;
+  if (regime && typeof regime === "object") {
+    return String(regime.label ?? regime.classification ?? regime.regime ?? "UNKNOWN");
+  }
+  return String(data?.current?.regime ?? "UNKNOWN");
+}
+
 export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
   const [macro, integrity, buffer, optimizer, allocation, system] = await Promise.all([
@@ -27,14 +36,25 @@ export async function GET(req: NextRequest) {
     readJson(origin, "/api/system/health"),
   ]);
 
+  const macroEvidencePct = Number(
+    macro.data?.evidenceCompletenessPct ?? macro.data?.evidenceCompleteness ?? 0,
+  );
+  const automaticExecution =
+    allocation.data?.policy?.automaticExecution ?? allocation.data?.automaticExecution;
+  const systemChecks = system.data?.checks ?? {};
+
   const controls = {
-    macroEvidence: macro.ok && Number(macro.data?.evidenceCompleteness ?? 0) >= 60,
+    macroEvidence: macro.ok && Number.isFinite(macroEvidencePct) && macroEvidencePct >= 60,
     portfolioIntegrity: integrity.ok && !["FAILED", "BLOCKED"].includes(String(integrity.data?.status ?? "")),
     verifiedNav: buffer.ok && buffer.data?.verified === true && Number.isFinite(Number(buffer.data?.totalNav)),
     liquidityPolicy: buffer.ok && buffer.data?.posture !== "UNVERIFIED",
     optimizerReady: optimizer.ok && optimizer.data?.status !== "BLOCKED",
-    allocationGoverned: allocation.ok && allocation.data?.automaticExecution !== true,
-    secureRuntime: system.ok && system.data?.database?.reachable === true,
+    allocationGoverned: allocation.ok && automaticExecution !== true,
+    secureRuntime:
+      system.ok &&
+      systemChecks.databaseReachable === true &&
+      systemChecks.serviceRoleConfigured === true &&
+      systemChecks.serverWritesProtected === true,
   };
 
   const passed = Object.values(controls).filter(Boolean).length;
@@ -49,8 +69,8 @@ export async function GET(req: NextRequest) {
   if (!controls.allocationGoverned) blockers.push("Capital allocation governance is unavailable.");
   if (!controls.secureRuntime) blockers.push("Secure database runtime is unavailable.");
 
-  const macroScore = Number(macro.data?.score ?? macro.data?.current?.score);
-  const regime = String(macro.data?.regime ?? macro.data?.current?.regime ?? "UNKNOWN");
+  const macroScore = Number(macro.data?.regime?.score ?? macro.data?.score ?? macro.data?.current?.score);
+  const regime = macroRegimeLabel(macro.data);
   const bufferPosture = String(buffer.data?.posture ?? "UNVERIFIED");
   const optimizerStatus = String(optimizer.data?.status ?? "BLOCKED");
   const approvedCandidates = Array.isArray(allocation.data?.allocations) ? allocation.data.allocations.length : 0;
