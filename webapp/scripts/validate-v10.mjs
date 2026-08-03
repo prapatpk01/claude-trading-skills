@@ -1,22 +1,23 @@
 import fs from "node:fs";
 
 const requiredFiles = [
-  "app/api/v10/cio/route.ts",
-  "app/components/AICioPanel.tsx",
+  "app/page.tsx",
+  "app/institutional-shell.css",
+  "app/components/InstitutionalShell.tsx",
+  "app/components/ExecutiveDashboard.tsx",
+  "app/components/CommandCenterV10.tsx",
   "app/components/EndToEndInvestmentCommittee.tsx",
-  "app/api/portfolio/rebalance-execution/route.ts",
-  "app/api/portfolio/integrity/route.ts",
-  "app/api/portfolio/cash-buffer/route.ts",
-  "app/api/portfolio/optimizer/route.ts",
-  "app/api/portfolio/opportunity-allocation/route.ts",
-  "app/api/system/health/route.ts",
+  "app/components/ResearchTabV2.tsx",
   "app/components/AlphaDiscoveryPlatform.tsx",
   "app/components/PortfolioTruthSummary.tsx",
   "app/components/HoldingsMarketMonitor.tsx",
   "app/components/PortfolioTransactionOverride.tsx",
   "app/components/HoldingTransactionForm.tsx",
   "app/components/PortfolioLedgerPanel.tsx",
+  "app/api/v10/cio/route.ts",
+  "app/api/portfolio/rebalance-execution/route.ts",
   "app/api/portfolio/transactions/route.ts",
+  "app/api/portfolio/integrity/route.ts",
 ];
 
 const failures = [];
@@ -34,20 +35,57 @@ function requireAll(file, fragments) {
 }
 
 const cio = read("app/api/v10/cio/route.ts");
-for (const contract of [
-  "automaticExecution: false",
-  "humanApprovalRequired: true",
-  "evidenceFirst: true",
-  "auditTrailRequired: true",
-]) {
+for (const contract of ["automaticExecution: false", "humanApprovalRequired: true", "evidenceFirst: true", "auditTrailRequired: true"]) {
   if (!cio.includes(contract)) failures.push(`AI CIO governance contract missing: ${contract}`);
 }
 
+requireAll("app/page.tsx", [
+  'data-sentinel-version="11.0"',
+  'data-architecture="workspace-separated"',
+  'data-source-of-truth="portfolio-ledger"',
+  'section === "home"',
+  'section === "command"',
+  'section === "portfolio"',
+  'section === "analyze"',
+  'section === "research"',
+  "ExecutiveDashboard",
+  "CommandCenterV10",
+  "EndToEndInvestmentCommittee",
+  "PortfolioTruthSummary",
+  "PortfolioTransactionOverride",
+  "HoldingsMarketMonitor",
+  "PortfolioLedgerPanel",
+  "ResearchTabV2",
+  "AlphaDiscoveryPlatform",
+  'data-workspace="cio-command-center"',
+  'data-workspace="portfolio-management"',
+  'data-workspace="stock-analysis"',
+  'data-workspace="research-lab"',
+]);
+
+requireAll("app/components/InstitutionalShell.tsx", [
+  '"home" | "command" | "portfolio" | "analyze" | "research"',
+  "CIO Command Center",
+  "Portfolio Management",
+  "Stock Analysis",
+  "Research Lab",
+  "ResearchWorkflow",
+]);
+
+requireAll("app/components/ExecutiveDashboard.tsx", [
+  "Total Portfolio Value",
+  "Unrealized P/L",
+  "Cash & Equivalents",
+  "Deployable Cash",
+  "Portfolio Health",
+  "Fund Operating Status",
+  "CIO Executive Brief",
+  "function Gauge",
+  "function WorkspaceCard",
+]);
+
 requireAll("app/components/EndToEndInvestmentCommittee.tsx", [
-  "INSTITUTIONAL AI FUND OPERATING SYSTEM",
-  "SINGLE MEETING STATE",
   "Run Full Fund Meeting",
-  "CIO EXECUTIVE VIEW",
   "type CandidateStatus",
   "type HoldingReview",
   "type MeetingState",
@@ -60,10 +98,6 @@ requireAll("app/components/EndToEndInvestmentCommittee.tsx", [
   "candidateMap",
   "holdingReviews",
   ".slice(0, 8)",
-  "1 · MACRO, REGIME & SENTIMENT",
-  "2 · PORTFOLIO REVIEW & CAPITAL RELEASE",
-  "3 · INVESTMENT STRATEGY, RESEARCH & CAPITAL ALLOCATION",
-  "4 · FINAL RESOLUTION, FUNDING & EXECUTION",
   '"APPROVED"',
   '"DEFERRED"',
   '"REJECTED"',
@@ -74,18 +108,6 @@ requireAll("app/components/EndToEndInvestmentCommittee.tsx", [
   "IN SGOV — NO SALE AUTHORIZED",
 ]);
 
-requireAll("app/api/portfolio/rebalance-execution/route.ts", [
-  "humanApproved",
-  "reserveTicker",
-  "packageId",
-]);
-
-requireAll("app/components/AlphaDiscoveryPlatform.tsx", [
-  "Thematic Portfolio",
-  "portfolioWeightPct",
-  "Build Thematic Portfolio",
-]);
-
 requireAll("app/components/HoldingTransactionForm.tsx", [
   'type Action = "buy" | "sell"',
   'fetch("/api/portfolio"',
@@ -94,41 +116,23 @@ requireAll("app/components/HoldingTransactionForm.tsx", [
   "Record sale",
 ]);
 
-requireAll("app/components/PortfolioTransactionOverride.tsx", [
-  "HoldingTransactionForm",
-  "Buy / Sell transaction override",
-]);
+requireAll("app/components/PortfolioTransactionOverride.tsx", ["HoldingTransactionForm", "Buy / Sell transaction override"]);
+requireAll("app/components/PortfolioLedgerPanel.tsx", ["/api/portfolio/transactions?limit=100", "Ledger & Portfolio Integrity", "Realized P/L"]);
+requireAll("app/api/portfolio/rebalance-execution/route.ts", ["humanApproved", "reserveTicker", "packageId"]);
 
-requireAll("app/components/PortfolioLedgerPanel.tsx", [
-  "/api/portfolio/transactions?limit=100",
-  "Ledger & Portfolio Integrity",
-  "Realized P/L",
+requireAll("app/institutional-shell.css", [
+  ".sentinel-v11",
+  ".dashboard-kpis",
+  ".dashboard-grid-primary",
+  ".workspace-launch-grid",
+  ".pro-gauge",
+  ".portfolio-operations-grid",
+  "@media(max-width:720px)",
 ]);
-
-const page = read("app/page.tsx");
-for (const marker of [
-  "EndToEndInvestmentCommittee",
-  "Institutional AI Investment Operating System",
-  'data-source-of-truth="single-fund-mandate-and-ledger"',
-  'data-governance="end-to-end-investment-committee"',
-  'data-sentinel-version="10.7"',
-  "refreshKey={portfolioRefresh}",
-  "PortfolioTruthSummary",
-  "HoldingsMarketMonitor",
-  "PortfolioTransactionOverride",
-  "PortfolioLedgerPanel",
-]) {
-  if (!page.includes(marker)) failures.push(`Application shell contract missing: ${marker}`);
-}
 
 if (failures.length) {
-  console.error(
-    "Sentinel v10.7 institutional Fund OS validation failed:\n" +
-      failures.map((failure) => `- ${failure}`).join("\n"),
-  );
+  console.error("Sentinel v11 workspace validation failed:\n" + failures.map((failure) => `- ${failure}`).join("\n"));
   process.exit(1);
 }
 
-console.log(
-  "Sentinel Investment OS v10.7 typed shortlist, full holding review, visible holdings operations, trade ledger and governed execution: PASS",
-);
+console.log("Sentinel Investment OS v11 workspace architecture, dark institutional UI, holdings operations and governed execution: PASS");
