@@ -104,7 +104,7 @@ export async function GET(req: NextRequest) {
     if (result.research) result.research = await sanitizeResearch(result.research);
     const gated = applyEvidenceGate(result);
     gated.underwriting = buildUnderwritingPack(gated, { engine, horizon });
-    gated.analysisVersion = "12.0-stock-underwriting";
+    gated.analysisVersion = "12.1-institutional-equity-research";
     return NextResponse.json(gated, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analysis failed" }, { status: 500 });
