@@ -12,6 +12,7 @@ import CommandCenterV10 from "./components/CommandCenterV10";
 import EndToEndInvestmentCommittee from "./components/EndToEndInvestmentCommittee";
 import ResearchWorkspaceV12 from "./components/ResearchWorkspaceV12";
 import StockAnalysisWorkspaceV12 from "./components/StockAnalysisWorkspaceV12";
+import StockAnalysisChartsPanelV12 from "./components/StockAnalysisChartsPanelV12";
 import HoldingsMarketMonitor from "./components/HoldingsMarketMonitor";
 import DividendCalendarPanel from "./components/DividendCalendarPanel";
 import PortfolioTransactionOverride from "./components/PortfolioTransactionOverride";
@@ -87,7 +88,7 @@ export default function Home() {
               </div>
             )}
 
-            {section === "analyze" && <StockAnalysisWorkspaceV12 lang={lang} />}
+            {section === "analyze" && <div className="workspace-stack" data-workspace="stock-analysis"><StockAnalysisWorkspaceV12 lang={lang} /><StockAnalysisChartsPanelV12 lang={lang} /></div>}
             {section === "research" && <div className="workspace-stack" data-workspace="research-lab"><ResearchWorkspaceV12 lang={lang} onNavigate={navigate} /></div>}
           </main>
         </div>
