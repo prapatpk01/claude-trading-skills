@@ -494,7 +494,7 @@ export async function POST(req: NextRequest) {
       }
       const spy = await dailyCandles("SPY", 300).catch(() => [] as Candle[]);
       const regime = spy.length ? assessRegime(spy) : null;
-      const rows = [];
+      const rows: any[] = [];
       for (const w of watch.slice(0, 20)) {
         try {
           const candles = await dailyCandles(w.ticker, 400);
