@@ -11,8 +11,7 @@ import OpportunityAllocationPanel from "./components/OpportunityAllocationPanel"
 import CommandCenterV10 from "./components/CommandCenterV10";
 import EndToEndInvestmentCommittee from "./components/EndToEndInvestmentCommittee";
 import ResearchWorkspaceV12 from "./components/ResearchWorkspaceV12";
-import StockAnalysisWorkspaceV12 from "./components/StockAnalysisWorkspaceV12";
-import StockAnalysisChartsPanelV12 from "./components/StockAnalysisChartsPanelV12";
+import StockAnalysisDashboardV12 from "./components/StockAnalysisDashboardV12";
 import HoldingsMarketMonitor from "./components/HoldingsMarketMonitor";
 import DividendCalendarPanel from "./components/DividendCalendarPanel";
 import PortfolioTransactionOverride from "./components/PortfolioTransactionOverride";
@@ -35,13 +34,13 @@ export default function Home() {
   const refreshPortfolio = () => setPortfolioRefresh((value) => value + 1);
 
   return (
-    <div className="sentinel-shell sentinel-v12" data-sentinel-version="12.0" data-architecture="domain-workspaces" data-source-of-truth="portfolio-ledger">
+    <div className="sentinel-shell sentinel-v12" data-sentinel-version="12.2" data-architecture="domain-workspaces" data-source-of-truth="portfolio-ledger">
       <header className="sentinel-topbar v11-topbar">
         <div className="sentinel-brand-lockup" aria-label="Sentinel Investment">
           <div className="sentinel-mark" aria-hidden="true">
             <svg viewBox="0 0 72 78" role="img"><defs><linearGradient id="sentinelWing" x1="8" y1="8" x2="65" y2="72" gradientUnits="userSpaceOnUse"><stop offset="0" stopColor="#f2f3ff"/><stop offset=".28" stopColor="#9fc7ff"/><stop offset=".58" stopColor="#317cff"/><stop offset=".82" stopColor="#8f5cff"/><stop offset="1" stopColor="#31d9f3"/></linearGradient></defs><path d="M36 4 63 17 55 27 36 18 17 27 9 17 36 4Z" fill="url(#sentinelWing)"/><path d="M12 25 34 35 34 47 20 41 27 52 34 55 34 73 22 64 8 42 12 25Z" fill="url(#sentinelWing)"/><path d="M60 25 38 35 38 47 52 41 45 52 38 55 38 73 50 64 64 42 60 25Z" fill="url(#sentinelWing)"/></svg>
           </div>
-          <div className="sentinel-wordmark"><strong>SENTINEL</strong><strong>INVESTMENT OS</strong><span>Institutional Fund Operating System v12</span></div>
+          <div className="sentinel-wordmark"><strong>SENTINEL</strong><strong>INVESTMENT OS</strong><span>Institutional Fund Operating System v12.2</span></div>
         </div>
         <div className="sentinel-control-cluster">
           <div className="sentinel-status"><span className="sentinel-status-dot"/>MARKET DATA ONLINE</div>
@@ -88,13 +87,13 @@ export default function Home() {
               </div>
             )}
 
-            {section === "analyze" && <div className="workspace-stack" data-workspace="stock-analysis"><StockAnalysisWorkspaceV12 lang={lang} /><StockAnalysisChartsPanelV12 lang={lang} /></div>}
+            {section === "analyze" && <StockAnalysisDashboardV12 lang={lang} />}
             {section === "research" && <div className="workspace-stack" data-workspace="research-lab"><ResearchWorkspaceV12 lang={lang} onNavigate={navigate} /></div>}
           </main>
         </div>
       </div>
 
-      <footer className="footer-note v11-footer">Sentinel Investment OS v12 · Research → Stock Analysis → CIO Committee → Portfolio Execution · Human approval remains mandatory.</footer>
+      <footer className="footer-note v11-footer">Sentinel Investment OS v12.2 · Research → Stock Analysis → CIO Committee → Portfolio Execution · Human approval remains mandatory.</footer>
     </div>
   );
 }
