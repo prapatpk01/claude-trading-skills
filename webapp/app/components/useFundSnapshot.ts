@@ -13,6 +13,8 @@ export type FundHolding = {
   weightPct: number;
 };
 
+type PreliminaryHolding = Omit<FundHolding, "weightPct">;
+
 export type FundSnapshot = {
   loading: boolean;
   error: string | null;
@@ -94,7 +96,7 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
   return useMemo(() => {
     const sourceHoldings = (Array.isArray(raw?.portfolio?.holdings) ? raw.portfolio.holdings : []).filter((row: any) => !row?.closed_at);
     const marketItems = raw?.market?.items ?? {};
-    const preliminary = sourceHoldings.map((row: any) => {
+    const preliminary: PreliminaryHolding[] = sourceHoldings.map((row: any): PreliminaryHolding => {
       const ticker = String(row?.ticker ?? "").toUpperCase();
       const shares = Math.max(0, finite(row?.shares) ?? 0);
       const avgCost = Math.max(0, finite(row?.avg_cost) ?? 0);
@@ -102,13 +104,13 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
       const price = marketPrice != null && marketPrice > 0 ? marketPrice : avgCost;
       return { id: row?.id, ticker, shares, avgCost, price, marketValue: shares * price, costValue: shares * avgCost };
     });
-    const calculatedSecurities = preliminary.reduce((sum, row) => sum + row.marketValue, 0);
-    const costBasis = preliminary.reduce((sum, row) => sum + row.costValue, 0);
+    const calculatedSecurities = preliminary.reduce((sum: number, row: PreliminaryHolding) => sum + row.marketValue, 0);
+    const costBasis = preliminary.reduce((sum: number, row: PreliminaryHolding) => sum + row.costValue, 0);
     const verifiedNav = finite(raw?.buffer?.totalNav);
     const cashBalance = finite(raw?.buffer?.cashBalance) ?? 0;
     const securitiesValue = finite(raw?.buffer?.securitiesValue) ?? calculatedSecurities;
     const totalNav = verifiedNav ?? securitiesValue + cashBalance;
-    const holdings: FundHolding[] = preliminary.map((row) => ({ ...row, weightPct: totalNav > 0 ? row.marketValue / totalNav * 100 : 0 }));
+    const holdings: FundHolding[] = preliminary.map((row: PreliminaryHolding): FundHolding => ({ ...row, weightPct: totalNav > 0 ? row.marketValue / totalNav * 100 : 0 }));
     const reserveMarketValue = finite(raw?.buffer?.reserveMarketValue) ?? 0;
     const cashAndEquivalents = cashBalance + reserveMarketValue;
     const targetCashPct = finite(raw?.buffer?.targetPct) ?? 15;
@@ -123,7 +125,7 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
     const ytdReturnPct = finite(raw?.analytics?.performance?.changePct);
     const benchmarkYtdPct = finite(raw?.analytics?.performance?.benchmarkChangePct);
     const riskScore = clamp(finite(raw?.cio?.readinessPct) ?? (100 - Math.abs(50 - macroScore) * .55));
-    const concentration = holdings.reduce((max, holding) => Math.max(max, holding.weightPct), 0);
+    const concentration = holdings.reduce((max: number, holding: FundHolding) => Math.max(max, holding.weightPct), 0);
     const diversificationScore = clamp(100 - Math.max(0, concentration - 10) * 2.4);
     const portfolioHealth = clamp(55 + diversificationScore * .22 + macroScore * .18 + Math.min(10, holdings.length * .45));
     const qualityScore = clamp(62 + diversificationScore * .18 + macroScore * .2);
