@@ -12,75 +12,21 @@ const requiredFiles = [
   "app/api/system/health/route.ts",
   "app/components/AlphaDiscoveryPlatform.tsx",
 ];
-
-const failures = [];
-const read = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-for (const file of requiredFiles) if (!fs.existsSync(file)) failures.push(`Missing ${file}`);
-
-function requireAll(file, fragments) {
-  const source = read(file);
-  for (const fragment of fragments) {
-    if (!source.includes(fragment)) failures.push(`${file} missing contract: ${fragment}`);
-  }
-}
-
-const cio = read("app/api/v10/cio/route.ts");
-for (const contract of [
-  "automaticExecution: false",
-  "humanApprovalRequired: true",
-  "evidenceFirst: true",
-  "auditTrailRequired: true",
-]) {
-  if (!cio.includes(contract)) failures.push(`AI CIO governance contract missing: ${contract}`);
-}
-
-requireAll("app/components/EndToEndInvestmentCommittee.tsx", [
-  "INSTITUTIONAL AI FUND OPERATING SYSTEM",
-  "SINGLE MEETING STATE",
-  "Run Full Fund Meeting",
-  "CIO EXECUTIVE VIEW",
-  "function Gauge",
-  "function DriverChart",
-  "function RiskPanel",
-  "function CapitalFlow",
-  "1 · MACRO, REGIME & SENTIMENT",
-  "2 · PORTFOLIO REVIEW & CAPITAL RELEASE",
-  "3 · INVESTMENT STRATEGY, RESEARCH & CAPITAL ALLOCATION",
-  "4 · FINAL RESOLUTION, FUNDING & EXECUTION",
-  "Select All Approved",
-  "Submit Rebalance Package",
-  "/api/portfolio/rebalance-execution",
-  "humanApproved:true",
-  "SGOV — NO SALE AUTHORIZED",
+const failures=[];
+const read=(file)=>fs.existsSync(file)?fs.readFileSync(file,"utf8"):"";
+for(const file of requiredFiles)if(!fs.existsSync(file))failures.push(`Missing ${file}`);
+function requireAll(file,fragments){const source=read(file);for(const fragment of fragments)if(!source.includes(fragment))failures.push(`${file} missing contract: ${fragment}`)}
+const cio=read("app/api/v10/cio/route.ts");
+for(const contract of ["automaticExecution: false","humanApprovalRequired: true","evidenceFirst: true","auditTrailRequired: true"])if(!cio.includes(contract))failures.push(`AI CIO governance contract missing: ${contract}`);
+requireAll("app/components/EndToEndInvestmentCommittee.tsx",[
+  "INSTITUTIONAL AI FUND OPERATING SYSTEM","SINGLE MEETING STATE","Run Full Fund Meeting","CIO EXECUTIVE VIEW",
+  "function Gauge","function DriverChart","function RiskPanel","function CapitalFlow","function HoldingTable","function CandidateRanking",
+  "1 · MACRO, REGIME & SENTIMENT","2 · PORTFOLIO, VALUATION, RISK & LIQUIDITY REVIEW","3 · INVESTMENT STRATEGY, RESEARCH & CAPITAL ALLOCATION","4 · FINAL RESOLUTION, FUNDING & EXECUTION",
+  "APPROVED","DEFERRED","REJECTED","Research funnel:","Select All Approved","Submit Rebalance Package","/api/portfolio/rebalance-execution","humanApproved:true","SGOV — NO SALE AUTHORIZED"
 ]);
-
-requireAll("app/api/portfolio/rebalance-execution/route.ts", [
-  "humanApproved",
-  "reserveTicker",
-  "packageId",
-]);
-
-requireAll("app/components/AlphaDiscoveryPlatform.tsx", [
-  "Thematic Portfolio",
-  "portfolioWeightPct",
-  "Build Thematic Portfolio",
-]);
-
-const page = read("app/page.tsx");
-for (const marker of [
-  "EndToEndInvestmentCommittee",
-  "Institutional AI Investment Operating System",
-  "data-source-of-truth=\"single-fund-mandate-and-ledger\"",
-  "data-governance=\"end-to-end-investment-committee\"",
-  "data-sentinel-version=\"10.7\"",
-  "refreshKey={portfolioRefresh}",
-]) {
-  if (!page.includes(marker)) failures.push(`Application shell contract missing: ${marker}`);
-}
-
-if (failures.length) {
-  console.error("Sentinel v10.7 institutional Fund OS validation failed:\n" + failures.map((x) => `- ${x}`).join("\n"));
-  process.exit(1);
-}
-
-console.log("Sentinel Investment OS v10.7 architecture, gauges, charts and governed meeting: PASS");
+requireAll("app/api/portfolio/rebalance-execution/route.ts",["humanApproved","reserveTicker","packageId"]);
+requireAll("app/components/AlphaDiscoveryPlatform.tsx",["Thematic Portfolio","portfolioWeightPct","Build Thematic Portfolio"]);
+const page=read("app/page.tsx");
+for(const marker of ["EndToEndInvestmentCommittee","Institutional AI Investment Operating System","data-source-of-truth=\"single-fund-mandate-and-ledger\"","data-governance=\"end-to-end-investment-committee\"","data-sentinel-version=\"10.7\"","refreshKey={portfolioRefresh}"])if(!page.includes(marker))failures.push(`Application shell contract missing: ${marker}`);
+if(failures.length){console.error("Sentinel v10.7 institutional Fund OS validation failed:\n"+failures.map(x=>`- ${x}`).join("\n"));process.exit(1)}
+console.log("Sentinel Investment OS v10.7 ranked shortlist, full holding desk review and governed execution: PASS");
