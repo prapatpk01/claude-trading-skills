@@ -16,7 +16,7 @@ import HoldingsMarketMonitor from "./components/HoldingsMarketMonitor";
 import DividendCalendarPanel from "./components/DividendCalendarPanel";
 import PortfolioTransactionOverride from "./components/PortfolioTransactionOverride";
 import ExecutiveDashboard from "./components/ExecutiveDashboard";
-import { InstitutionalPageHeader, InstitutionalSidebar, ResearchWorkflow, type InstitutionalSection } from "./components/InstitutionalShell";
+import { InstitutionalPageHeader, InstitutionalSidebar, InstitutionalWorkspaceTabs, ResearchWorkflow, type InstitutionalSection } from "./components/InstitutionalShell";
 import "./institutional-shell.css";
 import "./sentinel-v8-ui.css";
 
@@ -26,7 +26,10 @@ export default function Home() {
   const [section, setSection] = useState<InstitutionalSection>("home");
   const [lang, setLang] = useState<AppLang>("en");
   const [portfolioRefresh, setPortfolioRefresh] = useState(0);
-  const navigate = (id: string) => setSection(id as InstitutionalSection);
+  const navigate = (id: string) => {
+    setSection(id as InstitutionalSection);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const refreshPortfolio = () => setPortfolioRefresh((value) => value + 1);
 
   return (
@@ -43,6 +46,8 @@ export default function Home() {
           <button className="btn ghost sm sentinel-lang-btn" type="button" onClick={() => setLang(lang === "en" ? "th" : "en")}>{lang === "en" ? "🇹🇭 ไทย" : "EN"}</button>
         </div>
       </header>
+
+      <InstitutionalWorkspaceTabs active={section} onChange={navigate} lang={lang} />
 
       <div className="institutional-layout v11-layout">
         <InstitutionalSidebar active={section} onChange={navigate} lang={lang} />
@@ -63,7 +68,7 @@ export default function Home() {
               <div className="workspace-stack" data-workspace="portfolio-management">
                 <PortfolioTruthSummary lang={lang} refreshKey={portfolioRefresh} />
                 <PortfolioTransactionOverride lang={lang} onSaved={refreshPortfolio} />
-                <HoldingsMarketMonitor key={`market-${portfolioRefresh}`} />
+                <HoldingsMarketMonitor key={`market-${portfolioRefresh}`} onUpdated={refreshPortfolio} />
                 <PortfolioLedgerPanel lang={lang} refreshKey={portfolioRefresh} />
                 <DividendCalendarPanel lang={lang} />
                 <section className="portfolio-operations-grid">
@@ -81,24 +86,13 @@ export default function Home() {
               </div>
             )}
 
-            {section === "analyze" && (
-              <div className="workspace-stack" data-workspace="stock-analysis">
-                <ResearchTabV2 lang={lang} />
-              </div>
-            )}
-
-            {section === "research" && (
-              <div className="workspace-stack" data-workspace="research-lab">
-                <AlphaDiscoveryPlatform lang={lang} />
-              </div>
-            )}
+            {section === "analyze" && <div className="workspace-stack" data-workspace="stock-analysis"><ResearchTabV2 lang={lang} /></div>}
+            {section === "research" && <div className="workspace-stack" data-workspace="research-lab"><AlphaDiscoveryPlatform lang={lang} /></div>}
           </main>
         </div>
       </div>
 
-      <footer className="footer-note v11-footer">
-        Sentinel Investment OS v11 · Research → Stock Analysis → CIO Committee → Portfolio Execution · Human approval remains mandatory.
-      </footer>
+      <footer className="footer-note v11-footer">Sentinel Investment OS v11 · Research → Stock Analysis → CIO Committee → Portfolio Execution · Human approval remains mandatory.</footer>
     </div>
   );
 }
