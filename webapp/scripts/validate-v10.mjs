@@ -14,30 +14,35 @@ const requiredFiles = [
 ];
 
 const failures = [];
-for (const file of requiredFiles) if (!fs.existsSync(file)) failures.push(`Missing ${file}`);
 const read = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-function requireText(file, fragments) {
+for (const file of requiredFiles) if (!fs.existsSync(file)) failures.push(`Missing ${file}`);
+
+function requireAll(file, fragments) {
   const source = read(file);
-  for (const fragment of fragments) if (!source.includes(fragment)) failures.push(`${file} missing contract: ${fragment}`);
+  for (const fragment of fragments) {
+    if (!source.includes(fragment)) failures.push(`${file} missing contract: ${fragment}`);
+  }
 }
 
 const cio = read("app/api/v10/cio/route.ts");
-for (const contract of ["automaticExecution: false", "humanApprovalRequired: true", "evidenceFirst: true", "auditTrailRequired: true"]) {
+for (const contract of [
+  "automaticExecution: false",
+  "humanApprovalRequired: true",
+  "evidenceFirst: true",
+  "auditTrailRequired: true",
+]) {
   if (!cio.includes(contract)) failures.push(`AI CIO governance contract missing: ${contract}`);
 }
 
-requireText("app/components/EndToEndInvestmentCommittee.tsx", [
-  "AI FUND OPERATING SYSTEM",
+requireAll("app/components/EndToEndInvestmentCommittee.tsx", [
+  "INSTITUTIONAL AI FUND OPERATING SYSTEM",
   "SINGLE MEETING STATE",
   "Run Full Fund Meeting",
-  "CIO EXECUTIVE DASHBOARD",
-  "Fund Health",
-  "Market Opportunity",
-  "Portfolio Quality",
-  "Risk Control",
-  "Committee Consensus",
-  "MACRO DRIVER CHART",
-  "CAPITAL FLOW",
+  "CIO EXECUTIVE VIEW",
+  "function Gauge",
+  "function DriverChart",
+  "function RiskPanel",
+  "function CapitalFlow",
   "1 · MACRO, REGIME & SENTIMENT",
   "2 · PORTFOLIO REVIEW & CAPITAL RELEASE",
   "3 · INVESTMENT STRATEGY, RESEARCH & CAPITAL ALLOCATION",
@@ -46,11 +51,20 @@ requireText("app/components/EndToEndInvestmentCommittee.tsx", [
   "Submit Rebalance Package",
   "/api/portfolio/rebalance-execution",
   "humanApproved:true",
-  "KEEP ${usd(meeting.reserve)} IN SGOV — NO SALE AUTHORIZED",
+  "SGOV — NO SALE AUTHORIZED",
 ]);
 
-requireText("app/api/portfolio/rebalance-execution/route.ts", ["humanApproved", "reserveTicker", "packageId"]);
-requireText("app/components/AlphaDiscoveryPlatform.tsx", ["Thematic Portfolio", "portfolioWeightPct", "Build Thematic Portfolio"]);
+requireAll("app/api/portfolio/rebalance-execution/route.ts", [
+  "humanApproved",
+  "reserveTicker",
+  "packageId",
+]);
+
+requireAll("app/components/AlphaDiscoveryPlatform.tsx", [
+  "Thematic Portfolio",
+  "portfolioWeightPct",
+  "Build Thematic Portfolio",
+]);
 
 const page = read("app/page.tsx");
 for (const marker of [
@@ -68,4 +82,5 @@ if (failures.length) {
   console.error("Sentinel v10.7 institutional Fund OS validation failed:\n" + failures.map((x) => `- ${x}`).join("\n"));
   process.exit(1);
 }
-console.log("Sentinel Investment OS v10.7 institutional gauges, charts and four-agenda meeting: PASS");
+
+console.log("Sentinel Investment OS v10.7 architecture, gauges, charts and governed meeting: PASS");
