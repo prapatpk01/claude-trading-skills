@@ -1,50 +1,37 @@
 "use client";
 
-import {useEffect,useState} from "react";
-import {createPortal} from "react-dom";
 import HoldingTransactionForm from "./HoldingTransactionForm";
 
-type Props={onSaved:()=>void;lang?:"en"|"th"};
+type Props = { onSaved: () => void; lang?: "en" | "th" };
 
-export default function PortfolioTransactionOverride({onSaved,lang="en"}:Props){
- const[target,setTarget]=useState<HTMLElement|null>(null);
- useEffect(()=>{
-  let mount:HTMLDivElement|null=null;
-  let legacy:HTMLFormElement|null=null;
-  const attach=()=>{
-   legacy=Array.from(document.querySelectorAll<HTMLFormElement>("form.searchbar")).find(form=>
-    Boolean(form.querySelector('input[placeholder="Shares"]'))&&Boolean(form.querySelector('input[placeholder="Avg cost"]'))
-   )??null;
-   if(!legacy)return false;
-   legacy.style.display="none";
-   legacy.setAttribute("aria-hidden","true");
-   mount=document.createElement("div");
-   mount.dataset.portfolioTransactionOverride="true";
-   legacy.parentElement?.insertBefore(mount,legacy);
-   setTarget(mount);
-   return true;
-  };
-  if(!attach()){
-   const observer=new MutationObserver(()=>{if(attach())observer.disconnect()});
-   observer.observe(document.body,{childList:true,subtree:true});
-   return()=>observer.disconnect();
-  }
-  return()=>{
-   if(legacy){legacy.style.display="";legacy.removeAttribute("aria-hidden")}
-   mount?.remove();
-  };
- },[]);
- if(!target)return null;
- return createPortal(
-  <section style={{marginTop:14,padding:"16px",border:"1px solid rgba(111,132,255,.22)",borderRadius:14,background:"rgba(8,16,34,.48)"}}>
-   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
-    <div>
-     <div className="eyebrow">{lang==="th"?"MANUAL PORTFOLIO ADJUSTMENT":"MANUAL PORTFOLIO ADJUSTMENT"}</div>
-     <h3 className="sub" style={{margin:"5px 0 4px"}}>{lang==="th"?"ปรับรายการซื้อหรือขายด้วยตนเอง":"Buy / Sell transaction override"}</h3>
-     <p className="muted" style={{margin:0,fontSize:12,maxWidth:620}}>{lang==="th"?"ใช้เมื่อรายการอยู่นอกมติคณะกรรมการ หรือต้องแก้ไข Ticket ด้วยตนเอง รายการทั้งหมดจะเข้าสู่ Portfolio และ Ledger ชุดเดียวกัน":"Use for transactions outside a committee resolution or for manual ticket correction. Buy and sell entries flow into the same portfolio and ledger."}</p>
-    </div>
-    <HoldingTransactionForm onSaved={onSaved}/>
-   </div>
-  </section>,target
- );
+export default function PortfolioTransactionOverride({ onSaved, lang = "en" }: Props) {
+  return (
+    <section
+      className="card"
+      data-portfolio-operations="buy-sell-entry"
+      style={{ marginTop: 18, borderTop: "2px solid rgba(91,140,255,.75)" }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0, flex: "1 1 360px" }}>
+          <div className="eyebrow">PORTFOLIO OPERATIONS</div>
+          <h2 className="section" style={{ margin: "6px 0 5px" }}>
+            {lang === "th" ? "บันทึกซื้อ / ขายหุ้น" : "Record Buy / Sell Transaction"}
+          </h2>
+          <p className="muted" style={{ margin: 0, fontSize: 12, maxWidth: 720 }}>
+            {lang === "th"
+              ? "บันทึกรายการซื้อหรือขายจริงลง Holdings และ Trade Ledger เดียวกัน หลังบันทึกระบบจะรีเฟรชพอร์ต ต้นทุนเฉลี่ย และประวัติธุรกรรมอัตโนมัติ"
+              : "Record an actual buy or sell into the same Holdings and Trade Ledger. Saving refreshes positions, average cost and transaction history automatically."}
+          </p>
+        </div>
+        <div style={{ flex: "0 0 auto" }}>
+          <HoldingTransactionForm onSaved={onSaved} />
+        </div>
+      </div>
+      <div className="grid cols-3" style={{ marginTop: 14 }}>
+        <div className="metric"><span>BUY</span><strong>{lang === "th" ? "เพิ่มหรือถัวเฉลี่ยสถานะ" : "Open or add to a holding"}</strong></div>
+        <div className="metric"><span>SELL</span><strong>{lang === "th" ? "ลดหรือปิดสถานะ" : "Trim or close a holding"}</strong></div>
+        <div className="metric"><span>LEDGER</span><strong>{lang === "th" ? "บันทึกทุกธุรกรรม" : "Every trade is auditable"}</strong></div>
+      </div>
+    </section>
+  );
 }
