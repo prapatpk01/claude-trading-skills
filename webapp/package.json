@@ -9,11 +9,12 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "validate:institutional": "node scripts/validate-v7.mjs && node scripts/validate-v8.mjs && node scripts/validate-v9.mjs && node scripts/validate-v10.mjs && node scripts/validate-analyze-v12.mjs",
+    "validate:institutional": "node scripts/validate-v7.mjs && node scripts/validate-v8.mjs && node scripts/validate-v9.mjs && node scripts/validate-v10.mjs && node scripts/validate-analyze-v12.mjs && node scripts/validate-holdings-v12.mjs",
     "validate:v8": "node scripts/validate-v8.mjs",
     "validate:v9": "node scripts/validate-v9.mjs",
     "validate:v10": "node scripts/validate-v10.mjs",
     "validate:analyze": "node scripts/validate-analyze-v12.mjs",
+    "validate:holdings": "node scripts/validate-holdings-v12.mjs",
     "audit:safety": "node scripts/audit-runtime-safety.mjs",
     "quality": "npm run validate:institutional && npm run audit:safety && npm run typecheck && npm run build"
   },
