@@ -3,40 +3,94 @@ import fs from "node:fs";
 const requiredFiles = [
   "app/api/v10/cio/route.ts",
   "app/components/AICioPanel.tsx",
-  "app/components/InvestmentCommitteeCycle.tsx",
-  "app/components/InvestmentCommitteeCycle.module.css",
-  "app/api/macro/intelligence/route.ts",
+  "app/components/EndToEndInvestmentCommittee.tsx",
+  "app/components/CommitteeMeetingV10.tsx",
+  "app/api/portfolio/rebalance-execution/route.ts",
   "app/api/portfolio/integrity/route.ts",
   "app/api/portfolio/cash-buffer/route.ts",
   "app/api/portfolio/optimizer/route.ts",
   "app/api/portfolio/opportunity-allocation/route.ts",
   "app/api/system/health/route.ts",
+  "app/components/AlphaDiscoveryPlatform.tsx",
 ];
 
 const failures = [];
-for (const file of requiredFiles) if (!fs.existsSync(file)) failures.push(`Missing ${file}`);
-
-const cio = fs.existsSync("app/api/v10/cio/route.ts") ? fs.readFileSync("app/api/v10/cio/route.ts", "utf8") : "";
-for (const contract of ["automaticExecution: false","humanApprovalRequired: true","evidenceFirst: true","auditTrailRequired: true"]) {
-  if (!cio.includes(contract)) failures.push(`AI CIO contract missing: ${contract}`);
+for (const file of requiredFiles) {
+  if (!fs.existsSync(file)) failures.push(`Missing ${file}`);
 }
 
-const page = fs.existsSync("app/page.tsx") ? fs.readFileSync("app/page.tsx", "utf8") : "";
-const meeting = fs.existsSync("app/components/InvestmentCommitteeCycle.tsx") ? fs.readFileSync("app/components/InvestmentCommitteeCycle.tsx", "utf8") : "";
-if (!page.includes("AICioPanel")) failures.push("AI CIO panel is not connected to the command center");
-if (!page.includes("InvestmentCommitteeCycle")) failures.push("Investment Committee workflow is not connected to the portfolio workspace");
-if (!page.includes("v10.3")) failures.push("v10.3 branding is missing");
-if (!page.includes("data-source-of-truth=\"ledger\"")) failures.push("Ledger single-source marker is missing");
-if (!page.includes("Institutional AI Investment Operating System")) failures.push("Institutional operating-system branding is missing");
-for (const marker of ["PENDING_HUMAN","Approve & record transaction","/api/portfolio","sentinel:portfolio-updated","Create trade tickets"]) {
-  if (!meeting.includes(marker)) failures.push(`Committee execution contract missing: ${marker}`);
+function read(file) {
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
 }
-if (!page.includes("onExecuted={refreshPortfolio}")) failures.push("Portfolio refresh is not connected to committee execution");
-if (!page.includes("refreshKey={portfolioRefresh}")) failures.push("Ledger and portfolio truth refresh contract is missing");
+
+function requireText(file, fragments) {
+  const source = read(file);
+  for (const fragment of fragments) {
+    if (!source.includes(fragment)) failures.push(`${file} missing contract: ${fragment}`);
+  }
+}
+
+const cio = read("app/api/v10/cio/route.ts");
+for (const contract of [
+  "automaticExecution: false",
+  "humanApprovalRequired: true",
+  "evidenceFirst: true",
+  "auditTrailRequired: true",
+]) {
+  if (!cio.includes(contract)) failures.push(`AI CIO governance contract missing: ${contract}`);
+}
+
+requireText("app/components/EndToEndInvestmentCommittee.tsx", [
+  "END-TO-END INVESTMENT COMMITTEE",
+  "Run Full Fund Meeting",
+  "Macro & Regime",
+  "Cash / Risk Budget",
+  "Holdings Review",
+  "Theme / Stock Search",
+  "ADD / TRIM / EXIT",
+  "Funding Plan",
+  "Committee Vote",
+  "Execution & Minutes",
+  "CommitteeMeetingV10",
+]);
+
+requireText("app/components/CommitteeMeetingV10.tsx", [
+  "OPEN NEW",
+  "ADD EXISTING",
+  "TRIM",
+  "EXIT",
+  "Select All Approved",
+  "Submit Rebalance Package",
+  "/api/portfolio/rebalance-execution",
+  "humanApproved:true",
+  "Promise.allSettled",
+]);
+
+requireText("app/api/portfolio/rebalance-execution/route.ts", [
+  "humanApproved",
+  "reserveTicker",
+  "packageId",
+]);
+
+requireText("app/components/AlphaDiscoveryPlatform.tsx", [
+  "Thematic Portfolio",
+  "portfolioWeightPct",
+  "Build Thematic Portfolio",
+]);
+
+const page = read("app/page.tsx");
+for (const marker of [
+  "EndToEndInvestmentCommittee",
+  "Institutional AI Investment Operating System",
+  "data-source-of-truth=\"unified-meeting-state-and-ledger\"",
+  "refreshKey={portfolioRefresh}",
+]) {
+  if (!page.includes(marker)) failures.push(`Application shell contract missing: ${marker}`);
+}
 
 if (failures.length) {
-  console.error("Sentinel v10.3 validation failed:\n" + failures.map((x) => `- ${x}`).join("\n"));
+  console.error("Sentinel v10.7 end-to-end committee validation failed:\n" + failures.map((x) => `- ${x}`).join("\n"));
   process.exit(1);
 }
 
-console.log("Sentinel Investment OS v10.3 committee-to-ledger contracts: PASS");
+console.log("Sentinel Investment OS v10.7 end-to-end committee contracts: PASS");
