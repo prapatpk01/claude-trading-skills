@@ -88,7 +88,7 @@ export default function Home() {
             )}
 
             {section === "analyze" && <div className="workspace-stack" data-workspace="stock-analysis"><ResearchTabV2 lang={lang} /></div>}
-            {section === "research" && <div className="workspace-stack" data-workspace="research-lab"><ResearchWorkspaceV12 lang={lang} /></div>}
+            {section === "research" && <div className="workspace-stack" data-workspace="research-lab"><ResearchWorkspaceV12 lang={lang} onNavigate={navigate} /></div>}
           </main>
         </div>
       </div>
