@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/analyze";
 import { sanitizeResearch } from "@/lib/sanitizeResearch";
+import { buildUnderwritingPack } from "@/lib/stockUnderwriting";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,9 +59,6 @@ function applyEvidenceGate(result: any) {
       hardBlocks,
       sizeMultiplier: 0,
     };
-
-    // Do not expose synthetic price targets as investment-ready outputs when
-    // the fundamental evidence needed to support them is absent.
     result.targetPrice = null;
     result.upsidePct = null;
     result.expectedReturnPct = null;
@@ -88,6 +86,8 @@ function applyEvidenceGate(result: any) {
 
 export async function GET(req: NextRequest) {
   const ticker = req.nextUrl.searchParams.get("ticker")?.trim().toUpperCase();
+  const engine = req.nextUrl.searchParams.get("engine")?.trim().toLowerCase() || null;
+  const horizon = req.nextUrl.searchParams.get("horizon")?.trim() || null;
   if (!ticker || !/^[A-Z.\-]{1,10}$/.test(ticker)) {
     return NextResponse.json({ error: "Provide a valid ticker (?ticker=NVDA)" }, { status: 400 });
   }
@@ -102,7 +102,10 @@ export async function GET(req: NextRequest) {
     }
 
     if (result.research) result.research = await sanitizeResearch(result.research);
-    return NextResponse.json(applyEvidenceGate(result));
+    const gated = applyEvidenceGate(result);
+    gated.underwriting = buildUnderwritingPack(gated, { engine, horizon });
+    gated.analysisVersion = "12.0-stock-underwriting";
+    return NextResponse.json(gated, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analysis failed" }, { status: 500 });
   }
