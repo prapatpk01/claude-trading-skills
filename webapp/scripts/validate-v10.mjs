@@ -82,7 +82,9 @@ const page = read("app/page.tsx");
 for (const marker of [
   "EndToEndInvestmentCommittee",
   "Institutional AI Investment Operating System",
-  "data-source-of-truth=\"unified-meeting-state-and-ledger\"",
+  "data-source-of-truth=\"single-fund-mandate-and-ledger\"",
+  "data-governance=\"end-to-end-investment-committee\"",
+  "data-sentinel-version=\"10.7\"",
   "refreshKey={portfolioRefresh}",
 ]) {
   if (!page.includes(marker)) failures.push(`Application shell contract missing: ${marker}`);
