@@ -1,6 +1,14 @@
 import {buildAnalysis} from "./analyze";
 
 export type FactorMode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"multifactor";
+export type ResearchStatus="QUALIFIED"|"REJECTED"|"ANALYSIS_FAILED";
+
+export type ResearchCandidate={
+ ticker:string;name:string;sector:string;price:number|null;targetPrice:number|null;expectedReturnPct:number|null;
+ momentum:number;growth:number;quality:number;value:number;dividend:number;institutional:number;ai:number;composite:number;
+ reasons:string[];metrics:Record<string,number|null>;thesis:string;dataQuality:string;
+ engines?:string[];consensusCount?:number;status:ResearchStatus;passed:boolean;gateReasons:string[];failedGates:string[];
+};
 
 export const ENGINE_UNIVERSES:Record<FactorMode,string[]>={
  momentum:["PLTR","APP","HOOD","CRWV","NVDA","AVGO","QCOM","ANET","ARM","MU","AMD","META","NFLX","SHOP","MELI","UBER","CRWD","PANW","GE","ETN","CAT","LMT","RTX","VRT"],
@@ -21,7 +29,7 @@ const growthPct=(rows:any[],field:string)=>{const a=n(rows?.[0]?.[field]),b=n(ro
 const ratio=(a:number|null,b:number|null)=>a!=null&&b!=null&&b!==0?a/b:null;
 const positive=(v:number|null,threshold=0)=>v!=null&&v>threshold;
 
-function scoreOne(a:any){
+function scoreOne(a:any):Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">{
  const ov=a.data?.overview??{};const inc=a.data?.financials?.income??[];const cf=a.data?.financials?.cashflow??[];const bal=a.data?.financials?.balance??[];const tech=a.technicals??{};
  const revG=growthPct(inc,"totalRevenue");const epsG=growthPct(inc,"netIncome");const opG=growthPct(inc,"operatingIncome");const qGrowth=n(a.data?.quarters?.[0]?.revenueYoY);
  const margin=(n(ov.profitMargin)??ratio(n(inc?.[0]?.netIncome),n(inc?.[0]?.totalRevenue))??0)*100;
@@ -52,25 +60,41 @@ function scoreOne(a:any){
  return {ticker:a.ticker,name:ov.name??a.ticker,sector:ov.sector??"Unknown",price:n(a.data?.quote?.price),targetPrice:n(a.targetPrice),expectedReturnPct:n(a.expectedReturnPct),momentum,growth,quality,value,dividend,institutional,ai,composite,reasons,metrics:{revenueGrowthPct:revG??qGrowth,earningsGrowthPct:epsG,operatingMarginPct:opMargin,roePct:roe,freeCashFlow:fcf,forwardPE:pe,peg,pb,dividendYieldPct:yieldPct,payoutRatioPct:payout,rs30,volumeRatio:volRatio,upDownVolume:upDown},thesis:a.thesis?.find((x:any)=>x.label==="Base")?.narrative??"Institutional factor candidate.",dataQuality:a.committee?.confidence??"MEDIUM"};
 }
 
-function qualifies(mode:FactorMode,row:any){
- switch(mode){
-  case"momentum":return row.momentum>=62&&row.metrics.rs30>=1&&row.metrics.volumeRatio>=.9;
-  case"growth":return row.growth>=60&&(positive(row.metrics.revenueGrowthPct,8)||positive(row.metrics.earningsGrowthPct,10));
-  case"quality":return row.quality>=62&&row.metrics.roePct>=10&&positive(row.metrics.freeCashFlow);
-  case"value":return row.value>=58&&(row.expectedReturnPct??0)>=8;
-  case"dividend":return row.dividend>=55&&row.metrics.dividendYieldPct>=1.5&&row.metrics.payoutRatioPct<95;
-  case"institutional":return row.institutional>=62&&row.metrics.volumeRatio>=1&&row.metrics.upDownVolume>=1;
-  case"ai":return row.ai>=60;
-  case"multifactor":return row.composite>=62;
- }
+function gateReview(mode:FactorMode,row:Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">){
+ const checks:{label:string;pass:boolean}[]=[];
+ if(mode==="momentum")checks.push({label:"Momentum score ≥ 62",pass:row.momentum>=62},{label:"Relative strength ≥ 1.0",pass:(row.metrics.rs30??0)>=1},{label:"Volume ratio ≥ 0.9",pass:(row.metrics.volumeRatio??0)>=.9});
+ if(mode==="growth")checks.push({label:"Growth score ≥ 60",pass:row.growth>=60},{label:"Revenue > 8% or earnings > 10%",pass:positive(row.metrics.revenueGrowthPct,8)||positive(row.metrics.earningsGrowthPct,10)});
+ if(mode==="quality")checks.push({label:"Quality score ≥ 62",pass:row.quality>=62},{label:"ROE ≥ 10%",pass:(row.metrics.roePct??0)>=10},{label:"Positive free cash flow",pass:positive(row.metrics.freeCashFlow)});
+ if(mode==="value")checks.push({label:"Value score ≥ 58",pass:row.value>=58},{label:"Expected upside ≥ 8%",pass:(row.expectedReturnPct??-Infinity)>=8});
+ if(mode==="dividend")checks.push({label:"Dividend score ≥ 55",pass:row.dividend>=55},{label:"Yield ≥ 1.5%",pass:(row.metrics.dividendYieldPct??0)>=1.5},{label:"Payout ratio < 95%",pass:(row.metrics.payoutRatioPct??Infinity)<95},{label:"Positive free cash flow",pass:positive(row.metrics.freeCashFlow)});
+ if(mode==="institutional")checks.push({label:"Institutional proxy ≥ 62",pass:row.institutional>=62},{label:"Volume ratio ≥ 1.0",pass:(row.metrics.volumeRatio??0)>=1},{label:"Up/down volume ≥ 1.0",pass:(row.metrics.upDownVolume??0)>=1});
+ if(mode==="ai")checks.push({label:"AI / innovation score ≥ 60",pass:row.ai>=60});
+ if(mode==="multifactor")checks.push({label:"Composite score ≥ 62",pass:row.composite>=62});
+ const passed=checks.every(check=>check.pass);
+ return {passed,gateReasons:checks.filter(check=>check.pass).map(check=>check.label),failedGates:checks.filter(check=>!check.pass).map(check=>check.label)};
 }
 
 export async function runFactorDiscovery(mode:FactorMode,universe?:string[],topN=10){
- const sourceUniverse=(universe?.length?universe:ENGINE_UNIVERSES[mode]).slice(0,40);const rows:any[]=[];const warnings:string[]=[];
- for(const ticker of sourceUniverse){try{rows.push(scoreOne(await buildAnalysis(ticker)))}catch(e:any){warnings.push(`${ticker}: ${e?.message??"analysis failed"}`)}}
- const qualified=rows.filter(r=>qualifies(mode,r));const key=mode==="multifactor"?"composite":mode;qualified.sort((a,b)=>(b[key]??0)-(a[key]??0));
- const picks=qualified.slice(0,topN);const engineTags:Record<string,string[]>={};
- for(const row of rows){engineTags[row.ticker]=(["momentum","growth","quality","value","dividend","institutional","ai"] as FactorMode[]).filter(m=>qualifies(m,row));}
- const withConsensus=picks.map(row=>({...row,engines:engineTags[row.ticker]??[],consensusCount:(engineTags[row.ticker]??[]).length}));
- return {mode,version:"11.0-alpha-core",asOf:new Date().toISOString(),methodology:mode==="institutional"?"Accumulation proxy based on price, volume and relative strength; no ownership claim without filing evidence.":"Independent universe, filter and ranking model for this engine.",stats:{universe:sourceUniverse.length,analyzed:rows.length,qualified:qualified.length,returned:withConsensus.length},picks:withConsensus,rejected:rows.filter(r=>!qualifies(mode,r)).length,warnings};
+ const sourceUniverse=(universe?.length?universe:ENGINE_UNIVERSES[mode]).slice(0,40);const analyzed:ResearchCandidate[]=[];const warnings:string[]=[];
+ for(const ticker of sourceUniverse){
+  try{
+   const scored=scoreOne(await buildAnalysis(ticker));
+   const review=gateReview(mode,scored);
+   analyzed.push({...scored,...review,status:review.passed?"QUALIFIED":"REJECTED"});
+  }catch(e:any){warnings.push(`${ticker}: ${e?.message??"analysis failed"}`)}
+ }
+ const key=mode==="multifactor"?"composite":mode;
+ const qualified=analyzed.filter(row=>row.passed).sort((a,b)=>(Number((b as any)[key])||0)-(Number((a as any)[key])||0));
+ const engineTags:Record<string,string[]>={};
+ for(const row of analyzed){engineTags[row.ticker]=(["momentum","growth","quality","value","dividend","institutional","ai"] as FactorMode[]).filter(engine=>gateReview(engine,row).passed)}
+ const candidates=analyzed.map(row=>({...row,engines:engineTags[row.ticker]??[],consensusCount:(engineTags[row.ticker]??[]).length}));
+ const picks=qualified.slice(0,topN).map(row=>({...row,engines:engineTags[row.ticker]??[],consensusCount:(engineTags[row.ticker]??[]).length}));
+ const rejected=candidates.filter(row=>!row.passed).sort((a,b)=>(Number((b as any)[key])||0)-(Number((a as any)[key])||0));
+ return {
+  mode,version:"12.0-research-pipeline",asOf:new Date().toISOString(),
+  methodology:mode==="institutional"?"Accumulation proxy based on price, volume and relative strength; no ownership claim without filing evidence.":"Independent universe, evidence gates, ranking and documented rejection model for this engine.",
+  stats:{universe:sourceUniverse.length,analyzed:analyzed.length,qualified:qualified.length,returned:picks.length,failedAnalysis:warnings.length},
+  pipeline:{universe:sourceUniverse.length,analyzed:analyzed.length,qualified:qualified.length,rejected:rejected.length,selected:picks.length,committeeReady:picks.length},
+  picks,candidates,rejectedCandidates:rejected,warnings
+ };
 }
