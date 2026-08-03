@@ -35,9 +35,26 @@ export default function Home(){
   <div className="institutional-layout"><InstitutionalSidebar active={tab} onChange={navigate} lang={lang}/><div className="institutional-content"><InstitutionalPageHeader section={tab} lang={lang}/>{tab==="scanner"&&<OpportunityWorkflow lang={lang}/>}<main className="sentinel-main">
    {tab==="command"&&<><CommandCenterV10 lang={lang} onNavigate={navigate}/><EndToEndInvestmentCommittee lang={lang}/><V9InstitutionalStatus lang={lang}/></>}
    {tab==="analyze"&&<ResearchTabV2 lang={lang}/>} 
-   {tab==="portfolio"&&<><EndToEndInvestmentCommittee lang={lang}/><PortfolioTruthSummary lang={lang} refreshKey={portfolioRefresh}/><HoldingsMarketMonitor key={`market-${portfolioRefresh}`}/><DividendCalendarPanel lang={lang}/><details className="card" style={{marginTop:18}}><summary style={{cursor:"pointer",fontWeight:800,fontSize:"1.05rem"}}>{lang==="th"?"บัญชีและเครื่องมือขั้นสูง":"Accounting and advanced tools"}</summary><div style={{marginTop:18}}><PortfolioLedgerPanel lang={lang} refreshKey={portfolioRefresh}/><CashLedgerPanel lang={lang} refreshKey={portfolioRefresh}/><CashBufferPanel lang={lang} refreshKey={portfolioRefresh}/><PortfolioOptimizerPanel lang={lang} refreshKey={portfolioRefresh}/><OpportunityAllocationPanel lang={lang} refreshKey={portfolioRefresh}/><DividendLedgerPanel lang={lang} refreshKey={portfolioRefresh}/><PortfolioTransactionOverride lang={lang} onSaved={refreshPortfolio}/></div></details></>}
+   {tab==="portfolio"&&<>
+    <EndToEndInvestmentCommittee lang={lang}/>
+    <PortfolioTruthSummary lang={lang} refreshKey={portfolioRefresh}/>
+    <PortfolioTransactionOverride lang={lang} onSaved={refreshPortfolio}/>
+    <HoldingsMarketMonitor key={`market-${portfolioRefresh}`}/>
+    <PortfolioLedgerPanel lang={lang} refreshKey={portfolioRefresh}/>
+    <DividendCalendarPanel lang={lang}/>
+    <details className="card" style={{marginTop:18}}>
+     <summary style={{cursor:"pointer",fontWeight:800,fontSize:"1.05rem"}}>{lang==="th"?"บัญชี เงินสด และเครื่องมือขั้นสูง":"Cash, accounting and advanced tools"}</summary>
+     <div style={{marginTop:18}}>
+      <CashLedgerPanel lang={lang} refreshKey={portfolioRefresh}/>
+      <CashBufferPanel lang={lang} refreshKey={portfolioRefresh}/>
+      <PortfolioOptimizerPanel lang={lang} refreshKey={portfolioRefresh}/>
+      <OpportunityAllocationPanel lang={lang} refreshKey={portfolioRefresh}/>
+      <DividendLedgerPanel lang={lang} refreshKey={portfolioRefresh}/>
+     </div>
+    </details>
+   </>}
    {tab==="scanner"&&<AlphaDiscoveryPlatform lang={lang}/>} 
   </main></div></div>
-  <div className="footer-note">{lang==="th"?<>Sentinel Investment OS v10.7 · การประชุมเดียวกำหนด Fund Mandate, Cash Target, Risk Budget, Theme Search, ADD/TRIM/EXIT, Funding Plan, Execution และ Meeting Minutes<br/>ทุกมติอ่านจากข้อมูลพอร์ตและสถานะตลาดชุดเดียวกัน</>:<>Sentinel Investment OS v10.7 · One meeting sets the fund mandate, cash target, risk budget, theme search, ADD/TRIM/EXIT actions, funding plan, execution and meeting minutes.<br/>Every resolution reads from the same portfolio and market state.</>}</div>
+  <div className="footer-note">{lang==="th"?<>Sentinel Investment OS v10.7 · การประชุมเดียวกำหนด Fund Mandate, Cash Target, Risk Budget, Theme Search, ADD/TRIM/EXIT, Funding Plan, Execution และ Meeting Minutes<br/>หน้า Portfolio แสดง Holdings, บันทึกซื้อขาย และ Trade Ledger จากฐานข้อมูลชุดเดียวกัน</>:<>Sentinel Investment OS v10.7 · One meeting sets the fund mandate, cash target, risk budget, theme search, ADD/TRIM/EXIT actions, funding plan, execution and meeting minutes.<br/>Portfolio Holdings, Buy/Sell entry and Trade Ledger share the same production data source.</>}</div>
  </div>
 }
