@@ -1,147 +1,493 @@
 "use client";
 
-import {useEffect,useMemo,useState} from "react";
-import type {AppLang} from "../page";
-import {useFundSnapshot} from "./useFundSnapshot";
+// The investment committee meeting, as a fund actually runs one.
+//
+// Everything on this page comes from /api/committee/meeting. The component
+// formats; it decides nothing. If a number is missing here it is because no
+// desk could measure it, and the page says so rather than filling the gap.
 
-type Tab="full"|"macro"|"portfolio"|"research"|"capital"|"risk"|"vote"|"history";
-type Candidate={ticker:string;rating:string;conviction:number;upside:number|null;target:number|null;price:number|null;source:string;status:string};
-type HoldingReview={ticker:string;weight:number;marketValue:number;pnlPct:number|null;valuation:string;risk:string;action:string;reason:string};
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { AppLang } from "../page";
 
-const tabs:{id:Tab;en:string;th:string}[]=[
- {id:"full",en:"Full Meeting",th:"ประชุมทั้งหมด"},
- {id:"macro",en:"Macro Strategy",th:"กลยุทธ์มหภาค"},
- {id:"portfolio",en:"Portfolio Review",th:"ทบทวนพอร์ต"},
- {id:"research",en:"Research Candidates",th:"หุ้นที่เสนอ"},
- {id:"capital",en:"Capital Allocation",th:"จัดสรรเงินทุน"},
- {id:"risk",en:"Risk & Valuation",th:"ความเสี่ยงและมูลค่า"},
- {id:"vote",en:"Voting & Resolution",th:"ลงมติและข้อสรุป"},
- {id:"history",en:"Decision History",th:"ประวัติการตัดสินใจ"},
-];
+type Ballot = "FOR" | "AGAINST" | "ABSTAIN";
+type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY";
+type Outcome = "CARRIED" | "FAILED" | "DEFERRED";
 
-const tr=(lang:AppLang,en:string,th:string)=>lang==="th"?th:en;
-const money=(value:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value||0);
-const pct=(value:number|null)=>value==null?"—":`${value>=0?"+":""}${value.toFixed(1)}%`;
-const finite=(value:unknown):number|null=>{const numberValue=typeof value==="number"?value:Number(value);return Number.isFinite(numberValue)?numberValue:null};
+type Vote = { member: string; role: string; desk: string; ballot: Ballot; rationale: string };
+type Reason = { desk: string; member: string; finding: string };
+type Motion = {
+  id: string; ticker: string; kind: MotionKind; sizeUsd: number; approxShares: number | null;
+  proposedBy: string; reasons: Reason[]; evidenceCoveragePct: number; missingEvidence: string[];
+  votes: Vote[]; tally: { for: number; against: number; abstain: number };
+  outcome: Outcome; outcomeReason: string; veto: { member: string; reason: string } | null;
+};
+type Meeting = {
+  meetingId: string; asOf: string; nav: number;
+  agenda: { n: number; title: string; covered: boolean; summary: string }[];
+  attendance: { member: string; role: string; desk: string; present: boolean; contribution: string }[];
+  quorum: { present: number; required: number; met: boolean; note: string };
+  regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
+  motions: Motion[];
+  capitalPlan: {
+    sourcesUsd: number; sourceLines: { label: string; amountUsd: number }[];
+    usesUsd: number; useLines: { label: string; amountUsd: number }[];
+    balanceUsd: number; funded: boolean;
+    cutForFunding: { ticker: string; requestedUsd: number; reason: string }[];
+    cashAfterPct: number | null; note: string;
+  };
+  blotter: { side: "BUY" | "SELL"; ticker: string; approxShares: number | null; approxUsd: number; referencePrice: number | null; reason: string }[];
+  resolutions: { id: string; text: string; owner: string; reviewBy: string; status: "APPROVED" | "DEFERRED" | "REJECTED" }[];
+  dissent: { ticker: string; member: string; rationale: string }[];
+  riskRegister: { raisedBy: string; role: string; severity: "high" | "medium" | "low"; item: string; evidence: string; suggestedAction: string }[];
+  roundTable: { member: string; role: string; desk: string; tabled: boolean; view: string }[];
+  minutes: string[];
+  disclosures: string[];
+  standingDuty?: string;
+};
 
-async function getJson(path:string){
- const response=await fetch(path,{cache:"no-store",headers:{Accept:"application/json"}});
- const raw=await response.text();
- let json:any={};
- try{json=raw?JSON.parse(raw):{}}catch{throw new Error(`${path} returned invalid JSON`)}
- if(!response.ok)throw new Error(json?.error??`${path} returned ${response.status}`);
- return json;
+const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
+const money = (v: number) => `${v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
+const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v.toFixed(d)}%`);
+
+const KIND_TONE: Record<MotionKind, string> = { EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
+const OUTCOME_TONE: Record<Outcome, string> = { CARRIED: "#34d399", DEFERRED: "#fbbf24", FAILED: "#94a3b8" };
+const BALLOT_TONE: Record<Ballot, string> = { FOR: "#34d399", AGAINST: "#f87171", ABSTAIN: "#64748b" };
+
+type Filter = "all" | "reduce" | "deploy" | "hold";
+
+export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
+  const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [openMotion, setOpenMotion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    fetch("/api/committee/meeting", { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload?.error ?? `The meeting could not be assembled (${response.status}).`);
+        return payload as Meeting;
+      })
+      .then((payload) => { if (active) setMeeting(payload); })
+      .catch((cause) => { if (active) setError(cause?.message ?? "The meeting could not be assembled."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [refreshKey]);
+
+  const jump = useCallback((id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), []);
+
+  const motions = useMemo(() => {
+    const all = meeting?.motions ?? [];
+    const rank: Record<MotionKind, number> = { EXIT: 0, TRIM: 1, "NEW BUY": 2, ADD: 3, HOLD: 4 };
+    const filtered =
+      filter === "reduce" ? all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM")
+      : filter === "deploy" ? all.filter((m) => m.kind === "ADD" || m.kind === "NEW BUY")
+      : filter === "hold" ? all.filter((m) => m.kind === "HOLD")
+      : all;
+    return [...filtered].sort((a, b) => rank[a.kind] - rank[b.kind] || Math.abs(b.sizeUsd) - Math.abs(a.sizeUsd));
+  }, [meeting?.motions, filter]);
+
+  const counts = useMemo(() => {
+    const all = meeting?.motions ?? [];
+    return {
+      all: all.length,
+      reduce: all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM").length,
+      deploy: all.filter((m) => m.kind === "ADD" || m.kind === "NEW BUY").length,
+      hold: all.filter((m) => m.kind === "HOLD").length,
+      carried: all.filter((m) => m.outcome === "CARRIED").length,
+      deferred: all.filter((m) => m.outcome === "DEFERRED").length,
+    };
+  }, [meeting?.motions]);
+
+  if (loading) return <section className="card"><p className="muted">{tr(lang, "Convening the committee — gathering each desk's measurements…", "กำลังเรียกประชุม — รวบรวมการวัดผลจากแต่ละฝ่าย…")}</p></section>;
+  if (error || !meeting) {
+    return (
+      <section className="card">
+        <span className="tag">CIO</span>
+        <h2 className="section" style={{ margin: "10px 0 6px" }}>{tr(lang, "The meeting could not be convened", "ไม่สามารถเปิดประชุมได้")}</h2>
+        <div className="err" style={{ marginTop: 10 }}>⚠ {error}</div>
+        <p className="muted" style={{ marginTop: 10 }}>{tr(lang, "No motion is shown rather than a motion built on missing evidence.", "ระบบไม่แสดงญัตติที่สร้างจากข้อมูลที่ขาดหาย")}</p>
+        <button className="btn ghost" type="button" onClick={() => setRefreshKey((v) => v + 1)} style={{ marginTop: 12 }}>↻ {tr(lang, "Try again", "ลองใหม่")}</button>
+      </section>
+    );
+  }
+
+  const plan = meeting.capitalPlan;
+
+  return (
+    <div className="workspace-stack" data-cio-version="14.0" data-workspace="investment-committee" data-source-of-truth="committee-meeting">
+
+      {/* ── Call to order ── */}
+      <section className="card" style={{ borderTop: "2px solid var(--accent)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div>
+            <span className="tag">{meeting.meetingId}</span>
+            <h2 className="section" style={{ margin: "10px 0 6px" }}>{tr(lang, "Investment Committee", "การประชุมคณะกรรมการลงทุน")}</h2>
+            <p className="muted" style={{ margin: 0, maxWidth: 900 }}>
+              {tr(lang,
+                "One motion per position and per referred idea. Every seat votes on what it measured and abstains on what it did not. Sources must fund uses. Nothing here places an order.",
+                "หนึ่งญัตติต่อหนึ่งหุ้นที่ถือและต่อหนึ่งหุ้นที่เสนอเข้ามา ทุกที่นั่งลงมติเฉพาะสิ่งที่ตนวัดได้ และงดออกเสียงในสิ่งที่วัดไม่ได้ แหล่งเงินต้องพอกับการใช้เงิน และไม่มีการส่งคำสั่งซื้อขายใดๆ")}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <span className="tag" style={{ borderColor: meeting.quorum.met ? "#34d399" : "#fbbf24", color: meeting.quorum.met ? "#34d399" : "#fbbf24" }}>
+              {meeting.quorum.met ? tr(lang, "QUORATE", "ครบองค์ประชุม") : tr(lang, "NOT QUORATE", "ไม่ครบองค์ประชุม")} {meeting.quorum.present}/{meeting.attendance.length}
+            </span>
+            <button className="btn ghost" type="button" onClick={() => setRefreshKey((v) => v + 1)}>↻ {tr(lang, "Reconvene", "ประชุมใหม่")}</button>
+          </div>
+        </div>
+
+        <div className="grid cols-4" style={{ marginTop: 16 }}>
+          <Metric label={tr(lang, "NAV", "มูลค่าสุทธิ")} value={money(meeting.nav)} />
+          <Metric label={tr(lang, "Motions carried", "ญัตติที่ผ่าน")} value={`${counts.carried} / ${counts.all}`} />
+          <Metric label={tr(lang, "Deferred", "เลื่อนพิจารณา")} value={String(counts.deferred)} />
+          <Metric label={tr(lang, "Capital committed", "เงินที่อนุมัติใช้")} value={money(plan.usesUsd)} />
+        </div>
+
+        {!meeting.quorum.met && <div className="notice" style={{ marginTop: 14, borderColor: "#fbbf24" }}><b>{tr(lang, "Inquorate", "องค์ประชุมไม่ครบ")}</b><p style={{ margin: "6px 0 0" }}>{meeting.quorum.note}</p></div>}
+
+        <div style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 14, paddingBottom: 4 }}>
+          {[
+            ["agenda", tr(lang, "Agenda", "ระเบียบวาระ")],
+            ["attendance", tr(lang, "Attendance", "ผู้เข้าประชุม")],
+            ["motions", tr(lang, "Motions", "ญัตติ")],
+            ["capital", tr(lang, "Capital plan", "แผนเงินทุน")],
+            ["blotter", tr(lang, "Trade blotter", "รายการซื้อขาย")],
+            ["resolutions", tr(lang, "Resolutions", "มติ")],
+            ["risk", tr(lang, "Risk register", "ทะเบียนความเสี่ยง")],
+            ["minutes", tr(lang, "Minutes", "รายงานการประชุม")],
+          ].map(([id, label]) => (
+            <button key={id} className="btn ghost sm" type="button" onClick={() => jump(`ic-${id}`)}>{label}</button>
+          ))}
+        </div>
+      </section>
+
+      {/* ── 1. Agenda ── */}
+      <section className="card" id="ic-agenda">
+        <Head n="1" title={tr(lang, "Agenda", "ระเบียบวาระการประชุม")} />
+        <div className="grid cols-2">
+          {meeting.agenda.map((item) => (
+            <article key={item.n} className="metric" style={{ alignItems: "flex-start", opacity: item.covered ? 1 : 0.65 }}>
+              <span>{item.covered ? "●" : "○"} {tr(lang, "Item", "วาระที่")} {item.n} · {item.title}</span>
+              <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{item.summary}</strong>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* ── 2. Attendance ── */}
+      <section className="card" id="ic-attendance">
+        <Head n="2" title={tr(lang, "Attendance and quorum", "ผู้เข้าประชุมและองค์ประชุม")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang,
+            "A seat counts as present when it brought a measurement to the table. A seat with nothing to measure is marked absent and says why — it does not vote on someone else's number.",
+            "ที่นั่งจะนับว่าเข้าประชุมเมื่อมีผลการวัดมานำเสนอ ที่นั่งที่ไม่มีข้อมูลจะถูกบันทึกว่าไม่เข้าร่วมพร้อมเหตุผล และจะไม่ลงมติโดยใช้ตัวเลขของคนอื่น")}
+        </p>
+        <div className="table-wrap" style={{ marginTop: 14 }}>
+          <table className="tbl">
+            <thead><tr><th>{tr(lang, "Member", "สมาชิก")}</th><th>{tr(lang, "Desk", "ฝ่าย")}</th><th>{tr(lang, "Status", "สถานะ")}</th><th>{tr(lang, "Brought to the meeting", "สิ่งที่นำเสนอ")}</th></tr></thead>
+            <tbody>
+              {meeting.attendance.map((seat) => (
+                <tr key={seat.member} style={{ opacity: seat.present ? 1 : 0.7 }}>
+                  <td><strong>{seat.member}</strong><small style={{ display: "block", color: "var(--muted)" }}>{seat.role}</small></td>
+                  <td>{seat.desk}</td>
+                  <td><span style={{ color: seat.present ? "#34d399" : "#94a3b8", fontWeight: 600 }}>{seat.present ? tr(lang, "PRESENT", "เข้าประชุม") : tr(lang, "ABSENT", "ไม่เข้าร่วม")}</span></td>
+                  <td style={{ fontSize: 13 }}>{seat.contribution}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ── 3. Macro ── */}
+      <section className="card">
+        <Head n="3" title={tr(lang, "Macro regime and cash policy", "สภาวะตลาดและนโยบายเงินสด")} />
+        {meeting.regime ? (
+          <>
+            <div className="grid cols-4">
+              <Metric label={tr(lang, "Regime", "สภาวะ")} value={`${meeting.regime.icon} ${meeting.regime.regime}`} />
+              <Metric label={tr(lang, "Score", "คะแนน")} value={`${meeting.regime.score}/100`} />
+              <Metric label={tr(lang, "Cash floor", "เงินสดขั้นต่ำ")} value={`${meeting.regime.cashMinPct}%`} />
+              <Metric label={tr(lang, "Cash after plan", "เงินสดหลังแผน")} value={pct(plan.cashAfterPct)} />
+            </div>
+            <div className="notice" style={{ marginTop: 14 }}><b>{tr(lang, "Deployment rule", "กติกาการลงทุน")}</b><p style={{ margin: "6px 0 0" }}>{meeting.regime.deployRule}</p><p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{meeting.regime.note}</p></div>
+          </>
+        ) : (
+          <div className="notice">{tr(lang, "No regime read this meeting — the benchmark history the macro desk needs was unavailable. Cash policy stands at its last setting and Daniel Cho abstained on every motion.", "ไม่มีการอ่านสภาวะตลาดในการประชุมนี้ เนื่องจากไม่มีข้อมูลดัชนีอ้างอิง นโยบายเงินสดคงเดิม และ Daniel Cho งดออกเสียงทุกญัตติ")}</div>
+        )}
+      </section>
+
+      {/* ── 4. Motions ── */}
+      <section className="card" id="ic-motions">
+        <Head n="4" title={tr(lang, "Motions", "ญัตติ")} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          {([
+            ["all", tr(lang, "All", "ทั้งหมด"), counts.all],
+            ["reduce", tr(lang, "Exit & trim", "ขาย/ลดน้ำหนัก"), counts.reduce],
+            ["deploy", tr(lang, "Add & new buy", "เพิ่ม/ซื้อใหม่"), counts.deploy],
+            ["hold", tr(lang, "Hold", "ถือต่อ"), counts.hold],
+          ] as [Filter, string, number][]).map(([id, label, n]) => (
+            <button key={id} className={`btn ${filter === id ? "" : "ghost"} sm`} type="button" onClick={() => setFilter(id)}>{label} · {n}</button>
+          ))}
+        </div>
+
+        {motions.length === 0 ? (
+          <div className="notice">{tr(lang, "No motion in this category.", "ไม่มีญัตติในหมวดนี้")}</div>
+        ) : motions.map((motion) => {
+          const open = openMotion === motion.id;
+          return (
+            <article key={motion.id} className="card" style={{ margin: "0 0 12px", borderLeft: `3px solid ${KIND_TONE[motion.kind]}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+                <div style={{ minWidth: 220 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 18 }}>{motion.ticker}</strong>
+                    <span className="tag" style={{ borderColor: KIND_TONE[motion.kind], color: KIND_TONE[motion.kind] }}>{motion.kind}</span>
+                    <span className="tag" style={{ borderColor: OUTCOME_TONE[motion.outcome], color: OUTCOME_TONE[motion.outcome] }}>{motion.outcome}</span>
+                  </div>
+                  <small className="muted" style={{ display: "block", marginTop: 6 }}>{tr(lang, "Proposed by", "เสนอโดย")} {motion.proposedBy}</small>
+                </div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div><small className="muted" style={{ display: "block" }}>{tr(lang, "Size", "ขนาด")}</small><strong style={{ fontSize: 16, color: motion.sizeUsd > 0 ? "#34d399" : motion.sizeUsd < 0 ? "#f87171" : "inherit" }}>{motion.sizeUsd === 0 ? "—" : money(motion.sizeUsd)}</strong>{motion.approxShares != null && <small className="muted" style={{ display: "block" }}>~{motion.approxShares.toLocaleString()} {tr(lang, "shares", "หุ้น")}</small>}</div>
+                  <div><small className="muted" style={{ display: "block" }}>{tr(lang, "Vote", "ผลโหวต")}</small><strong style={{ fontSize: 16 }}>{motion.tally.for}–{motion.tally.against}</strong><small className="muted" style={{ display: "block" }}>{motion.tally.abstain} {tr(lang, "abstained", "งดออกเสียง")}</small></div>
+                  <div style={{ minWidth: 120 }}><small className="muted" style={{ display: "block" }}>{tr(lang, "Evidence", "หลักฐาน")}</small><Coverage value={motion.evidenceCoveragePct} /></div>
+                </div>
+              </div>
+
+              <p style={{ margin: "12px 0 0", fontSize: 13 }}>{motion.outcomeReason}</p>
+              {motion.veto && <div className="err" style={{ marginTop: 10, fontSize: 13 }}>⚠ {tr(lang, "Veto", "ยับยั้ง")} · {motion.veto.member}: {motion.veto.reason}</div>}
+
+              <button className="btn ghost sm" type="button" onClick={() => setOpenMotion(open ? null : motion.id)} style={{ marginTop: 12 }}>
+                {open ? tr(lang, "Hide the record", "ซ่อนบันทึก") : tr(lang, "Show reasons and the full vote", "ดูเหตุผลและผลโหวตทั้งหมด")}
+              </button>
+
+              {open && (
+                <div style={{ marginTop: 14 }}>
+                  <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Findings behind the motion", "ผลการวิเคราะห์ที่มาของญัตติ")}</h4>
+                  <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+                    {motion.reasons.map((reason, i) => <li key={i}><strong>{reason.member}</strong> <span className="muted">({reason.desk})</span> — {reason.finding}</li>)}
+                  </ul>
+
+                  {motion.missingEvidence.length > 0 && (
+                    <div className="notice" style={{ marginBottom: 14 }}>
+                      <b>{tr(lang, "Not measured", "วัดไม่ได้")}</b>
+                      <p style={{ margin: "6px 0 0", fontSize: 13 }}>{motion.missingEvidence.join(" · ")}</p>
+                    </div>
+                  )}
+
+                  <h4 className="sub">{tr(lang, "Vote sheet", "ใบลงมติ")}</h4>
+                  <div className="table-wrap">
+                    <table className="tbl">
+                      <thead><tr><th>{tr(lang, "Member", "สมาชิก")}</th><th>{tr(lang, "Ballot", "มติ")}</th><th>{tr(lang, "Rationale", "เหตุผล")}</th></tr></thead>
+                      <tbody>
+                        {motion.votes.map((vote) => (
+                          <tr key={vote.member}>
+                            <td style={{ whiteSpace: "nowrap" }}><strong>{vote.member}</strong><small style={{ display: "block", color: "var(--muted)" }}>{vote.role}</small></td>
+                            <td style={{ color: BALLOT_TONE[vote.ballot], fontWeight: 600, whiteSpace: "nowrap" }}>{vote.ballot}</td>
+                            <td style={{ fontSize: 13 }}>{vote.rationale}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </section>
+
+      {/* ── 5. Capital plan ── */}
+      <section className="card" id="ic-capital">
+        <Head n="5" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang, "Uses may not exceed sources. When the meeting approves more buying than it has funded, the lowest-conviction uses are cut and named — never dropped quietly.",
+            "การใช้เงินต้องไม่เกินแหล่งเงิน หากที่ประชุมอนุมัติซื้อมากกว่าเงินที่มี ญัตติที่มีความเชื่อมั่นต่ำสุดจะถูกตัดออกและระบุชื่อไว้ ไม่ตัดทิ้งเงียบๆ")}
+        </p>
+        <div className="grid cols-4" style={{ marginTop: 14 }}>
+          <Metric label={tr(lang, "Sources", "แหล่งเงิน")} value={money(plan.sourcesUsd)} />
+          <Metric label={tr(lang, "Uses", "การใช้เงิน")} value={money(plan.usesUsd)} />
+          <Metric label={tr(lang, "Uncommitted", "เงินคงเหลือ")} value={money(plan.balanceUsd)} />
+          <Metric label={tr(lang, "Cash after", "เงินสดหลังแผน")} value={pct(plan.cashAfterPct)} />
+        </div>
+        <div className="grid cols-2" style={{ marginTop: 14 }}>
+          <div className="card" style={{ margin: 0 }}>
+            <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Where the money comes from", "เงินมาจากไหน")}</h4>
+            {plan.sourceLines.length ? plan.sourceLines.map((line, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}><span>{line.label}</span><strong>{money(line.amountUsd)}</strong></div>
+            )) : <p className="muted" style={{ fontSize: 13 }}>{tr(lang, "No source of funds this meeting.", "ไม่มีแหล่งเงินในการประชุมนี้")}</p>}
+          </div>
+          <div className="card" style={{ margin: 0 }}>
+            <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Where it goes", "เงินไปไหน")}</h4>
+            {plan.useLines.length ? plan.useLines.map((line, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}><span>{line.label}</span><strong>{money(line.amountUsd)}</strong></div>
+            )) : <p className="muted" style={{ fontSize: 13 }}>{tr(lang, "No approved use of capital. Cash stays where it is.", "ไม่มีการอนุมัติใช้เงิน เงินสดคงเดิม")}</p>}
+          </div>
+        </div>
+        {plan.cutForFunding.length > 0 && (
+          <div className="notice" style={{ marginTop: 14, borderColor: "#fbbf24" }}>
+            <b>{tr(lang, "Cut or reduced to make the plan balance", "ถูกตัดหรือลดเพื่อให้แผนสมดุล")}</b>
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+              {plan.cutForFunding.map((cut, i) => <li key={i}><strong>{cut.ticker}</strong> — {cut.reason}</li>)}
+            </ul>
+          </div>
+        )}
+        <p style={{ marginTop: 14, fontSize: 13 }}>{plan.note}</p>
+      </section>
+
+      {/* ── 6. Blotter ── */}
+      <section className="card" id="ic-blotter">
+        <Head n="6" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
+        {meeting.blotter.length ? (
+          <>
+            <div className="table-wrap">
+              <table className="tbl">
+                <thead><tr><th>{tr(lang, "Side", "ฝั่ง")}</th><th>{tr(lang, "Ticker", "หุ้น")}</th><th className="num">{tr(lang, "Approx shares", "จำนวนหุ้นโดยประมาณ")}</th><th className="num">{tr(lang, "Approx value", "มูลค่าโดยประมาณ")}</th><th className="num">{tr(lang, "Reference price", "ราคาอ้างอิง")}</th></tr></thead>
+                <tbody>
+                  {meeting.blotter.map((line, i) => (
+                    <tr key={i}>
+                      <td><span style={{ color: line.side === "BUY" ? "#34d399" : "#f87171", fontWeight: 700 }}>{line.side}</span></td>
+                      <td><strong>{line.ticker}</strong></td>
+                      <td className="num">{line.approxShares == null ? "—" : line.approxShares.toLocaleString()}</td>
+                      <td className="num">{money(line.approxUsd)}</td>
+                      <td className="num">{line.referencePrice == null ? "—" : money(line.referencePrice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="notice" style={{ marginTop: 14 }}>
+              {tr(lang,
+                "Share counts are approximations from the reference price, not orders. Record the actual fills in the transaction ledger — the ledger, not this page, is the fund's record.",
+                "จำนวนหุ้นเป็นค่าประมาณจากราคาอ้างอิง ไม่ใช่คำสั่งซื้อขาย ให้บันทึกราคาที่ซื้อขายจริงลงใน transaction ledger ซึ่งเป็นบันทึกจริงของกองทุน ไม่ใช่หน้านี้")}
+            </div>
+            <button className="btn ghost" type="button" onClick={() => onNavigate("portfolio")} style={{ marginTop: 12 }}>{tr(lang, "Open the transaction ledger", "เปิด transaction ledger")}</button>
+          </>
+        ) : (
+          <div className="notice">{tr(lang, "Nothing to hand over. No motion carried with a size attached.", "ไม่มีรายการส่งต่อ ไม่มีญัตติที่ผ่านพร้อมจำนวนเงิน")}</div>
+        )}
+      </section>
+
+      {/* ── 7. Resolutions and dissent ── */}
+      <section className="card" id="ic-resolutions">
+        <Head n="7" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
+        <div className="table-wrap">
+          <table className="tbl">
+            <thead><tr><th>{tr(lang, "Status", "สถานะ")}</th><th>{tr(lang, "Resolution", "มติ")}</th><th>{tr(lang, "Owner", "ผู้รับผิดชอบ")}</th><th>{tr(lang, "Review by", "ทบทวนภายใน")}</th></tr></thead>
+            <tbody>
+              {meeting.resolutions.map((r) => (
+                <tr key={r.id}>
+                  <td style={{ whiteSpace: "nowrap", color: r.status === "APPROVED" ? "#34d399" : r.status === "DEFERRED" ? "#fbbf24" : "#94a3b8", fontWeight: 600 }}>{r.status}</td>
+                  <td style={{ fontSize: 13 }}>{r.text}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>{r.owner}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>{r.reviewBy}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {meeting.dissent.length > 0 && (
+          <>
+            <h4 className="sub" style={{ marginTop: 20 }}>{tr(lang, "Dissent on the record", "ความเห็นแย้งที่บันทึกไว้")}</h4>
+            <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+              {tr(lang, "These desks voted against a motion that carried. The objection stands until the review date — if it turns out to have been right, the record shows who said so.",
+                "ฝ่ายเหล่านี้ลงมติคัดค้านญัตติที่ผ่าน ความเห็นแย้งจะคงอยู่จนถึงวันทบทวน หากภายหลังพบว่าถูกต้อง บันทึกนี้จะแสดงว่าใครเป็นผู้ทักท้วง")}
+            </p>
+            <ul style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+              {meeting.dissent.map((d, i) => <li key={i}><strong>{d.ticker}</strong> · {d.member} — {d.rationale}</li>)}
+            </ul>
+          </>
+        )}
+      </section>
+
+      {/* ── 8. Risk register and round table ── */}
+      <section className="card" id="ic-risk">
+        <Head n="8" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang, "Any desk may file a risk, with the measurement behind it. Risk is not one person's column.",
+            "ทุกฝ่ายสามารถแจ้งความเสี่ยงได้ พร้อมหลักฐานการวัด ความเสี่ยงไม่ใช่หน้าที่ของคนเดียว")}
+        </p>
+        {meeting.riskRegister.length ? (
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+            <table className="tbl">
+              <thead><tr><th>{tr(lang, "Severity", "ระดับ")}</th><th>{tr(lang, "Risk", "ความเสี่ยง")}</th><th>{tr(lang, "Evidence", "หลักฐาน")}</th><th>{tr(lang, "Raised by", "แจ้งโดย")}</th><th>{tr(lang, "Suggested action", "ข้อเสนอ")}</th></tr></thead>
+              <tbody>
+                {meeting.riskRegister.map((risk, i) => (
+                  <tr key={i}>
+                    <td style={{ color: risk.severity === "high" ? "#f87171" : risk.severity === "medium" ? "#fbbf24" : "#94a3b8", fontWeight: 600, textTransform: "uppercase" }}>{risk.severity}</td>
+                    <td style={{ fontSize: 13 }}>{risk.item}</td>
+                    <td style={{ fontSize: 13 }} className="muted">{risk.evidence}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{risk.raisedBy}</td>
+                    <td style={{ fontSize: 13 }}>{risk.suggestedAction}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <div className="notice" style={{ marginTop: 14 }}>{tr(lang, "No desk filed a risk with evidence behind it this meeting.", "ไม่มีฝ่ายใดแจ้งความเสี่ยงพร้อมหลักฐานในการประชุมนี้")}</div>}
+
+        {meeting.roundTable.length > 0 && (
+          <>
+            <h4 className="sub" style={{ marginTop: 20 }}>{tr(lang, "Round table", "ความเห็นรอบโต๊ะ")}</h4>
+            <div className="grid cols-2" style={{ marginTop: 10 }}>
+              {meeting.roundTable.map((entry) => (
+                <article key={entry.member} className="metric" style={{ alignItems: "flex-start", opacity: entry.tabled ? 1 : 0.65 }}>
+                  <span>{entry.member} · {entry.role}</span>
+                  <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{entry.view}</strong>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* ── 9. Minutes ── */}
+      <section className="card" id="ic-minutes">
+        <Head n="9" title={tr(lang, "Minutes", "รายงานการประชุม")} />
+        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
+          {meeting.minutes.map((line, i) => <li key={i}>{line}</li>)}
+        </ol>
+        <h4 className="sub" style={{ marginTop: 20 }}>{tr(lang, "Disclosures", "ข้อเปิดเผย")}</h4>
+        <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.7 }} className="muted">
+          {meeting.disclosures.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+        {meeting.standingDuty && <div className="notice" style={{ marginTop: 16 }}><b>{tr(lang, "Standing duty", "หน้าที่ประจำ")}</b><p style={{ margin: "6px 0 0" }}>{meeting.standingDuty}</p></div>}
+      </section>
+
+      <section className="card">
+        <div className="grid cols-3">
+          <Guard title={tr(lang, "NO AUTO EXECUTION", "ไม่มีการส่งคำสั่งอัตโนมัติ")} text={tr(lang, "The committee produces proposals. It has no path to a broker.", "ที่ประชุมออกข้อเสนอเท่านั้น ไม่มีช่องทางเชื่อมต่อโบรกเกอร์")} />
+          <Guard title={tr(lang, "ABSTENTION IS HONEST", "การงดออกเสียงคือความซื่อตรง")} text={tr(lang, "A desk that could not measure its input says so instead of voting.", "ฝ่ายที่วัดข้อมูลของตนไม่ได้จะแจ้งไว้ แทนการลงมติ")} />
+          <Guard title={tr(lang, "SOURCES FUND USES", "แหล่งเงินต้องพอกับการใช้")} text={tr(lang, "An approval the fund cannot pay for is not a decision.", "การอนุมัติที่กองทุนจ่ายไม่ไหว ไม่ถือเป็นการตัดสินใจ")} />
+        </div>
+      </section>
+    </div>
+  );
 }
 
-export default function CIOCommandCenterV12({lang,onNavigate}:{lang:AppLang;onNavigate:(id:string)=>void}){
- const fund=useFundSnapshot();
- const[tab,setTab]=useState<Tab>("full");
- const[data,setData]=useState<any>({portfolio:null,actions:null,performance:null});
- const[error,setError]=useState<string|null>(null);
- const[refreshKey,setRefreshKey]=useState(0);
-
- useEffect(()=>{
-  let active=true;
-  setError(null);
-  Promise.allSettled([
-   getJson("/api/portfolio"),
-   getJson("/api/analysis/actions"),
-   getJson("/api/analysis/performance"),
-  ]).then(results=>{
-   if(!active)return;
-   const values=results.map(result=>result.status==="fulfilled"?result.value:null);
-   setData({portfolio:values[0],actions:values[1],performance:values[2]});
-   const failed=results.filter(result=>result.status==="rejected").length;
-   if(failed)setError(`${failed} committee source(s) unavailable. Missing evidence was excluded.`);
-  });
-  return()=>{active=false};
- },[refreshKey]);
-
- const reviews=useMemo<HoldingReview[]>(()=>fund.holdings.map((row):HoldingReview=>{
-   const pnlPct=row.avgCost>0?(row.price/row.avgCost-1)*100:null;
-   const over=row.weightPct>20;
-   const weak=pnlPct!==null&&pnlPct<-12;
-   const strong=pnlPct!==null&&pnlPct>20;
-   const action=over?"TRIM REVIEW":weak?"THESIS REVIEW":strong?"KEEP WINNER":"KEEP";
-   return{
-    ticker:row.ticker,
-    weight:row.weightPct,
-    marketValue:row.marketValue,
-    pnlPct,
-    valuation:pnlPct==null?"DATA LIMITED":pnlPct>25?"PREMIUM / WATCH":pnlPct<-10?"DISCOUNT / VERIFY":"FAIR RANGE",
-    risk:over?"CONCENTRATION HIGH":weak?"DRAWDOWN WATCH":"WITHIN POLICY",
-    action,
-    reason:over?"Position exceeds the single-name review zone.":weak?"Drawdown requires thesis and catalyst verification.":strong?"Winner remains inside policy; do not trim mechanically.":"No verified evidence currently justifies a change.",
-   };
-  }).sort((a:HoldingReview,b:HoldingReview)=>b.weight-a.weight),[fund.holdings]);
-
- const candidates=useMemo<Candidate[]>(()=>{
-  const payload=data?.actions;
-  const rows=Array.isArray(payload)?payload:Array.isArray(payload?.actions)?payload.actions:Array.isArray(payload?.items)?payload.items:[];
-  return rows.map((row:any)=>({
-   ticker:String(row?.ticker??row?.symbol??"").toUpperCase(),
-   rating:String(row?.rating??row?.decision??row?.action??"WATCH").toUpperCase(),
-   conviction:Math.max(0,Math.min(100,finite(row?.conviction??row?.score)??0)),
-   upside:finite(row?.upside??row?.expected_upside),
-   target:finite(row?.target??row?.target_price),
-   price:finite(row?.price??row?.current_price),
-   source:String(row?.source??row?.engine??"Stock Analyze"),
-   status:String(row?.status??"PENDING CIO").toUpperCase(),
-  })).filter((row:Candidate)=>row.ticker).sort((a:Candidate,b:Candidate)=>b.conviction-a.conviction).slice(0,8);
- },[data?.actions]);
-
- const macroAction=fund.macroScore>=65?"ADVANCE SELECTIVELY":fund.macroScore<40?"REDUCE RISK / RAISE CASH":"BALANCED / SELECTIVE";
- const committeeVotes=[
-  {desk:"RESEARCH",vote:candidates.some(row=>/BUY/.test(row.rating))?"BUY":"HOLD",score:candidates[0]?.conviction??fund.qualityScore},
-  {desk:"QUANT",vote:fund.portfolioHealth>=65?"BUY":"HOLD",score:fund.portfolioHealth},
-  {desk:"VALUATION",vote:fund.qualityScore>=60?"BUY":"HOLD",score:fund.qualityScore},
-  {desk:"RISK",vote:fund.riskScore>=65?"BUY":"HOLD",score:fund.riskScore},
-  {desk:"PORTFOLIO",vote:fund.portfolioHealth>=60?"BUY":"HOLD",score:fund.portfolioHealth},
-  {desk:"CIO",vote:fund.macroScore>=45&&fund.riskScore>=55?"BUY":"HOLD",score:Math.round((fund.macroScore+fund.riskScore+fund.portfolioHealth)/3)},
- ];
- const approvals=committeeVotes.filter(vote=>vote.vote==="BUY").length;
- const consensus=Math.round(approvals/committeeVotes.length*100);
- const need=candidates.filter(row=>/BUY/.test(row.rating)).reduce((sum,row)=>sum+Math.max(0,finite((row as any).amount)??0),0);
- const proposedCapital=need>0?need:Math.min(fund.deployableCash,candidates.some(row=>/BUY/.test(row.rating))?fund.deployableCash:0);
- const trimSource=Math.min(proposedCapital,fund.deployableCash);
- const remainingDeployable=Math.max(0,fund.deployableCash-trimSource);
-
- const show=(id:Tab)=>tab==="full"||tab===id;
- const jump=(id:Tab)=>{setTab("full");requestAnimationFrame(()=>document.getElementById(`cio-${id}`)?.scrollIntoView({behavior:"smooth",block:"start"}))};
-
- if(fund.loading)return <section className="card"><p>Loading verified fund snapshot…</p></section>;
- return <div className="workspace-stack" data-cio-version="12.5" data-workspace="investment-committee" data-source-of-truth="fund-snapshot portfolio-ledger analysis-actions">
-  <section className="card" style={{borderTop:"2px solid var(--accent)"}}>
-   <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
-    <div><span className="tag">CIO · PHASE 4</span><h2 className="section" style={{margin:"10px 0 6px"}}>{tr(lang,"Executive Investment Committee Workspace","ห้องประชุมคณะกรรมการลงทุน")}</h2><p className="muted" style={{margin:0,maxWidth:880}}>{tr(lang,"One meeting combines market regime, portfolio review, research candidates, risk, valuation, capital allocation, voting and the final human-approved resolution.","การประชุมเดียวรวมสภาวะตลาด การทบทวนพอร์ต หุ้นที่เสนอ ความเสี่ยง มูลค่า การจัดสรรเงิน ลงมติ และข้อสรุปที่มนุษย์อนุมัติ")}</p></div>
-    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><span className="tag">{fund.verified?"COMMITTEE READY":"VERIFY DATA"}</span><button className="btn ghost" type="button" onClick={()=>setRefreshKey(value=>value+1)}>↻ Refresh Meeting</button></div>
-   </div>
-   {error&&<div className="notice" style={{marginTop:12}}>{error}</div>}
-   <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4,marginTop:16,position:"sticky",top:0,zIndex:5}}>{tabs.map(item=><button key={item.id} className={`btn ${tab===item.id?"":"ghost"}`} type="button" onClick={()=>setTab(item.id)}>{lang==="th"?item.th:item.en}</button>)}</div>
-   {tab==="full"&&<div style={{display:"flex",gap:8,overflowX:"auto",marginTop:10}}>{tabs.filter(item=>item.id!=="full").map(item=><button key={item.id} className="btn ghost sm" type="button" onClick={()=>jump(item.id)}>{lang==="th"?item.th:item.en}</button>)}</div>}
-  </section>
-
-  {show("macro")&&<section id="cio-macro" className="card"><SectionTitle n="1" title={tr(lang,"Macro Strategy & Market Regime","กลยุทธ์มหภาคและสภาวะตลาด")}/><div className="grid cols-4"><Metric label="Regime" value={fund.macroLabel.toUpperCase()}/><Metric label="Macro Score" value={`${fund.macroScore.toFixed(0)}/100`}/><Metric label="Fund Posture" value={macroAction}/><Metric label="Target Cash" value={`${fund.targetCashPct.toFixed(0)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Executive summary</b><p>{fund.macroVision}</p><strong>Recommendation: {macroAction}</strong></div><div className="card" style={{margin:0}}><h3 className="sub">Outlook probabilities</h3><Bar label="Bullish" value={fund.bullishPct??0}/><Bar label="Neutral" value={fund.neutralPct??0}/><Bar label="Bearish" value={fund.bearishPct??0}/></div></div></section>}
-
-  {show("portfolio")&&<section id="cio-portfolio" className="card"><SectionTitle n="2" title={tr(lang,"Portfolio Health & Holding Review","สุขภาพพอร์ตและการทบทวนหุ้นที่ถือ")}/><div className="grid cols-4"><Metric label="Verified NAV" value={money(fund.totalNav)}/><Metric label="Portfolio Health" value={`${fund.portfolioHealth}/100`}/><Metric label="Open Holdings" value={String(fund.openPositions)}/><Metric label="Unrealized P/L" value={`${money(fund.unrealizedPnl)} · ${pct(fund.unrealizedPnlPct)}`}/></div><div style={{overflowX:"auto",marginTop:16}}><table style={{width:"100%",minWidth:900,borderCollapse:"collapse"}}><thead><tr>{["Ticker","Weight","Market Value","Vs Cost","Valuation","Risk","Committee Action"].map(label=><th key={label} style={th}>{label}</th>)}</tr></thead><tbody>{reviews.map(row=><tr key={row.ticker}><td style={td}><b>{row.ticker}</b></td><td style={td}>{row.weight.toFixed(1)}%</td><td style={td}>{money(row.marketValue)}</td><td style={td}>{pct(row.pnlPct)}</td><td style={td}>{row.valuation}</td><td style={td}>{row.risk}</td><td style={td}><b>{row.action}</b><small style={{display:"block",marginTop:4}}>{row.reason}</small></td></tr>)}</tbody></table></div><button className="btn ghost" type="button" onClick={()=>onNavigate("portfolio")} style={{marginTop:14}}>Open Holdings Workspace</button></section>}
-
-  {show("research")&&<section id="cio-research" className="card"><SectionTitle n="3" title={tr(lang,"Research Candidates & New Ideas","หุ้นใหม่และข้อเสนอจากฝ่ายวิจัย")}/>{candidates.length?<div className="grid cols-2">{candidates.map((row,index)=><article className="metric" key={`${row.ticker}-${index}`}><span>#{index+1} · {row.source}</span><strong>{row.ticker} · {row.rating}</strong><small>Conviction {row.conviction}/100 · Upside {pct(row.upside)} · Target {row.target==null?"—":money(row.target)} · {row.status}</small></article>)}</div>:<div className="notice">No Stock Analyze candidate is currently queued for CIO review.</div>}<div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}><button className="btn ghost" type="button" onClick={()=>onNavigate("research")}>Open Research</button><button className="btn ghost" type="button" onClick={()=>onNavigate("analyze")}>Open Stock Analyze</button></div></section>}
-
-  {show("capital")&&<section id="cio-capital" className="card"><SectionTitle n="4" title={tr(lang,"Capital Allocation & Funding Plan","การจัดสรรเงินทุนและแหล่งเงิน")}/><div className="grid cols-4"><Metric label="Broker Cash" value={money(fund.cashBalance)}/><Metric label="Deployable Cash" value={money(fund.deployableCash)}/><Metric label="Proposed Deployment" value={money(proposedCapital)}/><Metric label="Remaining Deployable" value={money(remainingDeployable)}/></div><div className="notice" style={{marginTop:14}}><b>Funding plan</b><p>{proposedCapital>0?`Use ${money(trimSource)} of deployable cash only for named, human-selected candidates. Cash remains uncommitted until the final resolution is submitted.`:`KEEP ${money(fund.deployableCash)} IN CASH — NO SALE AUTHORIZED`}</p></div></section>}
-
-  {show("risk")&&<section id="cio-risk" className="card"><SectionTitle n="5" title={tr(lang,"Risk, Liquidity & Valuation Meeting","การประชุมความเสี่ยง สภาพคล่อง และมูลค่า")}/><div className="grid cols-4"><Metric label="Risk Score" value={`${fund.riskScore}/100`}/><Metric label="Liquidity" value={`${fund.liquidityScore}/100`}/><Metric label="Quality" value={`${fund.qualityScore}/100`}/><Metric label="Largest Weight" value={`${(reviews[0]?.weight??0).toFixed(1)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Top risks</b><p>{reviews.filter(row=>row.risk!=="WITHIN POLICY").slice(0,4).map(row=>`${row.ticker}: ${row.risk}`).join(" · ")||"No verified holding currently breaches the review rules."}</p></div><div className="notice"><b>Mitigation</b><p>{fund.cashBufferPct>fund.targetCashPct?"Deploy excess cash only into positive-upside, committee-approved ideas.":"Preserve cash policy and avoid unfunded additions."}</p></div></div></section>}
-
-  {show("vote")&&<section id="cio-vote" className="card"><SectionTitle n="6" title={tr(lang,"Committee Voting & Final Resolution","การลงมติและข้อสรุปการประชุม")}/><div className="grid cols-3">{committeeVotes.map(vote=><article className="metric" key={vote.desk}><span>{vote.desk}</span><strong>{vote.vote}</strong><small>{vote.score}/100</small></article>)}</div><div className="grid cols-4" style={{marginTop:14}}><Metric label="Supportive Votes" value={`${approvals}/${committeeVotes.length}`}/><Metric label="Consensus" value={`${consensus}%`}/><Metric label="Resolution" value={consensus>=67?"APPROVED FOR HUMAN SELECTION":"HOLD / MORE RESEARCH"}/><Metric label="Execution" value="HUMAN REQUIRED"/></div><div className="notice" style={{marginTop:14}}><b>Meeting minutes</b><p>Macro posture: {macroAction}. Portfolio actions: {reviews.filter(row=>row.action!=="KEEP").map(row=>`${row.ticker} ${row.action}`).join(", ")||"none"}. Research shortlist: {candidates.map(row=>row.ticker).join(", ")||"none"}. Funding remains proposal-only until a human submits the approved transaction package.</p></div></section>}
-
-  {show("history")&&<section id="cio-history" className="card"><SectionTitle n="7" title={tr(lang,"Decision History & Committee Attribution","ประวัติการตัดสินใจและผลงานคณะกรรมการ")}/><div className="grid cols-4"><Metric label="Tracked Decisions" value={String(data?.performance?.summary?.total??data?.performance?.total??0)}/><Metric label="Committee Win Rate" value={`${finite(data?.performance?.summary?.winRate??data?.performance?.winRate)??0}%`}/><Metric label="Average Return" value={pct(finite(data?.performance?.summary?.averageReturn??data?.performance?.averageReturn))}/><Metric label="Governance" value="AUDITABLE"/></div><div className="notice" style={{marginTop:14}}>Decision attribution is read from the analysis performance ledger. No result is counted until an observation or exit is recorded.</div></section>}
-
-  <section className="card"><div className="grid cols-3"><Guard title="SINGLE SOURCE OF TRUTH" text="Fund Snapshot + Portfolio Ledger + Analyze Action Queue"/><Guard title="NO AUTO EXECUTION" text="Committee decisions create proposals, never broker trades"/><Guard title="HUMAN APPROVAL" text="A person must select and record every final transaction"/></div></section>
- </div>
+function Head({ n, title }: { n: string; title: string }) {
+  return <h3 className="sub" style={{ marginTop: 0 }}><span className="tag" style={{ marginRight: 8 }}>{n}</span>{title}</h3>;
 }
-
-const th:React.CSSProperties={textAlign:"left",padding:"12px 10px",borderBottom:"1px solid var(--border)",fontSize:12,letterSpacing:".08em",color:"var(--muted)"};
-const td:React.CSSProperties={padding:"12px 10px",borderBottom:"1px solid var(--border)",verticalAlign:"top",fontSize:13};
-function SectionTitle({n,title}:{n:string;title:string}){return <h3 className="sub" style={{marginTop:0}}><span className="tag" style={{marginRight:8}}>{n}</span>{title}</h3>}
-function Metric({label,value}:{label:string;value:string}){return <div className="metric"><span>{label}</span><strong style={{fontSize:20,lineHeight:1.25}}>{value}</strong></div>}
-function Guard({title,text}:{title:string;text:string}){return <div className="metric"><span>{title}</span><strong style={{fontSize:14,lineHeight:1.4}}>{text}</strong></div>}
-function Bar({label,value}:{label:string;value:number}){return <div style={{display:"grid",gridTemplateColumns:"80px 1fr 48px",gap:10,alignItems:"center",margin:"12px 0"}}><span>{label}</span><div style={{height:8,borderRadius:999,background:"rgba(148,163,184,.15)",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.max(0,Math.min(100,value))}%`,background:"linear-gradient(90deg,#31d9f3,#8f5cff)"}}/></div><b>{value}%</b></div>}
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="metric"><span>{label}</span><strong style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
+}
+function Guard({ title, text }: { title: string; text: string }) {
+  return <div className="metric"><span>{title}</span><strong style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 500 }}>{text}</strong></div>;
+}
+function Coverage({ value }: { value: number }) {
+  const tone = value >= 80 ? "#34d399" : value >= 50 ? "#fbbf24" : "#f87171";
+  return (
+    <div>
+      <strong style={{ fontSize: 16, color: tone }}>{value}%</strong>
+      <div style={{ height: 5, borderRadius: 999, background: "rgba(148,163,184,.18)", overflow: "hidden", marginTop: 4 }}>
+        <div style={{ height: "100%", width: `${Math.max(0, Math.min(100, value))}%`, background: tone }} />
+      </div>
+    </div>
+  );
+}

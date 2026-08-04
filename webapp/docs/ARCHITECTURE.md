@@ -37,15 +37,21 @@ flowchart TB
   HOLD --> MON["HoldingsMarketMonitor"]
 ```
 
-**Live routes — 17 of 38**, all reached from the tree above:
+**Live routes — 20 of 39**, all reached from the tree above:
 
 ```
 analyze · analyze/actions · analyze/export · analyze/performance
 portfolio · portfolio/analytics · portfolio/cash · portfolio/cash-buffer
 portfolio/dividends · portfolio/integrity · portfolio/transactions
 portfolio/opportunity-allocation · portfolio/optimizer
+committee/meeting · macro/intelligence · v10/cio
 alpha-discovery · holding-market · symbols · watchlist
 ```
+
+Note that `useFundSnapshot.ts` is a `.ts` module, not a component, and three
+routes reach the page only through it — `macro/intelligence`, `v10/cio` and
+`portfolio/analytics`. A dependency walk that only follows `.tsx` files reports
+them as dormant. They are not.
 
 The live half is coherent and has a clear centre of gravity: **the ledger is the
 source of truth**. `portfolio/transactions` records what happened, the fund
@@ -56,13 +62,13 @@ derivation. Everything else in the live set hangs off that.
 
 ## 2. What is built, tested, and not mounted
 
-**34 components (6,181 lines) and 21 routes** are unreachable from the page.
+**34 components (6,181 lines) and 19 routes** are unreachable from the page.
 This is not dead-by-neglect in the usual sense — much of it is recent, complete
 and covered by tests. It is simply not wired to the current shell.
 
 | Dormant area | Routes | Components | Engine still intact |
 |---|---|---|---|
-| **The desk system** | `team`, `team-portfolio`, `committee/audit`, `committee-memory` | `TeamPanel`, `PortfolioTab`, `EndToEndInvestmentCommittee` | `lib/team/*` — memo, book, round table, risk register |
+| **The desk system** | `team`, `team-portfolio`, `committee/audit`, `committee-memory` | `TeamPanel`, `PortfolioTab`, `EndToEndInvestmentCommittee` | `lib/team/*` — memo, book, round table, risk register. **The round table and risk register are now live** through `committee/meeting`; the rest is still unmounted. |
 | **Scanners** | `scan`, `active-fund` | `ScannerTab`, `AlphaScannerV2`, `AlphaDiscoveryPlatform`, `ActiveFundManager` | `momentumV62` · `factorDiscovery` · `dividendScan` · `thematicPortfolio` (behind `/api/scan`); `lib/scan.ts` three-desk pipeline (behind `/api/active-fund`) |
 | **Research workbook** | `workbook` | — | `lib/workbook.ts` (1,350 lines, 6 sheets) |
 | **Macro & news** | `macro/intelligence`, `macro/history` | `MacroDesk`, `NewsDesk`, `MacroIntelligencePanel` | `lib/news/*`, `lib/team/macroPlan`, `fearGreed` |
@@ -192,16 +198,22 @@ regardless of whether their UI is currently mounted.
 | Marcus Webb | `team/intelligence` | Earnings quality, cash conversion | partial |
 | Priya Nair | `team/samp` | 3-layer pressure read, entry veto | ✗ |
 | Thomas Eriksson | `team/positionValuation` · `analysis` | Fair value, anchor stack | partial |
-| Kai Tanaka | `team/risk` · `sizingV4` | ATR stops, zones, sizing ladder | partial |
+| Kai Tanaka | `team/risk` · `sizingV4` | ATR stops, zones, sizing ladder | ✓ |
 | Lena Müller | `team/portfolio` | Sleeve balance, dual objectives | ✓ |
-| Ryan Blackwood | `team/book` (liquidity) | Sessions-to-exit at 20% of ADV | ✗ |
+| Ryan Blackwood | `team/book` (liquidity) | Sessions-to-exit at 20% of ADV | ✓ |
 | Nina Okonkwo | `news/*` | News pulse, feed quality, lineage | ✗ |
-| Leo Tanaka | `priceMoves` | As-of timestamps, stale flags | ✗ |
-| Miriam Osei | `team/governance` (gates) | 11 pre-trade gates, V/E/U flags | partial |
-| James Hartwell | `team/memo` · `book` | Final signal, precedence | partial |
+| Leo Tanaka | `priceMoves` | As-of timestamps, stale flags | partial |
+| Miriam Osei | `team/governance` (gates) | 11 pre-trade gates, V/E/U flags | ✓ |
+| James Hartwell | `team/memo` · `book` · `committee` | Final signal, precedence, casting vote | ✓ |
 
 "partial" means the engine is reached through `/api/analyze` but its dedicated
 panel is not mounted.
+
+`lib/team/committee.ts` is where the separate measurements become one decision:
+it takes each desk's read, produces one motion per position and per referred
+idea, polls all fourteen seats, and balances sources against uses. It is a pure
+module — `/api/committee/meeting` does every fetch and hands it plain data.
+Seven of the seats above became live when that route was mounted.
 
 ---
 
@@ -262,7 +274,8 @@ Ordered by what it costs to leave alone.
 
 | # | Item | Cost of leaving it | Cost of fixing |
 |---|---|---|---|
-| 1 | **34 dormant components, 21 dormant routes** | Every search returns two answers; new work risks landing in the unmounted copy | A decision per area (§2), then an afternoon of moves |
+| 1 | **34 dormant components, 19 dormant routes** | Every search returns two answers; new work risks landing in the unmounted copy | A decision per area (§2), then an afternoon of moves |
+| 1a | **`validate-v9.mjs` fails on `main`** — it asserts `V9InstitutionalStatus` is mounted, and it is not | `npm run validate:institutional` is red, so CI never reaches `typecheck` or `build` | Mount the panel or retire the validator with the component. Same decision as §2, and it is already costing the build |
 | 1b | **Two complete scanner engines** (§2) | "The scanner" means two different things depending on which file you open | Pick one, retire or archive the other |
 | 2 | **`/api/team/route.ts` — 554 lines, five modes, 30 lib imports** | The largest single handler; every mode's fetch orchestration is tangled with the others | Split to `team/[mode]/route.ts`, or extract five `buildXInput()` helpers. ~2h, mechanical |
 | 3 | **`lib/workbook.ts` — 1,350 lines** | Six sheet builders in one file | Split per sheet, share `style.ts`. Low risk; the sheets barely interact |

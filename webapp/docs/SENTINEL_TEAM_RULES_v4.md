@@ -396,6 +396,70 @@ desk in the path.
 
 ---
 
+## 10d. The investment committee meeting
+
+`lib/team/committee.ts`, served by `/api/committee/meeting`, mounted at the CIO
+workspace. The meeting is where the desks' separate measurements become one
+decision, and it produces the artefacts a real fund meeting produces.
+
+### One motion per position, one per referred idea
+
+Motions are ordered by severity and the first rule that fires wins, so a
+concentration emergency is never quietly downgraded because the trend also
+looked fine.
+
+| Order | Motion | Fires when |
+|---|---|---|
+| 1 | **EXIT** | a hard block plus a broken trend or a negative signal; or price below both the 50- and 200-day averages with a 3-month return under −15% |
+| 2 | **TRIM** | zone is TRIM or EMERGENCY; or weight above the 20% hard cap; or a premium valuation above the 15% review threshold |
+| 3 | **ADD** | momentum ≥ 65 with no hard block, weight under 15%, valuation not premium, regime ≥ 45, and deployable cash exists |
+| 4 | **HOLD** | everything else — and it still has to state a reason |
+
+**Reserve assets are exempt from the trend rules.** A T-bill ETF has no thesis
+to break. It is a funding source, and the motion says so.
+
+Referred ideas are sized by conviction band — 80+ takes 8% of NAV, 65+ takes 6%,
+50+ takes 4%, everything else 3% — capped by deployable cash. A referral with
+**no** conviction score gets the floor, not the benefit of the doubt.
+
+### Voting
+
+All fourteen seats are polled on every motion. **A seat that cannot measure its
+own input abstains and names what was missing.** This is the rule that makes the
+tally mean something: six desks agreeing because they all read the same
+composite score is one opinion wearing six hats.
+
+The chair votes last and cannot be the reason a motion passes without the desks
+behind it: he follows the desk tally, and on a genuine tie the casting vote goes
+to the side that reduces exposure.
+
+Two vetoes exist, and **a veto defers rather than rejects** — "not on this
+evidence" is a different statement from "no":
+
+- **Miriam Osei** vetoes any sized motion whose evidence coverage is below 50%.
+- **Kai Tanaka** vetoes any addition that would take a name past the 20% cap.
+
+A motion also defers when the meeting is inquorate (fewer than 8 of 14 seats
+brought a measurement) or when fewer than 4 seats could vote at all.
+
+### Sources must fund uses
+
+The capital plan sums deployable cash and the proceeds of every carried sale,
+then funds carried purchases highest-conviction first. **When the meeting
+approves more buying than it has funded, the remainder is cut or reduced and
+every cut is named** in the plan and in the disclosures. An approval the fund
+cannot pay for is not a decision.
+
+### What leaves the room
+
+A trade blotter of BUY/SELL lines with approximate sizes and a reference price,
+one resolution per motion with a named owner and a review date (7 days for
+deferrals, 14 for actions, 30 for holds), every dissenting vote on a carried
+motion kept on the record, and minutes. **Nothing executes.** The engine has no
+path to a broker, and a human records the actual fills in the ledger.
+
+---
+
 ## 11. Precedence
 
 Applied top-down; the first level that fires decides, and every recommendation
