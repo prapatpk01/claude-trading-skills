@@ -57,38 +57,23 @@ export default function CIOCommandCenterV12({lang,onNavigate}:{lang:AppLang;onNa
   return()=>{active=false};
  },[refreshKey]);
 
- const holdings=useMemo(()=>{
-  const rows=Array.isArray(data?.portfolio?.holdings)?data.portfolio.holdings:fund.holdings;
-  return rows.filter((row:any)=>!row?.closed_at);
- },[data?.portfolio?.holdings,fund.holdings]);
-
- const reviews=useMemo<HoldingReview[]>(()=>{
-  const total=holdings.reduce((sum:number,row:any)=>{
-   const shares=Math.max(0,finite(row?.shares)??0);
-   const price=Math.max(0,finite(row?.price??row?.current_price??row?.avg_cost)??0);
-   return sum+shares*price;
-  },0);
-  return holdings.map((row:any)=>{
-   const ticker=String(row?.ticker??"").toUpperCase();
-   const shares=Math.max(0,finite(row?.shares)??0);
-   const price=Math.max(0,finite(row?.price??row?.current_price??row?.avg_cost)??0);
-   const avg=finite(row?.avg_cost);
-   const marketValue=shares*price;
-   const weight=total>0?marketValue/total*100:0;
-   const pnlPct=avg&&avg>0?(price/avg-1)*100:null;
-   const over=weight>20;
+ const reviews=useMemo<HoldingReview[]>(()=>fund.holdings.map((row):HoldingReview=>{
+   const pnlPct=row.avgCost>0?(row.price/row.avgCost-1)*100:null;
+   const over=row.weightPct>20;
    const weak=pnlPct!==null&&pnlPct<-12;
    const strong=pnlPct!==null&&pnlPct>20;
    const action=over?"TRIM REVIEW":weak?"THESIS REVIEW":strong?"KEEP WINNER":"KEEP";
    return{
-    ticker,weight,marketValue,pnlPct,
+    ticker:row.ticker,
+    weight:row.weightPct,
+    marketValue:row.marketValue,
+    pnlPct,
     valuation:pnlPct==null?"DATA LIMITED":pnlPct>25?"PREMIUM / WATCH":pnlPct<-10?"DISCOUNT / VERIFY":"FAIR RANGE",
     risk:over?"CONCENTRATION HIGH":weak?"DRAWDOWN WATCH":"WITHIN POLICY",
     action,
     reason:over?"Position exceeds the single-name review zone.":weak?"Drawdown requires thesis and catalyst verification.":strong?"Winner remains inside policy; do not trim mechanically.":"No verified evidence currently justifies a change.",
-   }
-  }).sort((a,b)=>b.weight-a.weight);
- },[holdings]);
+   };
+  }).sort((a:HoldingReview,b:HoldingReview)=>b.weight-a.weight),[fund.holdings]);
 
  const candidates=useMemo<Candidate[]>(()=>{
   const payload=data?.actions;
@@ -125,7 +110,7 @@ export default function CIOCommandCenterV12({lang,onNavigate}:{lang:AppLang;onNa
  const jump=(id:Tab)=>{setTab("full");requestAnimationFrame(()=>document.getElementById(`cio-${id}`)?.scrollIntoView({behavior:"smooth",block:"start"}))};
 
  if(fund.loading)return <section className="card"><p>Loading verified fund snapshot…</p></section>;
- return <div className="workspace-stack" data-cio-version="12.4" data-workspace="investment-committee" data-source-of-truth="fund-snapshot portfolio-ledger analysis-actions">
+ return <div className="workspace-stack" data-cio-version="12.5" data-workspace="investment-committee" data-source-of-truth="fund-snapshot portfolio-ledger analysis-actions">
   <section className="card" style={{borderTop:"2px solid var(--accent)"}}>
    <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
     <div><span className="tag">CIO · PHASE 4</span><h2 className="section" style={{margin:"10px 0 6px"}}>{tr(lang,"Executive Investment Committee Workspace","ห้องประชุมคณะกรรมการลงทุน")}</h2><p className="muted" style={{margin:0,maxWidth:880}}>{tr(lang,"One meeting combines market regime, portfolio review, research candidates, risk, valuation, capital allocation, voting and the final human-approved resolution.","การประชุมเดียวรวมสภาวะตลาด การทบทวนพอร์ต หุ้นที่เสนอ ความเสี่ยง มูลค่า การจัดสรรเงิน ลงมติ และข้อสรุปที่มนุษย์อนุมัติ")}</p></div>
@@ -142,9 +127,9 @@ export default function CIOCommandCenterV12({lang,onNavigate}:{lang:AppLang;onNa
 
   {show("research")&&<section id="cio-research" className="card"><SectionTitle n="3" title={tr(lang,"Research Candidates & New Ideas","หุ้นใหม่และข้อเสนอจากฝ่ายวิจัย")}/>{candidates.length?<div className="grid cols-2">{candidates.map((row,index)=><article className="metric" key={`${row.ticker}-${index}`}><span>#{index+1} · {row.source}</span><strong>{row.ticker} · {row.rating}</strong><small>Conviction {row.conviction}/100 · Upside {pct(row.upside)} · Target {row.target==null?"—":money(row.target)} · {row.status}</small></article>)}</div>:<div className="notice">No Stock Analyze candidate is currently queued for CIO review.</div>}<div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}><button className="btn ghost" type="button" onClick={()=>onNavigate("research")}>Open Research</button><button className="btn ghost" type="button" onClick={()=>onNavigate("analyze")}>Open Stock Analyze</button></div></section>}
 
-  {show("capital")&&<section id="cio-capital" className="card"><SectionTitle n="4" title={tr(lang,"Capital Allocation & Funding Plan","การจัดสรรเงินทุนและแหล่งเงิน")}/><div className="grid cols-4"><Metric label="Cash & Equivalents" value={money(fund.cashAndEquivalents)}/><Metric label="Deployable Cash" value={money(fund.deployableCash)}/><Metric label="Proposed Deployment" value={money(proposedCapital)}/><Metric label="Remaining Deployable" value={money(remainingDeployable)}/></div><div className="notice" style={{marginTop:14}}><b>Funding plan</b><p>{proposedCapital>0?`Use ${money(trimSource)} of deployable reserve only for named, human-selected candidates. Cash remains uncommitted until the final resolution is submitted.`:`KEEP ${money(fund.deployableCash)} IN RESERVE — NO SALE AUTHORIZED`}</p></div></section>}
+  {show("capital")&&<section id="cio-capital" className="card"><SectionTitle n="4" title={tr(lang,"Capital Allocation & Funding Plan","การจัดสรรเงินทุนและแหล่งเงิน")}/><div className="grid cols-4"><Metric label="Broker Cash" value={money(fund.cashBalance)}/><Metric label="Deployable Cash" value={money(fund.deployableCash)}/><Metric label="Proposed Deployment" value={money(proposedCapital)}/><Metric label="Remaining Deployable" value={money(remainingDeployable)}/></div><div className="notice" style={{marginTop:14}}><b>Funding plan</b><p>{proposedCapital>0?`Use ${money(trimSource)} of deployable cash only for named, human-selected candidates. Cash remains uncommitted until the final resolution is submitted.`:`KEEP ${money(fund.deployableCash)} IN CASH — NO SALE AUTHORIZED`}</p></div></section>}
 
-  {show("risk")&&<section id="cio-risk" className="card"><SectionTitle n="5" title={tr(lang,"Risk, Liquidity & Valuation Meeting","การประชุมความเสี่ยง สภาพคล่อง และมูลค่า")}/><div className="grid cols-4"><Metric label="Risk Score" value={`${fund.riskScore}/100`}/><Metric label="Liquidity" value={`${fund.liquidityScore}/100`}/><Metric label="Quality" value={`${fund.qualityScore}/100`}/><Metric label="Largest Weight" value={`${(reviews[0]?.weight??0).toFixed(1)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Top risks</b><p>{reviews.filter(row=>row.risk!=="WITHIN POLICY").slice(0,4).map(row=>`${row.ticker}: ${row.risk}`).join(" · ")||"No verified holding currently breaches the review rules."}</p></div><div className="notice"><b>Mitigation</b><p>{fund.cashBufferPct>fund.targetCashPct?"Deploy excess reserve only into positive-upside, committee-approved ideas.":"Preserve reserve policy and avoid unfunded additions."}</p></div></div></section>}
+  {show("risk")&&<section id="cio-risk" className="card"><SectionTitle n="5" title={tr(lang,"Risk, Liquidity & Valuation Meeting","การประชุมความเสี่ยง สภาพคล่อง และมูลค่า")}/><div className="grid cols-4"><Metric label="Risk Score" value={`${fund.riskScore}/100`}/><Metric label="Liquidity" value={`${fund.liquidityScore}/100`}/><Metric label="Quality" value={`${fund.qualityScore}/100`}/><Metric label="Largest Weight" value={`${(reviews[0]?.weight??0).toFixed(1)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Top risks</b><p>{reviews.filter(row=>row.risk!=="WITHIN POLICY").slice(0,4).map(row=>`${row.ticker}: ${row.risk}`).join(" · ")||"No verified holding currently breaches the review rules."}</p></div><div className="notice"><b>Mitigation</b><p>{fund.cashBufferPct>fund.targetCashPct?"Deploy excess cash only into positive-upside, committee-approved ideas.":"Preserve cash policy and avoid unfunded additions."}</p></div></div></section>}
 
   {show("vote")&&<section id="cio-vote" className="card"><SectionTitle n="6" title={tr(lang,"Committee Voting & Final Resolution","การลงมติและข้อสรุปการประชุม")}/><div className="grid cols-3">{committeeVotes.map(vote=><article className="metric" key={vote.desk}><span>{vote.desk}</span><strong>{vote.vote}</strong><small>{vote.score}/100</small></article>)}</div><div className="grid cols-4" style={{marginTop:14}}><Metric label="Supportive Votes" value={`${approvals}/${committeeVotes.length}`}/><Metric label="Consensus" value={`${consensus}%`}/><Metric label="Resolution" value={consensus>=67?"APPROVED FOR HUMAN SELECTION":"HOLD / MORE RESEARCH"}/><Metric label="Execution" value="HUMAN REQUIRED"/></div><div className="notice" style={{marginTop:14}}><b>Meeting minutes</b><p>Macro posture: {macroAction}. Portfolio actions: {reviews.filter(row=>row.action!=="KEEP").map(row=>`${row.ticker} ${row.action}`).join(", ")||"none"}. Research shortlist: {candidates.map(row=>row.ticker).join(", ")||"none"}. Funding remains proposal-only until a human submits the approved transaction package.</p></div></section>}
 
