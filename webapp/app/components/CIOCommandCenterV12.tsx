@@ -1,147 +1,275 @@
 "use client";
 
-import {useEffect,useMemo,useState} from "react";
-import type {AppLang} from "../page";
-import {useFundSnapshot} from "./useFundSnapshot";
+import { useEffect, useMemo, useState } from "react";
+import type { AppLang } from "../page";
+import { useFundSnapshot, type FundHolding } from "./useFundSnapshot";
 
-type Tab="full"|"macro"|"portfolio"|"research"|"capital"|"risk"|"vote"|"history";
-type Candidate={ticker:string;rating:string;conviction:number;upside:number|null;target:number|null;price:number|null;source:string;status:string};
-type HoldingReview={ticker:string;weight:number;marketValue:number;pnlPct:number|null;valuation:string;risk:string;action:string;reason:string};
+type TeamId = "macro" | "portfolio" | "research" | "analyze";
+type Tab = "meeting" | TeamId | "resolution";
+type AnyRow = Record<string, any>;
 
-const tabs:{id:Tab;en:string;th:string}[]=[
- {id:"full",en:"Full Meeting",th:"ประชุมทั้งหมด"},
- {id:"macro",en:"Macro Strategy",th:"กลยุทธ์มหภาค"},
- {id:"portfolio",en:"Portfolio Review",th:"ทบทวนพอร์ต"},
- {id:"research",en:"Research Candidates",th:"หุ้นที่เสนอ"},
- {id:"capital",en:"Capital Allocation",th:"จัดสรรเงินทุน"},
- {id:"risk",en:"Risk & Valuation",th:"ความเสี่ยงและมูลค่า"},
- {id:"vote",en:"Voting & Resolution",th:"ลงมติและข้อสรุป"},
- {id:"history",en:"Decision History",th:"ประวัติการตัดสินใจ"},
+type Candidate = {
+  ticker: string;
+  rating: string;
+  conviction: number;
+  upside: number | null;
+  target: number | null;
+  price: number | null;
+  valuation: string;
+  thesis: string;
+  catalyst: string;
+  vision: string;
+  source: string;
+};
+
+type HoldingDecision = {
+  ticker: string;
+  weight: number;
+  marketValue: number;
+  pnlPct: number | null;
+  valuation: string;
+  risk: string;
+  action: "ADD" | "HOLD" | "TRIM" | "EXIT" | "REVIEW";
+  reason: string;
+};
+
+type Allocation = {
+  ticker: string;
+  amount: number;
+  weight: number;
+  reason: string;
+};
+
+const TEAM_META: Array<{ id: TeamId; no: string; en: string; th: string; missionEn: string; missionTh: string }> = [
+  { id: "macro", no: "01", en: "Macro & Sentiment", th: "ทีมมหภาคและอารมณ์ตลาด", missionEn: "Regime, momentum, sector rotation, rates, VIX, fear & greed and economic conditions.", missionTh: "วิเคราะห์ Regime, Momentum, Sector Rotation, ดอกเบี้ย, VIX, Fear & Greed และเศรษฐกิจ" },
+  { id: "portfolio", no: "02", en: "Portfolio & Holdings", th: "ทีมพอร์ตและหุ้นที่ถือ", missionEn: "Portfolio health, concentration, risk, valuation and holding-level actions.", missionTh: "วิเคราะห์สุขภาพพอร์ต ความกระจุกตัว ความเสี่ยง มูลค่า และการจัดการหุ้นเดิม" },
+  { id: "research", no: "03", en: "Research & Future Themes", th: "ทีมวิจัยและแนวโน้มอนาคต", missionEn: "Find new investments using vision, thesis, catalyst and future-return potential.", missionTh: "ค้นหาการลงทุนใหม่จาก Vision, Thesis, Catalyst และโอกาสสร้างผลตอบแทน" },
+  { id: "analyze", no: "04", en: "Fundamental & Valuation", th: "ทีมวิเคราะห์พื้นฐานและมูลค่า", missionEn: "Analyze holdings and research candidates for fundamentals, fair value and risk/reward.", missionTh: "รับงานจาก Holdings และ Research เพื่อวิเคราะห์พื้นฐาน Fair Value และ Risk/Reward" },
 ];
 
-const tr=(lang:AppLang,en:string,th:string)=>lang==="th"?th:en;
-const money=(value:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value||0);
-const pct=(value:number|null)=>value==null?"—":`${value>=0?"+":""}${value.toFixed(1)}%`;
-const finite=(value:unknown):number|null=>{const numberValue=typeof value==="number"?value:Number(value);return Number.isFinite(numberValue)?numberValue:null};
+const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number.isFinite(value) ? value : 0);
+const pct = (value: number | null, digits = 1) => value == null ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(digits)}%`;
+const finite = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+const text = (value: unknown, fallback = "Evidence not yet available") => {
+  const result = String(value ?? "").trim();
+  return result || fallback;
+};
+const tr = (lang: AppLang, en: string, th: string) => lang === "th" ? th : en;
 
-async function getJson(path:string){
- const response=await fetch(path,{cache:"no-store",headers:{Accept:"application/json"}});
- const raw=await response.text();
- let json:any={};
- try{json=raw?JSON.parse(raw):{}}catch{throw new Error(`${path} returned invalid JSON`)}
- if(!response.ok)throw new Error(json?.error??`${path} returned ${response.status}`);
- return json;
+async function getJson(path: string) {
+  const response = await fetch(path, { cache: "no-store", headers: { Accept: "application/json" } });
+  const raw = await response.text();
+  const json = raw ? JSON.parse(raw) : {};
+  if (!response.ok) throw new Error(json?.error ?? `${path} returned ${response.status}`);
+  return json;
 }
 
-export default function CIOCommandCenterV12({lang,onNavigate}:{lang:AppLang;onNavigate:(id:string)=>void}){
- const fund=useFundSnapshot();
- const[tab,setTab]=useState<Tab>("full");
- const[data,setData]=useState<any>({portfolio:null,actions:null,performance:null});
- const[error,setError]=useState<string|null>(null);
- const[refreshKey,setRefreshKey]=useState(0);
+export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
+  const fund = useFundSnapshot();
+  const [tab, setTab] = useState<Tab>("meeting");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [data, setData] = useState<{ actions: AnyRow | null; performance: AnyRow | null }>({ actions: null, performance: null });
+  const [error, setError] = useState<string | null>(null);
 
- useEffect(()=>{
-  let active=true;
-  setError(null);
-  Promise.allSettled([
-   getJson("/api/portfolio"),
-   getJson("/api/analysis/actions"),
-   getJson("/api/analysis/performance"),
-  ]).then(results=>{
-   if(!active)return;
-   const values=results.map(result=>result.status==="fulfilled"?result.value:null);
-   setData({portfolio:values[0],actions:values[1],performance:values[2]});
-   const failed=results.filter(result=>result.status==="rejected").length;
-   if(failed)setError(`${failed} committee source(s) unavailable. Missing evidence was excluded.`);
-  });
-  return()=>{active=false};
- },[refreshKey]);
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    Promise.allSettled([getJson("/api/analysis/actions"), getJson("/api/analysis/performance")]).then((results) => {
+      if (!active) return;
+      const actions = results[0].status === "fulfilled" ? results[0].value : null;
+      const performance = results[1].status === "fulfilled" ? results[1].value : null;
+      setData({ actions, performance });
+      const failed = results.filter((result) => result.status === "rejected").length;
+      if (failed) setError(`${failed} supporting source(s) unavailable. The committee excluded missing evidence.`);
+    });
+    return () => { active = false; };
+  }, [refreshKey]);
 
- const reviews=useMemo<HoldingReview[]>(()=>fund.holdings.map((row):HoldingReview=>{
-   const pnlPct=row.avgCost>0?(row.price/row.avgCost-1)*100:null;
-   const over=row.weightPct>20;
-   const weak=pnlPct!==null&&pnlPct<-12;
-   const strong=pnlPct!==null&&pnlPct>20;
-   const action=over?"TRIM REVIEW":weak?"THESIS REVIEW":strong?"KEEP WINNER":"KEEP";
-   return{
-    ticker:row.ticker,
-    weight:row.weightPct,
-    marketValue:row.marketValue,
-    pnlPct,
-    valuation:pnlPct==null?"DATA LIMITED":pnlPct>25?"PREMIUM / WATCH":pnlPct<-10?"DISCOUNT / VERIFY":"FAIR RANGE",
-    risk:over?"CONCENTRATION HIGH":weak?"DRAWDOWN WATCH":"WITHIN POLICY",
-    action,
-    reason:over?"Position exceeds the single-name review zone.":weak?"Drawdown requires thesis and catalyst verification.":strong?"Winner remains inside policy; do not trim mechanically.":"No verified evidence currently justifies a change.",
-   };
-  }).sort((a:HoldingReview,b:HoldingReview)=>b.weight-a.weight),[fund.holdings]);
+  const actionRows = useMemo<AnyRow[]>(() => {
+    const payload = data.actions;
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.actions)) return payload.actions;
+    if (Array.isArray(payload?.items)) return payload.items;
+    return [];
+  }, [data.actions]);
 
- const candidates=useMemo<Candidate[]>(()=>{
-  const payload=data?.actions;
-  const rows=Array.isArray(payload)?payload:Array.isArray(payload?.actions)?payload.actions:Array.isArray(payload?.items)?payload.items:[];
-  return rows.map((row:any)=>({
-   ticker:String(row?.ticker??row?.symbol??"").toUpperCase(),
-   rating:String(row?.rating??row?.decision??row?.action??"WATCH").toUpperCase(),
-   conviction:Math.max(0,Math.min(100,finite(row?.conviction??row?.score)??0)),
-   upside:finite(row?.upside??row?.expected_upside),
-   target:finite(row?.target??row?.target_price),
-   price:finite(row?.price??row?.current_price),
-   source:String(row?.source??row?.engine??"Stock Analyze"),
-   status:String(row?.status??"PENDING CIO").toUpperCase(),
-  })).filter((row:Candidate)=>row.ticker).sort((a:Candidate,b:Candidate)=>b.conviction-a.conviction).slice(0,8);
- },[data?.actions]);
+  const analysisByTicker = useMemo(() => {
+    const map = new Map<string, AnyRow>();
+    actionRows.forEach((row) => {
+      const ticker = String(row?.ticker ?? row?.symbol ?? "").toUpperCase();
+      if (ticker) map.set(ticker, row);
+    });
+    return map;
+  }, [actionRows]);
 
- const macroAction=fund.macroScore>=65?"ADVANCE SELECTIVELY":fund.macroScore<40?"REDUCE RISK / RAISE CASH":"BALANCED / SELECTIVE";
- const committeeVotes=[
-  {desk:"RESEARCH",vote:candidates.some(row=>/BUY/.test(row.rating))?"BUY":"HOLD",score:candidates[0]?.conviction??fund.qualityScore},
-  {desk:"QUANT",vote:fund.portfolioHealth>=65?"BUY":"HOLD",score:fund.portfolioHealth},
-  {desk:"VALUATION",vote:fund.qualityScore>=60?"BUY":"HOLD",score:fund.qualityScore},
-  {desk:"RISK",vote:fund.riskScore>=65?"BUY":"HOLD",score:fund.riskScore},
-  {desk:"PORTFOLIO",vote:fund.portfolioHealth>=60?"BUY":"HOLD",score:fund.portfolioHealth},
-  {desk:"CIO",vote:fund.macroScore>=45&&fund.riskScore>=55?"BUY":"HOLD",score:Math.round((fund.macroScore+fund.riskScore+fund.portfolioHealth)/3)},
- ];
- const approvals=committeeVotes.filter(vote=>vote.vote==="BUY").length;
- const consensus=Math.round(approvals/committeeVotes.length*100);
- const need=candidates.filter(row=>/BUY/.test(row.rating)).reduce((sum,row)=>sum+Math.max(0,finite((row as any).amount)??0),0);
- const proposedCapital=need>0?need:Math.min(fund.deployableCash,candidates.some(row=>/BUY/.test(row.rating))?fund.deployableCash:0);
- const trimSource=Math.min(proposedCapital,fund.deployableCash);
- const remainingDeployable=Math.max(0,fund.deployableCash-trimSource);
+  const candidates = useMemo<Candidate[]>(() => actionRows.map((row): Candidate => {
+    const ticker = String(row?.ticker ?? row?.symbol ?? "").toUpperCase();
+    return {
+      ticker,
+      rating: String(row?.rating ?? row?.decision ?? row?.action ?? "WATCH").toUpperCase(),
+      conviction: Math.max(0, Math.min(100, finite(row?.conviction ?? row?.score) ?? 0)),
+      upside: finite(row?.upside ?? row?.expected_upside ?? row?.upside_pct),
+      target: finite(row?.target ?? row?.target_price ?? row?.fair_value),
+      price: finite(row?.price ?? row?.current_price),
+      valuation: text(row?.valuation ?? row?.valuation_label ?? row?.fair_value_status, "VALUATION PENDING"),
+      thesis: text(row?.thesis ?? row?.investment_thesis, "Thesis requires analyst completion."),
+      catalyst: text(row?.catalyst ?? row?.catalysts, "No verified catalyst supplied."),
+      vision: text(row?.vision ?? row?.future_trend ?? row?.theme, "Future trend evidence pending."),
+      source: text(row?.source ?? row?.engine, "Analyze Queue"),
+    };
+  }).filter((row) => row.ticker).sort((a, b) => {
+    const upsideA = a.upside ?? 0;
+    const upsideB = b.upside ?? 0;
+    return (b.conviction + upsideB * 0.35) - (a.conviction + upsideA * 0.35);
+  }).slice(0, 10), [actionRows]);
 
- const show=(id:Tab)=>tab==="full"||tab===id;
- const jump=(id:Tab)=>{setTab("full");requestAnimationFrame(()=>document.getElementById(`cio-${id}`)?.scrollIntoView({behavior:"smooth",block:"start"}))};
+  const holdings = useMemo<HoldingDecision[]>(() => fund.holdings.map((holding: FundHolding): HoldingDecision => {
+    const analysis = analysisByTicker.get(holding.ticker);
+    const pnlPct = holding.avgCost > 0 ? (holding.price / holding.avgCost - 1) * 100 : null;
+    const explicitValuation = String(analysis?.valuation ?? analysis?.valuation_label ?? analysis?.fair_value_status ?? "").toUpperCase();
+    const valuation = explicitValuation || (pnlPct == null ? "UNVERIFIED" : pnlPct >= 25 ? "FULL / OVER" : pnlPct <= -12 ? "UNDER / VERIFY" : "FAIR");
+    const noFuture = /NO GROWTH|WEAK THESIS|DETERIORAT|SELL|EXIT/.test(String(analysis?.risk ?? analysis?.thesis_status ?? analysis?.rating ?? "").toUpperCase());
+    const overWeight = holding.weightPct >= 18;
+    const deepWeakness = pnlPct != null && pnlPct <= -18;
+    const fullValuation = /OVER|FULL|EXPENSIVE|PREMIUM/.test(valuation);
+    const positive = /BUY|ADD|UNDERVALUED|ATTRACTIVE/.test(String(analysis?.rating ?? analysis?.decision ?? analysis?.action ?? valuation).toUpperCase());
+    let action: HoldingDecision["action"] = "HOLD";
+    if (noFuture || deepWeakness) action = "EXIT";
+    else if (overWeight || fullValuation) action = "TRIM";
+    else if (positive) action = "ADD";
+    else if (!analysis) action = "REVIEW";
+    const risk = overWeight ? "CONCENTRATION" : deepWeakness ? "THESIS / DRAWDOWN" : fullValuation ? "VALUATION" : "WITHIN POLICY";
+    const reason = action === "EXIT"
+      ? "Thesis, trend or drawdown evidence requires an exit review."
+      : action === "TRIM"
+        ? "Valuation is full or position weight is high; recycle capital selectively."
+        : action === "ADD"
+          ? "Fundamental/valuation evidence remains supportive and position is within limits."
+          : action === "REVIEW"
+            ? "No current Analyze evidence is linked to this holding."
+            : "No verified evidence currently justifies a portfolio change.";
+    return { ticker: holding.ticker, weight: holding.weightPct, marketValue: holding.marketValue, pnlPct, valuation, risk, action, reason };
+  }).sort((a, b) => b.weight - a.weight), [analysisByTicker, fund.holdings]);
 
- if(fund.loading)return <section className="card"><p>Loading verified fund snapshot…</p></section>;
- return <div className="workspace-stack" data-cio-version="12.5" data-workspace="investment-committee" data-source-of-truth="fund-snapshot portfolio-ledger analysis-actions">
-  <section className="card" style={{borderTop:"2px solid var(--accent)"}}>
-   <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
-    <div><span className="tag">CIO · PHASE 4</span><h2 className="section" style={{margin:"10px 0 6px"}}>{tr(lang,"Executive Investment Committee Workspace","ห้องประชุมคณะกรรมการลงทุน")}</h2><p className="muted" style={{margin:0,maxWidth:880}}>{tr(lang,"One meeting combines market regime, portfolio review, research candidates, risk, valuation, capital allocation, voting and the final human-approved resolution.","การประชุมเดียวรวมสภาวะตลาด การทบทวนพอร์ต หุ้นที่เสนอ ความเสี่ยง มูลค่า การจัดสรรเงิน ลงมติ และข้อสรุปที่มนุษย์อนุมัติ")}</p></div>
-    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><span className="tag">{fund.verified?"COMMITTEE READY":"VERIFY DATA"}</span><button className="btn ghost" type="button" onClick={()=>setRefreshKey(value=>value+1)}>↻ Refresh Meeting</button></div>
-   </div>
-   {error&&<div className="notice" style={{marginTop:12}}>{error}</div>}
-   <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4,marginTop:16,position:"sticky",top:0,zIndex:5}}>{tabs.map(item=><button key={item.id} className={`btn ${tab===item.id?"":"ghost"}`} type="button" onClick={()=>setTab(item.id)}>{lang==="th"?item.th:item.en}</button>)}</div>
-   {tab==="full"&&<div style={{display:"flex",gap:8,overflowX:"auto",marginTop:10}}>{tabs.filter(item=>item.id!=="full").map(item=><button key={item.id} className="btn ghost sm" type="button" onClick={()=>jump(item.id)}>{lang==="th"?item.th:item.en}</button>)}</div>}
-  </section>
+  const macro = fund.raw?.macro ?? {};
+  const bufferRegime = fund.raw?.buffer?.regime ?? {};
+  const vix = finite(bufferRegime?.vix ?? macro?.vix ?? macro?.sentiment?.vix);
+  const fearGreed = finite(macro?.sentiment?.fearGreed ?? macro?.fearGreed ?? macro?.fear_greed?.value);
+  const rates = finite(macro?.economy?.policyRate ?? macro?.rates?.fedFunds ?? macro?.fedFundsRate);
+  const inflation = finite(macro?.economy?.inflation ?? macro?.cpi?.yoy ?? macro?.inflation);
+  const growth = finite(macro?.economy?.gdpGrowth ?? macro?.gdp?.growth ?? macro?.gdpGrowth);
+  const sectorRows = Array.isArray(macro?.sectors) ? macro.sectors : Array.isArray(macro?.sectorRotation) ? macro.sectorRotation : [];
+  const leadingSectors = sectorRows.slice(0, 4).map((row: AnyRow) => text(row?.sector ?? row?.name ?? row?.ticker, "Unknown")).join(" · ") || "Sector-rotation data unavailable";
+  const macroPosture = fund.macroScore >= 65 ? "RISK-ON · SELECTIVE EXPANSION" : fund.macroScore <= 40 ? "RISK-OFF · CAPITAL DEFENSE" : "NEUTRAL · BALANCED SELECTIVITY";
 
-  {show("macro")&&<section id="cio-macro" className="card"><SectionTitle n="1" title={tr(lang,"Macro Strategy & Market Regime","กลยุทธ์มหภาคและสภาวะตลาด")}/><div className="grid cols-4"><Metric label="Regime" value={fund.macroLabel.toUpperCase()}/><Metric label="Macro Score" value={`${fund.macroScore.toFixed(0)}/100`}/><Metric label="Fund Posture" value={macroAction}/><Metric label="Target Cash" value={`${fund.targetCashPct.toFixed(0)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Executive summary</b><p>{fund.macroVision}</p><strong>Recommendation: {macroAction}</strong></div><div className="card" style={{margin:0}}><h3 className="sub">Outlook probabilities</h3><Bar label="Bullish" value={fund.bullishPct??0}/><Bar label="Neutral" value={fund.neutralPct??0}/><Bar label="Bearish" value={fund.bearishPct??0}/></div></div></section>}
+  const trimCandidates = holdings.filter((row) => row.action === "TRIM" || row.action === "EXIT");
+  const suggestedBudget = Math.min(800, Math.max(0, fund.deployableCash + trimCandidates.reduce((sum, row) => sum + Math.min(row.marketValue * 0.1, 300), 0)));
+  const addCandidates = candidates.filter((row) => /BUY|ADD|ACCUMULATE|OUTPERFORM/.test(row.rating) || (row.upside ?? 0) > 8).slice(0, 3);
+  const allocation = useMemo<Allocation[]>(() => {
+    if (!addCandidates.length || suggestedBudget <= 0) return [];
+    const weights = addCandidates.length === 1 ? [1] : addCandidates.length === 2 ? [0.62, 0.38] : [0.5, 0.3125, 0.1875];
+    let used = 0;
+    return addCandidates.map((candidate, index) => {
+      const amount = index === addCandidates.length - 1 ? Math.max(0, suggestedBudget - used) : Math.round(suggestedBudget * weights[index]);
+      used += amount;
+      return {
+        ticker: candidate.ticker,
+        amount,
+        weight: suggestedBudget > 0 ? amount / suggestedBudget * 100 : 0,
+        reason: `${candidate.valuation} · conviction ${candidate.conviction}/100 · catalyst: ${candidate.catalyst}`,
+      };
+    });
+  }, [addCandidates, suggestedBudget]);
 
-  {show("portfolio")&&<section id="cio-portfolio" className="card"><SectionTitle n="2" title={tr(lang,"Portfolio Health & Holding Review","สุขภาพพอร์ตและการทบทวนหุ้นที่ถือ")}/><div className="grid cols-4"><Metric label="Verified NAV" value={money(fund.totalNav)}/><Metric label="Portfolio Health" value={`${fund.portfolioHealth}/100`}/><Metric label="Open Holdings" value={String(fund.openPositions)}/><Metric label="Unrealized P/L" value={`${money(fund.unrealizedPnl)} · ${pct(fund.unrealizedPnlPct)}`}/></div><div style={{overflowX:"auto",marginTop:16}}><table style={{width:"100%",minWidth:900,borderCollapse:"collapse"}}><thead><tr>{["Ticker","Weight","Market Value","Vs Cost","Valuation","Risk","Committee Action"].map(label=><th key={label} style={th}>{label}</th>)}</tr></thead><tbody>{reviews.map(row=><tr key={row.ticker}><td style={td}><b>{row.ticker}</b></td><td style={td}>{row.weight.toFixed(1)}%</td><td style={td}>{money(row.marketValue)}</td><td style={td}>{pct(row.pnlPct)}</td><td style={td}>{row.valuation}</td><td style={td}>{row.risk}</td><td style={td}><b>{row.action}</b><small style={{display:"block",marginTop:4}}>{row.reason}</small></td></tr>)}</tbody></table></div><button className="btn ghost" type="button" onClick={()=>onNavigate("portfolio")} style={{marginTop:14}}>Open Holdings Workspace</button></section>}
+  const teamVotes = [
+    { team: "Macro & Sentiment", score: fund.macroScore, vote: fund.macroScore >= 60 ? "DEPLOY SELECTIVELY" : fund.macroScore < 40 ? "RAISE DEFENSE" : "BALANCED" },
+    { team: "Portfolio & Holdings", score: fund.portfolioHealth, vote: trimCandidates.length ? "REBALANCE" : "HOLD CORE" },
+    { team: "Research & Future Themes", score: addCandidates[0]?.conviction ?? 0, vote: addCandidates.length ? `ADD ${addCandidates.length}` : "NO NEW ADD" },
+    { team: "Fundamental & Valuation", score: fund.qualityScore, vote: candidates.some((row) => /UNDER|ATTRACTIVE/.test(row.valuation.toUpperCase())) ? "VALUE AVAILABLE" : "PRICE DISCIPLINE" },
+  ];
+  const consensus = Math.round(teamVotes.reduce((sum, row) => sum + row.score, 0) / teamVotes.length);
+  const resolution = allocation.length
+    ? `Rebalance selectively, review ${trimCandidates.length} funding source(s), and add ${allocation.length} new investment(s) with ${money(suggestedBudget)} proposed capital.`
+    : "Hold current portfolio, complete missing analysis and preserve capital until risk/reward improves.";
 
-  {show("research")&&<section id="cio-research" className="card"><SectionTitle n="3" title={tr(lang,"Research Candidates & New Ideas","หุ้นใหม่และข้อเสนอจากฝ่ายวิจัย")}/>{candidates.length?<div className="grid cols-2">{candidates.map((row,index)=><article className="metric" key={`${row.ticker}-${index}`}><span>#{index+1} · {row.source}</span><strong>{row.ticker} · {row.rating}</strong><small>Conviction {row.conviction}/100 · Upside {pct(row.upside)} · Target {row.target==null?"—":money(row.target)} · {row.status}</small></article>)}</div>:<div className="notice">No Stock Analyze candidate is currently queued for CIO review.</div>}<div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}><button className="btn ghost" type="button" onClick={()=>onNavigate("research")}>Open Research</button><button className="btn ghost" type="button" onClick={()=>onNavigate("analyze")}>Open Stock Analyze</button></div></section>}
+  const visible = (id: TeamId | "resolution") => tab === "meeting" || tab === id;
 
-  {show("capital")&&<section id="cio-capital" className="card"><SectionTitle n="4" title={tr(lang,"Capital Allocation & Funding Plan","การจัดสรรเงินทุนและแหล่งเงิน")}/><div className="grid cols-4"><Metric label="Broker Cash" value={money(fund.cashBalance)}/><Metric label="Deployable Cash" value={money(fund.deployableCash)}/><Metric label="Proposed Deployment" value={money(proposedCapital)}/><Metric label="Remaining Deployable" value={money(remainingDeployable)}/></div><div className="notice" style={{marginTop:14}}><b>Funding plan</b><p>{proposedCapital>0?`Use ${money(trimSource)} of deployable cash only for named, human-selected candidates. Cash remains uncommitted until the final resolution is submitted.`:`KEEP ${money(fund.deployableCash)} IN CASH — NO SALE AUTHORIZED`}</p></div></section>}
+  if (fund.loading) return <section className="card"><p>Loading verified committee evidence…</p></section>;
 
-  {show("risk")&&<section id="cio-risk" className="card"><SectionTitle n="5" title={tr(lang,"Risk, Liquidity & Valuation Meeting","การประชุมความเสี่ยง สภาพคล่อง และมูลค่า")}/><div className="grid cols-4"><Metric label="Risk Score" value={`${fund.riskScore}/100`}/><Metric label="Liquidity" value={`${fund.liquidityScore}/100`}/><Metric label="Quality" value={`${fund.qualityScore}/100`}/><Metric label="Largest Weight" value={`${(reviews[0]?.weight??0).toFixed(1)}%`}/></div><div className="grid cols-2" style={{marginTop:14}}><div className="notice"><b>Top risks</b><p>{reviews.filter(row=>row.risk!=="WITHIN POLICY").slice(0,4).map(row=>`${row.ticker}: ${row.risk}`).join(" · ")||"No verified holding currently breaches the review rules."}</p></div><div className="notice"><b>Mitigation</b><p>{fund.cashBufferPct>fund.targetCashPct?"Deploy excess cash only into positive-upside, committee-approved ideas.":"Preserve cash policy and avoid unfunded additions."}</p></div></div></section>}
+  return <div className="workspace-stack" data-cio-version="14.0" data-workspace="four-team-investment-committee" data-source-of-truth="fund-snapshot analyze-action-queue">
+    <section className="card" style={{ borderTop: "3px solid var(--accent)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <span className="tag">CIO COMMAND CENTER · FOUR-TEAM COMMITTEE</span>
+          <h2 className="section" style={{ margin: "10px 0 6px" }}>{tr(lang, "Investment Strategy Meeting", "ประชุมวางแผนกลยุทธ์การลงทุน")}</h2>
+          <p className="muted" style={{ margin: 0, maxWidth: 920 }}>{tr(lang, "Four specialist teams review macro conditions, holdings, new research and fundamental valuation before issuing one governed portfolio resolution.", "4 ทีมผู้เชี่ยวชาญวิเคราะห์ Macro, Holdings, Research และ Fundamental Valuation ก่อนลงความเห็นปรับพอร์ตเป็นข้อสรุปเดียว")}</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><span className="tag">{fund.verified ? "VERIFIED SNAPSHOT" : "PARTIAL DATA"}</span><button className="btn ghost" type="button" onClick={() => setRefreshKey((value) => value + 1)}>↻ Refresh Meeting</button></div>
+      </div>
+      {error && <div className="notice" style={{ marginTop: 12 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 16, paddingBottom: 4, position: "sticky", top: 0, zIndex: 6 }}>
+        <button className={`btn ${tab === "meeting" ? "" : "ghost"}`} onClick={() => setTab("meeting")}>Full Meeting</button>
+        {TEAM_META.map((team) => <button key={team.id} className={`btn ${tab === team.id ? "" : "ghost"}`} onClick={() => setTab(team.id)}>{team.no} · {lang === "th" ? team.th : team.en}</button>)}
+        <button className={`btn ${tab === "resolution" ? "" : "ghost"}`} onClick={() => setTab("resolution")}>05 · Resolution</button>
+      </div>
+      <div className="grid cols-4" style={{ marginTop: 14 }}><Metric label="Verified NAV" value={money(fund.totalNav)} /><Metric label="Portfolio Health" value={`${fund.portfolioHealth}/100`} /><Metric label="Broker Cash" value={money(fund.cashBalance)} /><Metric label="Committee Consensus" value={`${consensus}/100`} /></div>
+    </section>
 
-  {show("vote")&&<section id="cio-vote" className="card"><SectionTitle n="6" title={tr(lang,"Committee Voting & Final Resolution","การลงมติและข้อสรุปการประชุม")}/><div className="grid cols-3">{committeeVotes.map(vote=><article className="metric" key={vote.desk}><span>{vote.desk}</span><strong>{vote.vote}</strong><small>{vote.score}/100</small></article>)}</div><div className="grid cols-4" style={{marginTop:14}}><Metric label="Supportive Votes" value={`${approvals}/${committeeVotes.length}`}/><Metric label="Consensus" value={`${consensus}%`}/><Metric label="Resolution" value={consensus>=67?"APPROVED FOR HUMAN SELECTION":"HOLD / MORE RESEARCH"}/><Metric label="Execution" value="HUMAN REQUIRED"/></div><div className="notice" style={{marginTop:14}}><b>Meeting minutes</b><p>Macro posture: {macroAction}. Portfolio actions: {reviews.filter(row=>row.action!=="KEEP").map(row=>`${row.ticker} ${row.action}`).join(", ")||"none"}. Research shortlist: {candidates.map(row=>row.ticker).join(", ")||"none"}. Funding remains proposal-only until a human submits the approved transaction package.</p></div></section>}
+    {TEAM_META.map((team) => visible(team.id) && <section key={team.id} id={`cio-${team.id}`} className="card" style={{ scrollMarginTop: 130 }}>
+      <TeamHeader no={team.no} title={lang === "th" ? team.th : team.en} mission={lang === "th" ? team.missionTh : team.missionEn} />
+      {team.id === "macro" && <>
+        <div className="grid cols-4"><Metric label="Market Regime" value={fund.macroLabel.toUpperCase()} /><Metric label="Macro Score" value={`${fund.macroScore.toFixed(0)}/100`} /><Metric label="VIX" value={vix == null ? "—" : vix.toFixed(1)} /><Metric label="Fear & Greed" value={fearGreed == null ? "—" : `${fearGreed.toFixed(0)}/100`} /></div>
+        <div className="grid cols-4" style={{ marginTop: 12 }}><Metric label="Policy Rate" value={rates == null ? "—" : `${rates.toFixed(2)}%`} /><Metric label="Inflation" value={inflation == null ? "—" : `${inflation.toFixed(2)}%`} /><Metric label="GDP Growth" value={growth == null ? "—" : `${growth.toFixed(2)}%`} /><Metric label="Strategy" value={macroPosture} /></div>
+        <div className="grid cols-2" style={{ marginTop: 14 }}><Panel title="Momentum & Sentiment" body={fund.macroVision} /><Panel title="Sector Rotation" body={leadingSectors} /></div>
+      </>}
+      {team.id === "portfolio" && <>
+        <div className="grid cols-4"><Metric label="Open Holdings" value={String(fund.openPositions)} /><Metric label="Unrealized P/L" value={`${money(fund.unrealizedPnl)} · ${pct(fund.unrealizedPnlPct)}`} /><Metric label="Largest Weight" value={`${(holdings[0]?.weight ?? 0).toFixed(1)}%`} /><Metric label="Action Reviews" value={String(trimCandidates.length)} /></div>
+        <DataTable headers={["Ticker", "Weight", "Market Value", "Vs Cost", "Valuation", "Risk", "Team View"]} rows={holdings.map((row) => [row.ticker, `${row.weight.toFixed(1)}%`, money(row.marketValue), pct(row.pnlPct), row.valuation, row.risk, `${row.action} — ${row.reason}`])} />
+      </>}
+      {team.id === "research" && <>
+        <div className="notice"><b>Research mandate</b><p>Search for durable future trends, identify the thesis and catalysts, then send only qualified ideas to Analyze for fundamental and valuation review.</p></div>
+        {candidates.length ? <div className="grid cols-2" style={{ marginTop: 14 }}>{candidates.map((row, index) => <article className="metric" key={`${row.ticker}-${index}`}><span>#{index + 1} · {row.source}</span><strong>{row.ticker} · {row.rating}</strong><small>Conviction {row.conviction}/100 · Upside {pct(row.upside)} · Target {row.target == null ? "—" : money(row.target)}</small><small style={{ marginTop: 7 }}><b>Vision:</b> {row.vision}</small><small><b>Thesis:</b> {row.thesis}</small><small><b>Catalyst:</b> {row.catalyst}</small></article>)}</div> : <div className="notice" style={{ marginTop: 14 }}>No qualified research candidate is in the Analyze queue.</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}><button className="btn ghost" onClick={() => onNavigate("research")}>Open Research Lab</button><button className="btn ghost" onClick={() => onNavigate("analyze")}>Send to Analyze</button></div>
+      </>}
+      {team.id === "analyze" && <>
+        <div className="grid cols-4"><Metric label="Quality Score" value={`${fund.qualityScore}/100`} /><Metric label="Risk Score" value={`${fund.riskScore}/100`} /><Metric label="Holdings Reviewed" value={String(holdings.length)} /><Metric label="Candidates Reviewed" value={String(candidates.length)} /></div>
+        <DataTable headers={["Ticker", "Fundamental View", "Valuation", "Upside", "Catalyst", "Analyze Decision"]} rows={candidates.map((row) => [row.ticker, row.thesis, row.valuation, pct(row.upside), row.catalyst, row.rating])} empty="No completed fundamental and valuation analysis is available." />
+      </>}
+    </section>)}
 
-  {show("history")&&<section id="cio-history" className="card"><SectionTitle n="7" title={tr(lang,"Decision History & Committee Attribution","ประวัติการตัดสินใจและผลงานคณะกรรมการ")}/><div className="grid cols-4"><Metric label="Tracked Decisions" value={String(data?.performance?.summary?.total??data?.performance?.total??0)}/><Metric label="Committee Win Rate" value={`${finite(data?.performance?.summary?.winRate??data?.performance?.winRate)??0}%`}/><Metric label="Average Return" value={pct(finite(data?.performance?.summary?.averageReturn??data?.performance?.averageReturn))}/><Metric label="Governance" value="AUDITABLE"/></div><div className="notice" style={{marginTop:14}}>Decision attribution is read from the analysis performance ledger. No result is counted until an observation or exit is recorded.</div></section>}
-
-  <section className="card"><div className="grid cols-3"><Guard title="SINGLE SOURCE OF TRUTH" text="Fund Snapshot + Portfolio Ledger + Analyze Action Queue"/><Guard title="NO AUTO EXECUTION" text="Committee decisions create proposals, never broker trades"/><Guard title="HUMAN APPROVAL" text="A person must select and record every final transaction"/></div></section>
- </div>
+    {visible("resolution") && <section id="cio-resolution" className="card" style={{ borderTop: "3px solid #8f5cff", scrollMarginTop: 130 }}>
+      <TeamHeader no="05" title={tr(lang, "Committee Resolution & Capital Plan", "มติคณะกรรมการและแผนจัดสรรเงิน")} mission={tr(lang, "Combine all four team views into one human-approved rebalance and funding proposal.", "รวมความเห็นทั้ง 4 ทีมเป็นข้อเสนอ Rebalance และจัดสรรเงินที่มนุษย์ต้องอนุมัติ")} />
+      <div className="grid cols-4">{teamVotes.map((vote) => <article className="metric" key={vote.team}><span>{vote.team}</span><strong>{vote.vote}</strong><small>{vote.score}/100</small></article>)}</div>
+      <div className="notice" style={{ marginTop: 14 }}><b>Final committee view</b><p>{resolution}</p></div>
+      <div className="grid cols-4" style={{ marginTop: 14 }}><Metric label="Broker Cash" value={money(fund.cashBalance)} /><Metric label="Deployable Cash" value={money(fund.deployableCash)} /><Metric label="Potential Trim Sources" value={money(trimCandidates.reduce((sum, row) => sum + Math.min(row.marketValue * 0.1, 300), 0))} /><Metric label="Proposed New Capital" value={money(suggestedBudget)} /></div>
+      <h3 className="sub" style={{ marginTop: 18 }}>Holding actions</h3>
+      <DataTable headers={["Ticker", "Decision", "Reason", "Potential Source"]} rows={trimCandidates.map((row) => [row.ticker, row.action, row.reason, money(Math.min(row.marketValue * 0.1, 300))])} empty="No holding is currently proposed for trim or exit." />
+      <h3 className="sub" style={{ marginTop: 18 }}>New investment allocation</h3>
+      <DataTable headers={["Ticker", "Allocation", "% of Plan", "Valuation / Catalyst Rationale"]} rows={allocation.map((row) => [row.ticker, money(row.amount), `${row.weight.toFixed(1)}%`, row.reason])} empty="No new allocation is approved. Complete research and valuation work first." />
+      {allocation.length === 3 && suggestedBudget === 800 && <div className="notice" style={{ marginTop: 12 }}><b>Example meeting outcome:</b> Add {allocation[0].ticker} {money(allocation[0].amount)}, {allocation[1].ticker} {money(allocation[1].amount)} and {allocation[2].ticker} {money(allocation[2].amount)} based on valuation, conviction and catalyst quality.</div>}
+      <div className="grid cols-3" style={{ marginTop: 14 }}><Guard title="PROPOSAL ONLY" text="The committee never changes Holdings automatically." /><Guard title="HUMAN APPROVAL" text="A person must approve tickers, amounts and capital source." /><Guard title="LEDGER EXECUTION" text="Only recorded BUY/SELL transactions update the portfolio." /></div>
+    </section>}
+  </div>;
 }
 
-const th:React.CSSProperties={textAlign:"left",padding:"12px 10px",borderBottom:"1px solid var(--border)",fontSize:12,letterSpacing:".08em",color:"var(--muted)"};
-const td:React.CSSProperties={padding:"12px 10px",borderBottom:"1px solid var(--border)",verticalAlign:"top",fontSize:13};
-function SectionTitle({n,title}:{n:string;title:string}){return <h3 className="sub" style={{marginTop:0}}><span className="tag" style={{marginRight:8}}>{n}</span>{title}</h3>}
-function Metric({label,value}:{label:string;value:string}){return <div className="metric"><span>{label}</span><strong style={{fontSize:20,lineHeight:1.25}}>{value}</strong></div>}
-function Guard({title,text}:{title:string;text:string}){return <div className="metric"><span>{title}</span><strong style={{fontSize:14,lineHeight:1.4}}>{text}</strong></div>}
-function Bar({label,value}:{label:string;value:number}){return <div style={{display:"grid",gridTemplateColumns:"80px 1fr 48px",gap:10,alignItems:"center",margin:"12px 0"}}><span>{label}</span><div style={{height:8,borderRadius:999,background:"rgba(148,163,184,.15)",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.max(0,Math.min(100,value))}%`,background:"linear-gradient(90deg,#31d9f3,#8f5cff)"}}/></div><b>{value}%</b></div>}
+function TeamHeader({ no, title, mission }: { no: string; title: string; mission: string }) {
+  return <div style={{ display: "flex", gap: 14, alignItems: "flex-start", marginBottom: 14 }}><span className="tag" style={{ fontSize: 16 }}>{no}</span><div><h3 className="sub" style={{ margin: 0 }}>{title}</h3><p className="muted" style={{ margin: "5px 0 0" }}>{mission}</p></div></div>;
+}
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="metric"><span>{label}</span><strong style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
+}
+function Panel({ title, body }: { title: string; body: string }) {
+  return <div className="notice"><b>{title}</b><p>{body}</p></div>;
+}
+function Guard({ title, text }: { title: string; text: string }) {
+  return <div className="metric"><span>{title}</span><strong style={{ fontSize: 14, lineHeight: 1.4 }}>{text}</strong></div>;
+}
+function DataTable({ headers, rows, empty = "No rows available." }: { headers: string[]; rows: string[][]; empty?: string }) {
+  return <div style={{ overflowX: "auto", marginTop: 14 }}><table style={{ width: "100%", minWidth: 980, borderCollapse: "collapse" }}><thead><tr>{headers.map((header) => <th key={header} style={th}>{header}</th>)}</tr></thead><tbody>{rows.length ? rows.map((row, rowIndex) => <tr key={`${row[0]}-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`} style={td}>{cellIndex === 0 ? <b>{cell}</b> : cell}</td>)}</tr>) : <tr><td colSpan={headers.length} style={td}>{empty}</td></tr>}</tbody></table></div>;
+}
+
+const th: React.CSSProperties = { textAlign: "left", padding: "12px 10px", borderBottom: "1px solid var(--border)", fontSize: 12, letterSpacing: ".08em", color: "var(--muted)", verticalAlign: "top" };
+const td: React.CSSProperties = { padding: "12px 10px", borderBottom: "1px solid var(--border)", verticalAlign: "top", fontSize: 13, lineHeight: 1.45 };
