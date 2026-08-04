@@ -106,18 +106,22 @@ export async function GET() {
 
     const verified = missingPrices.length === 0;
     const totalNav = verified ? securitiesValue + cashBalance : null;
-    const grossBuffer = cashBalance + reserveMarketValue;
-    const liquidityBuffer = cashBalance + reserveLiquidityValue;
+
+    // Policy liquidity is broker cash only. Reserve ETFs remain invested assets until sold.
+    const liquidityBuffer = cashBalance;
+    const totalReserveAssets = cashBalance + reserveMarketValue;
+    const haircutAdjustedReserveAssets = cashBalance + reserveLiquidityValue;
     const bufferPct = totalNav != null && totalNav > 0 ? (liquidityBuffer / totalNav) * 100 : null;
     const targetValue = totalNav != null ? totalNav * regime.targetPct / 100 : null;
     const gapValue = targetValue != null ? liquidityBuffer - targetValue : null;
+    const deployableCash = gapValue != null ? Math.max(0, gapValue) : null;
     const lower = regime.targetPct - regime.tolerancePct;
     const upper = regime.targetPct + regime.tolerancePct;
     const posture = bufferPct == null ? "UNVERIFIED" : bufferPct < lower ? "UNDERFUNDED" : bufferPct > upper ? "OVERFUNDED" : "ON_TARGET";
     const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
     return NextResponse.json({
-      version: "v8.3",
+      version: "v8.4",
       verified,
       missingPrices,
       regime,
@@ -126,18 +130,22 @@ export async function GET() {
       totalNav,
       reserveMarketValue,
       reserveLiquidityValue,
-      grossBuffer,
+      totalReserveAssets,
+      haircutAdjustedReserveAssets,
+      grossBuffer: totalReserveAssets,
       liquidityBuffer,
       bufferPct,
       targetPct: regime.targetPct,
       targetValue,
       gapValue,
+      deployableCash,
       posture,
       action,
       reserveHoldings,
       policy: {
+        cashOnlyPolicy: true,
         reserveTickers: Object.keys(RESERVE_RULES),
-        principle: "Treasury and cash-equivalent holdings are liquidity reserves, not equity risk positions. Credit-like reserves receive a liquidity haircut.",
+        principle: "Liquidity buffer and deployable cash use broker cash only. Reserve ETFs are reported separately and are not available cash until sold.",
       },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
