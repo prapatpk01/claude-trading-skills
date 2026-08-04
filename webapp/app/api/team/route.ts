@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/analyze";
 import { defaultAssumptions, computeDcf } from "@/lib/analysis";
 import { getMarketData as fullMarketData } from "@/lib/marketData";
-import { getMarketData, dailyCandles, getLightQuote } from "@/lib/marketData";
+import { dailyCandles, getLightQuote } from "@/lib/marketData";
 import { buildTickerMemo } from "@/lib/team/memo";
 import { buildBookReview } from "@/lib/team/book";
 import { scoreMomentumV3, atrStop } from "@/lib/team/scoring";
@@ -15,7 +15,6 @@ import {
 } from "@/lib/team/engines";
 import { buildPlansV4, type PositionV4 } from "@/lib/team/sizingV4";
 import { buildGrowthInput, bestGrowthPct } from "@/lib/team/growthInputs";
-import { classifySleeve } from "@/lib/team/portfolio";
 import {
   rankGroups, buildThematicTilt, themeForSector, groupForSector, THEME_PROXIES,
 } from "@/lib/team/thematic";

@@ -44,7 +44,17 @@ function realizedVolAnnualized(candles: Candle[], lookback = 20): number | null 
   return Math.sqrt(varc) * Math.sqrt(252) * 100;
 }
 
-export function assessRegime(spy: Candle[]): MarketRegime {
+/**
+ * The scanner's own quick tape read.
+ *
+ * NOT the fund's regime. Daniel Cho's `assessRegime` in team/governance.ts is
+ * the one that sets sleeve targets and the cash floor; this is a lighter,
+ * EMA20-based read used only to colour the scanner's own header. The two used
+ * to share a name, which let the scan response overwrite the governance regime
+ * on its way to the client — the card and the playbook beneath it could quote
+ * different numbers for the same market. Renamed so that cannot recur.
+ */
+export function assessScanTape(spy: Candle[]): MarketRegime {
   const closes = spy.map((c) => c.close);
   const price = closes[closes.length - 1] ?? 0;
   const ema20 = ema(closes, 20);
@@ -87,7 +97,8 @@ export interface ScanFunnel {
 }
 
 export interface ScanResult {
-  regime: MarketRegime;
+  /** The scanner's own quick tape read — not the fund's regime. */
+  tape: MarketRegime;
   setups: SwingSetup[];
   /** Sentinel v3.0 score for each setup, keyed by ticker. */
   sentinel: Record<string, MomentumScoreV3>;
@@ -184,7 +195,7 @@ export async function runScan(
     warnings.push(`SPY benchmark: ${e?.message ?? "failed"}`);
     return [] as Candle[];
   });
-  const regime = assessRegime(spy);
+  const tape = assessScanTape(spy);
 
   const sentinel: Record<string, MomentumScoreV3> = {};
   const engines: Record<string, any> = {};
@@ -481,11 +492,13 @@ export async function runScan(
   const noQualifiers = setups.length === 0
     ? `No name cleared all three desks out of ${scanned} scanned. ` +
       funnel.stages.map((st) => `${st.heading} stopped ${st.rejected}`).join(", ") + ". " +
-      `Market regime is ${regime.stance.toLowerCase()} — in a broad pullback the model is designed to return nothing rather than the least-bad chart.`
+      `The tape reads ${tape.stance.toLowerCase()} — in a broad pullback the model is designed to return nothing rather than the least-bad chart.`
     : null;
 
   return {
-    regime, setups, sentinel, engines, samp, catalysts, conviction: convictionByTicker,
+    // `tape` rather than `regime`: the fund's regime comes from the governance
+    // desk and is attached by the route, so the scan cannot overwrite it.
+    tape, setups, sentinel, engines, samp, catalysts, conviction: convictionByTicker,
     funnel, moves, rejected, scanned, warnings,
     asOf: new Date().toISOString(), noQualifiers, minRiskReward: MIN_RR,
     rulesVersion: "v4.0",
