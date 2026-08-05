@@ -88,8 +88,8 @@ for (const component of ["PortfolioTruthSummary", "PortfolioTransactionOverride"
 
 // Every workspace section must render something, whatever the generation names
 // its wrapper.
-for (const workspace of ["cio-v13", "portfolio-v13", "research-v13"]) {
-  if (!liveSource.includes(`data-workspace="${workspace}"`)) failures.push(`workspace marker missing: ${workspace}`);
+for (const [domain, pattern] of [["cio", /data-workspace="cio-v\d+"/], ["portfolio", /data-workspace="portfolio-v\d+"/], ["research", /data-workspace="research-v\d+"/]]) {
+  if (!pattern.test(liveSource)) failures.push(`no marked workspace found for the ${domain} domain`);
 }
 
 requireAll("app/components/InstitutionalShell.tsx", [

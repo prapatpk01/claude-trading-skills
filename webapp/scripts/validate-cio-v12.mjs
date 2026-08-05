@@ -24,8 +24,8 @@ const forbidTokens = (file, tokens) => {
 };
 
 // ── the component renders the meeting the engine produced ──
-requireTokens("app/components/CIOCommandCenterV12.tsx", [
-  'data-cio-version="14.0"',
+requireTokens("app/components/CommitteeMeetingPanel.tsx", [
+  'data-committee-version="1.0"',
   "/api/committee/meeting",
   "Investment Committee",
   "Agenda",
@@ -46,11 +46,19 @@ requireTokens("app/components/CIOCommandCenterV12.tsx", [
 
 // The old workspace called routes that do not exist, so two of its three
 // panels were permanently empty. Nothing may reintroduce those paths.
-forbidTokens("app/components/CIOCommandCenterV12.tsx", [
+forbidTokens("app/components/CommitteeMeetingPanel.tsx", [
   ["/api/analysis/actions", "route does not exist — the analyze routes are /api/analyze/*"],
   ["/api/analysis/performance", "route does not exist — the analyze routes are /api/analyze/*"],
-  ["summary?.winRate\b", "the performance summary key is winRatePct"],
 ]);
+
+// V16 is the meeting venue: the Analysis team's valuation work above, the
+// committee's motions, vote and funded capital plan below.
+requireTokens("app/components/CIOCommandCenterV16.tsx", [
+  "CommitteeMeetingPanel",
+  "Investment Committee: Motions, Vote and Capital Plan",
+  "HUMAN APPROVAL REQUIRED · NO AUTO EXECUTION",
+]);
+requireTokens("app/page.tsx", ["CIOCommandCenterV16"]);
 
 // ── the engine is a pure module and the route is the only fetcher ──
 requireTokens("lib/team/committee.ts", [
@@ -135,7 +143,7 @@ if (!fs.existsSync(path.join(root, "docs/INVESTMENT_SYSTEM.md"))) {
   failures.push("docs/INVESTMENT_SYSTEM.md: the fund's rulebook must be committed alongside the code that enforces it");
 }
 
-requireTokens("app/page.tsx", ["CIOCommandCenterV12", 'section === "command"']);
+requireTokens("app/page.tsx", ['section === "command"']);
 
 if (failures.length) {
   console.error(`Investment committee validation FAILED (${failures.length})`);

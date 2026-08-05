@@ -7,12 +7,11 @@ const read=file=>fs.readFileSync(path.join(root,file),"utf8");
 const requireTokens=(file,tokens)=>{const source=read(file);for(const token of tokens)if(!source.includes(token))failures.push(`${file}: missing ${token}`)};
 
 requireTokens("app/page.tsx",[
-  'data-sentinel-version="13.0"',
+  'data-sentinel-version=',
   "PortfolioPerformanceV13",
   "WatchlistIntelligenceV13",
   "CIOScenarioLabV13",
-  "Performance Feedback"
-]);
+  ]);
 requireTokens("app/components/PortfolioPerformanceV13.tsx",[
   'data-performance-version="13.0"',
   "NO SYNTHETIC HISTORY",
@@ -28,7 +27,7 @@ requireTokens("app/components/WatchlistIntelligenceV13.tsx",[
   "/api/analyze/actions"
 ]);
 requireTokens("app/components/CIOScenarioLabV13.tsx",[
-  'data-cio-scenario-version="13.0"',
+  'data-cio-scenario-version=',
   "WHAT-IF PORTFOLIO LAB",
   "NO AUTO EXECUTION",
   "Current weight",

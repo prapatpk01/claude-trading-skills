@@ -38,7 +38,10 @@ const minutes=read("app/api/committee/minutes/route.ts");
 const contracts=[
   [health.includes('automaticExecution:false'),"automatic execution must remain disabled"],
   [health.includes('version:"9.0.0"')||health.includes('version: "9.0.0"'),"v9 health version missing"],
-  [page.includes("Human approval remains mandatory"),"the page must state that human approval is mandatory"],
+  // Assert the guarantee, not one generation's wording: the page must say both
+  // that a human approves and that nothing executes on its own.
+  [/human approval/i.test(page) && /no automatic execution|never execute|no auto execution/i.test(page),
+    "the page must state that a human approves and that nothing executes automatically"],
   [shell.includes("NO AUTO EXECUTION"),"the live workspaces must carry the no-auto-execution guarantee"],
   [approval.includes("humanApproved: true")&&minutes.includes("humanApproved !== true"),
     "the ledger write path must require an explicit human approval flag"],
