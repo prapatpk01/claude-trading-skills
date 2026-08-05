@@ -3,6 +3,8 @@ import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { openOnly } from "@/lib/openPositions";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
+import { readFearGreed } from "@/lib/team/fearGreed";
+import { buildNewsPulse } from "@/lib/news/pulse";
 import { dailyCandles, getLightQuote } from "@/lib/marketData";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { computeBeta } from "@/lib/derive";
@@ -140,6 +142,20 @@ export async function GET(req: NextRequest) {
     const targetCashPct = finite(buffer?.targetPct);
 
     const regime = benchmark.length ? assessRegime(benchmark) : null;
+
+    // Stage 1 of the meeting is the tape AND how crowded it is. The regime says
+    // where the market is; sentiment says how many people are already there.
+    // They are separate readings and neither substitutes for the other.
+    const [sentiment, newsPulse] = await Promise.all([
+      readFearGreed({ spy: benchmark, vix: await dailyCandles("^VIX", 90).catch(() => [] as Candle[]) }).catch((e: any) => {
+        unavailable.push(`sentiment index (${e?.message ?? "unavailable"})`);
+        return null;
+      }),
+      buildNewsPulse().catch((e: any) => {
+        unavailable.push(`news feeds (${e?.message ?? "unavailable"})`);
+        return null;
+      }),
+    ]);
 
     const positions: PositionEvidence[] = gathered.map((g) => {
       const price = g.price;
@@ -313,7 +329,24 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json(
-      { ...meeting, fund: FUND, standingDuty: STANDING_DUTY, sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length } },
+      {
+        ...meeting,
+        // Stage 1 evidence, kept beside the regime rather than folded into it.
+        sentiment,
+        newsPulse,
+        // The five stages of the fund's meeting, and whether each has its
+        // evidence. A stage without evidence is named, not quietly skipped.
+        stages: [
+          { n: 1, name: "Market regime and sentiment", owner: "Daniel Cho · Nina Okonkwo", ready: regime != null, detail: regime ? `${regime.regime} ${regime.score}/100${sentiment ? `, sentiment ${sentiment.value}/100 (${sentiment.band})` : ", sentiment unavailable"}${newsPulse ? "" : ", news feeds unreachable"}` : "No regime read — benchmark history unavailable." },
+          { n: 2, name: "Research: swing scan and referrals", owner: "Maya Chen · Aisha Fontaine", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} referral(s) carried into the meeting.` : "No name was referred since the last meeting. Run /api/committee/swing-scan and refer from the research workspace." },
+          { n: 3, name: "Holdings review and rebalance plan", owner: "Lena Müller · Kai Tanaka", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced.` },
+          { n: 4, name: "Vote and execution plan", owner: "James Hartwell", ready: meeting.quorum.met, detail: meeting.quorum.note },
+          { n: 5, name: "Human approval and minutes", owner: "Fund owner", ready: false, detail: "Submit the approved lines to POST /api/committee/minutes. Nothing is applied to the ledger until a person marks each line APPROVED." },
+        ],
+        fund: FUND,
+        standingDuty: STANDING_DUTY,
+        sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },
+      },
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error: any) {
