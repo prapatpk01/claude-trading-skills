@@ -557,6 +557,33 @@ reading that would break the thesis and the desk that owns it.
 stack and the price, with its direction. Agreement with the market inside 8% is
 reported as having no edge rather than dressed up as a view.
 
+## 10f. Rule #5 — one data-integrity rule across every engine
+
+The fund's rule is stricter than excluding a gap from an average, and it now
+applies everywhere rather than in `scoring.ts` alone:
+
+> **An unavailable input scores zero and stays in the denominator.**
+
+Dropping an unmeasured component out of the average lets a case built on two
+measurements rank beside one built on six. Gate 7's 70% data-quality floor then
+catches the thin case a second time — the two work together and neither is a
+substitute for the other.
+
+Applied to `scoring.ts` (already correct), `swing.ts`, `conviction.ts` and the
+committee's evidence floor, which now reads Gate 7's 70% rather than a house
+50%.
+
+**Coverage is still published beside every score.** That is what keeps the rule
+honest in the other direction: a low score caused by missing evidence and one
+caused by weakness are different findings, and the reader must be able to tell
+them apart.
+
+The one exception, and it is deliberate: a pillar or factor where **nothing at
+all** could be measured scores `null`, not zero. Zero reads as a finding; an
+absence of evidence is not one.
+
+---
+
 ## 11. Precedence
 
 Applied top-down; the first level that fires decides, and every recommendation

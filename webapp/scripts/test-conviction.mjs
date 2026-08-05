@@ -69,13 +69,19 @@ section("Pillar scores");
     [...s.quality.components, ...s.growth.components, ...s.valuation.components, ...s.risk.components].every((c) => c.detail.length > 10));
 }
 
-section("Rule #5 — unmeasured is not zero");
+section("Rule #5 — unmeasured scores zero and stays in the denominator");
 {
   const partial = scoreConviction({ roicPct: 28, roePct: 32, grossMarginPct: 68, operatingMarginPct: 34 });
-  ok("quality still scores from what was measured", partial.quality.score != null && partial.quality.score >= 70, `${partial.quality.score}`);
+  const full = scoreConviction(strong);
+  ok("quality still scores from what was measured", partial.quality.score != null && partial.quality.score > 0, `${partial.quality.score}`);
   ok("the missing components are named", partial.quality.unmeasured.length === 2, JSON.stringify(partial.quality.unmeasured));
   ok("coverage is reported below 100", partial.quality.coveragePct < 100 && partial.quality.coveragePct > 0, `${partial.quality.coveragePct}`);
-  ok("the note explains the exclusion", /not counted as zero/.test(partial.quality.note));
+  // The two unmeasured tests are worth 30 of the 100 quality points. Under the
+  // fund's rule they score zero and stay in, so the pillar loses them.
+  ok("the unmeasured components cost the pillar their points",
+    partial.quality.score < full.quality.score, `${partial.quality.score} vs ${full.quality.score}`);
+  ok("the note says they score zero and stay in the denominator",
+    /scores these zero and keeps them in the denominator/.test(partial.quality.note), partial.quality.note);
 }
 {
   const nothing = scoreConviction({});

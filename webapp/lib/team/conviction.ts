@@ -1,10 +1,13 @@
 // The four scores and the conviction that blends them.
 //
 // Sofia Reyes owns quality, Marcus Webb growth, Thomas Eriksson valuation, Kai
-// Tanaka risk, and James Hartwell the blend. Each score is 0–100 and each is
-// normalised over the components that could actually be measured — a company
-// whose ROIC cannot be computed does not score zero on returns, it scores over
-// a smaller denominator and says so.
+// Tanaka risk, and James Hartwell the blend. Each score is 0–100.
+//
+// Rule #5 applies in the fund's own form: a component that cannot be measured
+// scores ZERO and stays in the denominator. A company whose ROIC cannot be
+// computed carries that gap in its quality score rather than averaging as
+// though the test did not exist. Coverage is published alongside every score so
+// a weak reading and a thin one are distinguishable.
 //
 // The blend is fixed and published. A conviction score whose weights move with
 // the answer is a rationalisation with a number attached.
@@ -15,7 +18,7 @@ export const CONVICTION_WEIGHTS = { quality: 0.3, growth: 0.25, valuation: 0.25,
 
 export interface ScoreComponent {
   label: string;
-  /** null when the input could not be measured. Excluded from the denominator. */
+  /** null when the input could not be measured. Scores zero, stays in the denominator (Rule #5). */
   points: number | null;
   max: number;
   detail: string;
@@ -94,21 +97,36 @@ function inverseBand(value: number | null | undefined, best: number, worst: numb
   return clamp(((worst - value) / (worst - best)) * max, 0, max);
 }
 
+/**
+ * Rule #5, the fund's own wording: an unavailable input scores zero and stays
+ * in the denominator.
+ *
+ * This is stricter than dropping the gap out of the average, and deliberately
+ * so. Shrinking the denominator lets a case built on two measurements average
+ * like one built on six, which is exactly the flattery the rule exists to stop.
+ * A thin case scores low here AND is caught again by Gate 7's data-quality
+ * floor. The coverage figure is still published so the reader can tell a low
+ * score caused by weakness from one caused by missing evidence.
+ */
 function pillar(components: ScoreComponent[], label: string): PillarScore {
-  const evaluable = components.filter((c) => c.points != null).reduce((s, c) => s + c.max, 0);
+  const totalMax = components.reduce((s, c) => s + c.max, 0);
+  const measured = components.filter((c) => c.points != null).reduce((s, c) => s + c.max, 0);
   const raw = components.reduce((s, c) => s + (c.points ?? 0), 0);
   const unmeasured = components.filter((c) => c.points == null).map((c) => c.label);
-  const coveragePct = r0((evaluable / components.reduce((s, c) => s + c.max, 0)) * 100);
+  const coveragePct = r0((measured / totalMax) * 100);
   return {
-    score: evaluable > 0 ? r0((raw / evaluable) * 100) : null,
+    // Null only when nothing at all could be measured — a pillar with no
+    // evidence is unscored, not scored zero, because zero would read as a
+    // finding rather than as an absence.
+    score: measured > 0 ? r0((raw / totalMax) * 100) : null,
     coveragePct,
     components,
     unmeasured,
     note:
-      evaluable === 0
+      measured === 0
         ? `No ${label} input could be measured, so no score is published. An unmeasured pillar is not a low one.`
         : unmeasured.length
-        ? `Scored over ${coveragePct}% of the ${label} model. Unmeasured: ${unmeasured.join("; ")} — excluded from the denominator, not counted as zero.`
+        ? `Scored over the full ${label} model with ${coveragePct}% of it measured. Unmeasured: ${unmeasured.join("; ")} — Rule #5 scores these zero and keeps them in the denominator, so the score reflects the evidence that exists rather than flattering what is missing.`
         : `Every ${label} input was measured.`,
   };
 }

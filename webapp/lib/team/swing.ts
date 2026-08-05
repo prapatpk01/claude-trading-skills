@@ -14,9 +14,11 @@
 //   presented anyway, because a scanner that ranks a setup it would not take is
 //   a scanner nobody can act on.
 //
-//   Rule #5 holds throughout. A component that cannot be measured scores null,
-//   leaves the denominator, and is named. The published score is
-//   raw / evaluable × 100 with the evaluable share printed beside it.
+//   Rule #5 holds throughout, in the fund's own stricter form: a component that
+//   cannot be measured scores ZERO and stays in the denominator, and is named.
+//   Dropping it out of the average would let a name the catalyst desk never
+//   assessed rank alongside one it did. Coverage is printed beside the score so
+//   a low reading caused by missing evidence is distinguishable from weakness.
 //
 // Pure functions — candles in, setups out. No network.
 
@@ -70,7 +72,7 @@ export interface SwingRejection {
 export interface SwingSetup {
   ticker: string;
   setupType: BaseType;
-  /** Published score: raw / evaluable × 100. */
+  /** Published score: raw / 100, with unmeasured components scoring zero. */
   momentumScore: number;
   /** Share of the 100 points that could actually be measured. */
   coveragePct: number;
@@ -361,10 +363,15 @@ function scoreCandidate(c: SwingCandidate, spy: Candle[], regime: SwingRegime): 
       : `${c.catalystNote ?? "Catalyst assessed"} (${catalystRaw}/25 on the catalyst desk's scale).`);
 
   /* ── the published score ── */
-  const evaluable = lines.filter((l) => l.points != null).reduce((s, l) => s + l.max, 0);
+  // Rule #5: an unmeasured line scores zero and stays in the denominator. The
+  // weights total 100, so the raw sum IS the published score — and a name the
+  // catalyst desk never assessed carries that gap in its score rather than
+  // averaging as though the component did not exist.
+  const totalMax = lines.reduce((s, l) => s + l.max, 0);
+  const measured = lines.filter((l) => l.points != null).reduce((s, l) => s + l.max, 0);
   const raw = lines.reduce((s, l) => s + (l.points ?? 0), 0);
-  const momentumScore = evaluable > 0 ? Math.round((raw / evaluable) * 100) : 0;
-  const coveragePct = Math.round((evaluable / 100) * 100);
+  const momentumScore = totalMax > 0 ? Math.round((raw / totalMax) * 100) : 0;
+  const coveragePct = Math.round((measured / totalMax) * 100);
 
   /* ── the four hard filters ── */
 
@@ -443,7 +450,7 @@ function scoreCandidate(c: SwingCandidate, spy: Candle[], regime: SwingRegime): 
     momentum: `RS ${rs30 == null ? "n/a" : r2(rs30)} vs SPY over 30 sessions${rs30 != null ? ` (${r1((rs30 - 1) * 100)}% of relative gain)` : ""}; RSI(14) ${rsiNow == null ? "n/a" : r1(rsiNow)}${rsiNow != null && rsiNow >= RSI_FLOOR && rsiNow <= RSI_CEILING ? " inside the Power Zone" : ""}${divergence ? " but diverging against price" : ""}; 10 EMA slope ${ema10Slope == null ? "n/a" : `${r1(ema10Slope)}% over five sessions`}; MACD ${sep == null ? "n/a" : `${r2(sep)}% of price above zero and ${expanding ? "expanding" : "contracting"}`}.`,
     volume: `5-day average volume ${avg5 == null ? "n/a" : Math.round(avg5).toLocaleString("en-US")} against a 20-day average of ${avg20 == null ? "n/a" : Math.round(avg20).toLocaleString("en-US")} — ${surge == null ? "unmeasured" : `${r2(surge)}×`}. Up/down volume ${ud == null ? "n/a" : r2(ud)} over ten sessions. ${dv == null ? "Dollar volume unmeasured." : `Median dollar volume ${Math.round(dv).toLocaleString("en-US")} supports institutional size.`} ${base.contractions.length ? `Contractions through the base ran ${base.contractions.slice(-3).join("% → ")}%, volume drying into the pivot.` : ""}`,
     catalyst: catalystRaw == null
-      ? "No catalyst was assessed for this name. The component is excluded from the denominator and the score is normalised over what was measured — it is not credited as zero."
+      ? "No catalyst was assessed for this name. Under Rule #5 it scores zero and stays in the denominator, so the 15 points it could have carried are lost rather than averaged away."
       : `${c.catalystNote ?? "Catalyst assessed by the research desk"} — ${catalystRaw}/25, contributing ${r1((catalystRaw / 25) * 15)} of the 15 available points.`,
     thesis: `Enter ${r2(entryLow)}–${r2(entryHigh)}, which is the ${base.type.toLowerCase()} pivot at ${r2(base.pivot)} plus the ${MAX_EXTENSION_PCT}% tolerance the brief allows; price is ${r1(extensionPct)}% above the pivot now, so the entry is not chased. The stop at ${stop} sits under ${stop === base.low ? "the base low" : "the 20 EMA with half an ATR of cushion"}, which is the level that says the base failed rather than the level that says the day went badly. Target ${r2(target)} is the ${targetMethod.toLowerCase()}, ${r1(expectedReturnPct)}% away, giving 1:${r1(riskReward)} against the 1:${MIN_RR} floor. The edge is that ${surge != null && surge >= VOLUME_SURGE ? "accumulation has been sustained across several sessions rather than printed in one" : "the structure is intact"} while ${rs30 != null && rs30 > 1 ? "the name is outperforming the index into the breakout" : "the base has held"} — take the entry on a close back inside the range, and cut on a close below the stop rather than an intraday tick through it.`,
   };
@@ -513,7 +520,7 @@ export function runSwingScan(
     methodology:
       "Momentum-Centric Alpha Score, 100 points: momentum and relative strength 40, volume accumulation 25, structural base and trend 20, catalyst drift 15. " +
       "Four filters reject rather than down-weight — market regime, entry within 3% of the pivot, a 10–25% structural target, and reward:risk of at least 1:3. " +
-      "Unmeasurable components leave the denominator and are named; the published score is raw / evaluable × 100.",
+      "Rule #5: an unmeasurable component scores zero and stays in the denominator, and is named. Coverage is published beside the score so a low reading caused by missing evidence is distinguishable from one caused by weakness.",
     disclosures: [
       "Every figure is measured from daily candles. Nothing is estimated to fill a gap.",
       "Rejections keep their reason. A setup that fails a filter is not shown with a lower score — it is not a setup this desk would take.",

@@ -24,7 +24,7 @@
 import { ROSTER, type Member } from "./roster";
 import {
   TRIM_REQUIRES_REPLACEMENT, POSITION_ZONES, RISK_LIMITS,
-  winRatePresentation, permittedDeployFraction, WIN_RATE_DISCLOSURE, FUND_CONSTITUTION_VERSION,
+  winRatePresentation, permittedDeployFraction, WIN_RATE_DISCLOSURE, DATA_INTEGRITY, FUND_CONSTITUTION_VERSION,
 } from "./constitution";
 import type { RegimeAssessment } from "./governance";
 import type { ZoneAssessment } from "./risk";
@@ -238,8 +238,13 @@ const HARD_CAP_PCT = 20;
 const REVIEW_PCT = 15;
 /** A motion needs this many non-abstaining seats to be a decision at all. */
 const MIN_VOTING_SEATS = 4;
-/** Below this evidence coverage the CRO defers rather than lets a vote stand. */
-const MIN_COVERAGE_PCT = 50;
+/**
+ * Gate 7 — the fund's data-quality floor. Below it the CRO defers rather than
+ * letting a vote stand. This is the document's number, not a house choice: a
+ * motion decided on less evidence than the fund's own gate admits is a decision
+ * the pre-trade checklist would refuse anyway.
+ */
+const MIN_COVERAGE_PCT = DATA_INTEGRITY.minDataQualityPct;
 /** A referral older than this is a paper, not a live idea. */
 const STALE_REFERRAL_DAYS = 21;
 /**
@@ -681,7 +686,7 @@ function castVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReaso
 
   // Miriam Osei — the CRO votes on the evidence, not the idea.
   if (m.evidenceCoveragePct < MIN_COVERAGE_PCT) {
-    seat("miriam", "AGAINST", `Evidence coverage is ${m.evidenceCoveragePct}%. Missing: ${m.missingEvidence.join("; ")}. A decision on this little is a guess with a vote attached.`);
+    seat("miriam", "AGAINST", `Evidence coverage is ${m.evidenceCoveragePct}%, below Gate 7's ${MIN_COVERAGE_PCT}% floor. Missing: ${m.missingEvidence.join("; ")}. A decision on this little is a guess with a vote attached, and the pre-trade checklist would refuse it regardless.`);
   } else {
     seat("miriam", "FOR", `Evidence coverage ${m.evidenceCoveragePct}%${m.missingEvidence.length ? `; unmeasured: ${m.missingEvidence.join("; ")}` : " — every input the rule needs was measured"}.`);
   }
@@ -791,7 +796,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     // which is a different statement from "no".
     let veto: Motion["veto"] = null;
     if (draft.evidenceCoveragePct < MIN_COVERAGE_PCT && draft.kind !== "HOLD") {
-      veto = { member: ROSTER.miriam.name, reason: `Evidence coverage ${draft.evidenceCoveragePct}% is below the ${MIN_COVERAGE_PCT}% floor. Missing: ${draft.missingEvidence.join("; ")}.` };
+      veto = { member: ROSTER.miriam.name, reason: `Gate 7: evidence coverage ${draft.evidenceCoveragePct}% is below the fund's ${MIN_COVERAGE_PCT}% data-quality floor. Missing: ${draft.missingEvidence.join("; ")}.` };
     }
     // Rule #3, and one of the fund's ten hard rules: research must name a
     // replacement before a trim is executed. Selling a position with nothing

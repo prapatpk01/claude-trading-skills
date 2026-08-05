@@ -171,18 +171,24 @@ section("Filters reject rather than down-weight");
 
 /* ─────────────────────── unmeasurable components ──────────────────── */
 
-section("Rule #5 — unmeasured is not zero");
+section("Rule #5 — unmeasured scores zero and stays in the denominator");
 {
   const withCatalyst = runSwingScan([{ ticker: "AAA", candles: flatBaseThenBreakout(), catalystScore: 20, catalystNote: "PEAD" }], benchmarks, 5).setups[0];
   const without = runSwingScan([{ ticker: "AAA", candles: flatBaseThenBreakout() }], benchmarks, 5).setups[0];
   ok("both produce a setup", withCatalyst != null && without != null);
   if (withCatalyst && without) {
-    ok("an unassessed catalyst leaves the denominator", without.coveragePct === 85, `${without.coveragePct}%`);
-    ok("and is named as unmeasured", without.unmeasured.some((u) => /CATALYST/.test(u)), JSON.stringify(without.unmeasured));
-    ok("the missing catalyst does not drag the score toward zero",
-      without.momentumScore >= withCatalyst.momentumScore - 2, `${without.momentumScore} vs ${withCatalyst.momentumScore}`);
-    ok("the note explains the exclusion rather than showing 0/15",
-      /excluded from the denominator/.test(without.notes.catalyst));
+    ok("coverage reports the 15 points that could not be measured", without.coveragePct === 85, `${without.coveragePct}%`);
+    ok("and the component is named as unmeasured", without.unmeasured.some((u) => /CATALYST/.test(u)), JSON.stringify(without.unmeasured));
+    // Rule #5 in the fund's own form: the gap costs the score its points rather
+    // than averaging away. A name nobody assessed must not rank beside one the
+    // catalyst desk worked.
+    ok("an unassessed catalyst costs the score its points",
+      without.momentumScore < withCatalyst.momentumScore, `${without.momentumScore} vs ${withCatalyst.momentumScore}`);
+    ok("by roughly the weight of the component it lost",
+      Math.abs((withCatalyst.momentumScore - without.momentumScore) - 12) <= 4,
+      `lost ${withCatalyst.momentumScore - without.momentumScore} points`);
+    ok("and the note says the points were lost, not excluded",
+      /scores zero and stays in the denominator/.test(without.notes.catalyst), without.notes.catalyst);
   }
 }
 {
