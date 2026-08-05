@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AppLang } from "../page";
+import MeetingApprovalPanel from "./MeetingApprovalPanel";
 
 type Ballot = "FOR" | "AGAINST" | "ABSTAIN";
 type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY" | "RAISE CASH";
@@ -65,7 +66,10 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
+    // Only blank the page on the first load. A refresh triggered by an approval
+    // must not unmount the tree — doing so throws away the result the person
+    // just produced, which is the one thing they need to read.
+    setLoading((wasLoading) => (meeting == null ? true : wasLoading));
     setError(null);
     fetch("/api/committee/meeting", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(async (response) => {
@@ -161,6 +165,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
             ["capital", tr(lang, "Capital plan", "แผนเงินทุน")],
             ["blotter", tr(lang, "Trade blotter", "รายการซื้อขาย")],
             ["resolutions", tr(lang, "Resolutions", "มติ")],
+            ["approval", tr(lang, "Approve & apply", "อนุมัติและบันทึก")],
             ["risk", tr(lang, "Risk register", "ทะเบียนความเสี่ยง")],
             ["minutes", tr(lang, "Minutes", "รายงานการประชุม")],
           ].map(([id, label]) => (
@@ -458,6 +463,23 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
           </>
         )}
       </section>
+
+      {/* ── Stage 5: the only place a decision becomes a ledger entry ── */}
+      <div id="ic-approval">
+        <MeetingApprovalPanel
+          lang={lang}
+          meetingId={meeting.meetingId}
+          meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, agenda: meeting.agenda, minutes: meeting.minutes, resolutions: meeting.resolutions, dissent: meeting.dissent }}
+          motions={meeting.motions
+            .filter((m) => m.outcome === "CARRIED" && m.sizeUsd !== 0)
+            .map((m) => ({
+              id: m.id, ticker: m.ticker, kind: m.kind, sizeUsd: m.sizeUsd, approxShares: m.approxShares,
+              referencePrice: meeting.blotter.find((b) => b.ticker === m.ticker)?.referencePrice ?? null,
+              outcome: m.outcome, outcomeReason: m.outcomeReason,
+            }))}
+          onApplied={() => setRefreshKey((v) => v + 1)}
+        />
+      </div>
 
       {/* ── 9. Minutes ── */}
       <section className="card" id="ic-minutes">

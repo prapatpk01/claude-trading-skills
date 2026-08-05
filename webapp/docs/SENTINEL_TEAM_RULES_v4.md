@@ -442,6 +442,40 @@ Referred ideas are sized by conviction band — 80+ takes 8% of NAV, 65+ takes 6
 50+ takes 4%, everything else 3% — capped by deployable cash. A referral with
 **no** conviction score gets the floor, not the benefit of the doubt.
 
+### The swing scan — Momentum-Centric Alpha Score
+
+`lib/team/swing.ts`, served by `/api/committee/swing-scan` and shown in the
+research workspace. One hundred points, fixed by the brief and not tuned per
+scan: **momentum and relative strength 40, volume accumulation 25, structural
+base and trend 20, catalyst drift 15.**
+
+| Factor | What is measured |
+|---|---|
+| Momentum 40 | 30-day RS against SPY; RSI(14) inside the 60–75 Power Zone, with bearish divergence against price checked; MACD separation from zero normalised by price, and whether the histogram is expanding |
+| Volume 25 | 5-day average volume against the 20-day (accumulation, not a spike); up/down volume ratio over ten sessions |
+| Structure 20 | The consolidation classified as VCP, flat base or high-tight flag by measuring successive contraction depths, base depth and the preceding advance; price above the 10 and 20 EMA with the averages fanning |
+| Catalyst 15 | Aisha's 0–25 scale, converted in one place |
+
+**Four filters reject; they do not down-weight.** A scanner that ranks a setup
+it would not take is one nobody can act on.
+
+1. **Market regime** — an index below its 20-day EMA, or VIX above 18, leaves
+   only relative-strength outliers (RS ≥ 1.15). A regime that could not be
+   measured is treated as hostile, not as healthy.
+2. **Entry precision** — more than 3% above the structural pivot is extended.
+   The pivot excludes the breakout bars themselves, or every chart sits exactly
+   at its own pivot and this filter can never fire.
+3. **Swing target** — outside 10–25% is not this desk's trade. Targets are the
+   1.618 Fibonacci extension of the base or its measured move; they are
+   structural, never forecasts.
+4. **Reward:risk** — below 1:3 is refused with the geometry quoted. The stop
+   goes under the *current* contraction, not the whole base: stopping at the
+   base's own low makes risk equal reward, and a 1.618 extension can never pay
+   1:3 against it.
+
+**Win probability is not quoted.** The fund has no closed-trade sample per score
+band, and a percentage printed beside measured numbers reads as measured.
+
 ### How a name reaches the meeting
 
 The research workspace refers directly: every candidate at the **Committee
@@ -499,6 +533,29 @@ motion kept on the record, and minutes. **Nothing executes.** The engine has no
 path to a broker, and a human records the actual fills in the ledger.
 
 ---
+
+## 10e. The four scores and the conviction
+
+`lib/team/conviction.ts`. Four pillars, each 0–100 and each normalised over what
+could be measured, blended on **fixed, published weights: quality 30, growth 25,
+valuation 25, risk 20.** A conviction score whose weights move with the answer
+is a rationalisation with a number attached.
+
+Risk scores *higher* when the position is safer — beta, drawdown, realised
+volatility, exit liquidity and hard blocks.
+
+Two refusals. A pillar with nothing measurable scores **null**, not zero — an
+unmeasured pillar is not a low one. And below 50% of the model's weight the
+**rating is withheld** entirely: under half, a rating says more about the gaps
+than about the company.
+
+The **thesis tracker** carries the bull and bear cases assembled from pillars
+that actually scored, the key risks, and six monitoring metrics — each with the
+reading that would break the thesis and the desk that owns it.
+
+**Variant perception is a measurement, not a story:** the gap between the anchor
+stack and the price, with its direction. Agreement with the market inside 8% is
+reported as having no edge rather than dressed up as a view.
 
 ## 11. Precedence
 

@@ -2,6 +2,7 @@
 
 import {useMemo,useState} from "react";
 import type {AppLang} from "../page";
+import SwingScanPanel from "./SwingScanPanel";
 
 type Mode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"thematic"|"multifactor";
 type StageId="universe"|"analyzed"|"qualified"|"valuation"|"selected"|"rejected";
@@ -153,7 +154,8 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   });
  }
 
- return <div className="research-v12" data-research-version="12.1">
+ return <div className="research-v12" data-research-version="12.2">
+  <SwingScanPanel lang={lang}/>
   <section className="card research-hero" style={{borderTop:"2px solid var(--accent)"}}>
    <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
     <div><span className="tag">SENTINEL RESEARCH OS · PHASE 1</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Institutional Research Pipeline","ระบบวิจัยการลงทุนระดับสถาบัน")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"One auditable evidence chain from universe to Stock Analysis. Each stage has its own candidates and every rejection keeps an explicit reason.","กระบวนการเดียวตั้งแต่ Universe จนส่งต่อ Stock Analysis แต่ละขั้นมีรายชื่อหุ้นของตัวเองและทุกหุ้นที่ไม่ผ่านมีเหตุผลตรวจสอบได้")}</p></div>
