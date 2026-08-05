@@ -118,6 +118,23 @@ requireTokens("app/components/ResearchWorkspaceV12.tsx", [
   "source:engine",
 ]);
 
+// ── The fund's own rulebook must be the single source of its thresholds ──
+// docs/INVESTMENT_SYSTEM.md is the document; lib/team/constitution.ts is the
+// machine-readable copy; scripts/test-constitution.mjs asserts they agree.
+requireTokens("lib/team/constitution.ts", [
+  "FUND_CONSTITUTION_VERSION", "POSITION_ZONES", "REGIME_BANDS", "PRE_TRADE_GATES",
+  "HARD_RULES", "TRIM_REQUIRES_REPLACEMENT", "WIN_RATE_DISCLOSURE",
+  "permittedDeployFraction", "softBlockApplies", "zoneForWeight",
+]);
+// The committee must enforce the rules, not restate their numbers.
+requireTokens("lib/team/committee.ts", [
+  "TRIM_REQUIRES_REPLACEMENT", "permittedDeployFraction", "winRatePresentation",
+  "Rule #3", "Rule #2", "FUND_CONSTITUTION_VERSION",
+]);
+if (!fs.existsSync(path.join(root, "docs/INVESTMENT_SYSTEM.md"))) {
+  failures.push("docs/INVESTMENT_SYSTEM.md: the fund's rulebook must be committed alongside the code that enforces it");
+}
+
 requireTokens("app/page.tsx", ["CIOCommandCenterV12", 'section === "command"']);
 
 if (failures.length) {

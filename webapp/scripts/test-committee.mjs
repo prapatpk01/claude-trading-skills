@@ -24,7 +24,7 @@ const section = (t) => console.log(`\n${t}`);
 /* ─────────────────────────── fixture builders ─────────────────────── */
 
 const regime = {
-  score: 62, regime: "RISK-ON", icon: "🟢", cashMinPct: 10,
+  score: 62, regime: "NEUTRAL", icon: "🟡", cashMinPct: 15,
   deployRule: "Deploy selectively into leadership.", components: [], realizedVol: 14.2,
   note: "SPY above both averages.",
 };
@@ -210,7 +210,7 @@ section("Capital plan");
   }));
   // Cash sits above the 10% floor (20,000 on 200,000 NAV) with 5,000 spare, so
   // the constraint under test is funding, not the liquidity buffer.
-  const meeting = runCommitteeMeeting(input({ ideas, deployableCash: 5_000, cashBalance: 25_000 }));
+  const meeting = runCommitteeMeeting(input({ ideas, deployableCash: 5_000, cashBalance: 35_000 }));
   const plan = meeting.capitalPlan;
   ok("an overcommitted meeting still balances", plan.usesUsd <= plan.sourcesUsd + 0.01, `${plan.usesUsd} vs ${plan.sourcesUsd}`);
   ok("every unfunded motion is named", plan.cutForFunding.length > 0);
@@ -254,7 +254,8 @@ section("Blotter and resolutions");
 {
   const meeting = runCommitteeMeeting(input());
   ok("the minutes say no order was placed", meeting.minutes.some((m) => /No order was placed/i.test(m)));
-  ok("the disclosures lead with decision-support only", /Decision support only/i.test(meeting.disclosures[0]));
+  ok("the disclosures name the rulebook the meeting ran against", /investment-system/.test(meeting.disclosures[0]), meeting.disclosures[0]);
+  ok("and state decision-support only", meeting.disclosures.some((d) => /Decision support only/i.test(d)));
   ok("the agenda has eight items", meeting.agenda.length === 8);
   ok("every agenda item has a summary", meeting.agenda.every((a) => a.summary.length > 10));
 }
@@ -350,6 +351,84 @@ const overdrawn = (over = {}) => input({
   ok("with no reserve the motion still names a source", liq != null && /risk position/i.test(liq.reasons.map((r) => r.finding).join(" ")));
   ok("and it names the smallest line that closes the gap",
     liq.reasons.some((r) => /SPMO is the smallest line/.test(r.finding)), liq.reasons.map((r) => r.finding).join(" | "));
+}
+
+/* ─────────────────── the fund's own rules, enforced ───────────────── */
+
+section("Rule #3 — a trim needs a replacement first");
+{
+  // 26% weight forces a mandatory trim.
+  const p = position({ ticker: "BIG", shares: 520, price: 100 });
+  const m = runCommitteeMeeting(input({ positions: [p] })).motions[0];
+  ok("a trim with no replacement named is vetoed", m.veto != null, JSON.stringify(m.veto));
+  ok("the veto cites Rule #3", /Rule #3/.test(m.veto.reason), m.veto.reason);
+  ok("it is deferred, not rejected", m.outcome === "DEFERRED");
+  ok("it says where the proceeds park meanwhile", /SGOV\/JAAA/.test(m.veto.reason));
+}
+{
+  const p = position({ ticker: "BIG", shares: 520, price: 100 });
+  const m = runCommitteeMeeting(input({ positions: [p], replacements: { BIG: [{ ticker: "QDVO", note: "yield 10.5% vs 9.8%" }] } })).motions[0];
+  ok("naming a replacement clears the veto", m.veto === null, JSON.stringify(m.veto));
+  ok("and the trim can carry", m.outcome === "CARRIED", m.outcomeReason);
+}
+{
+  // An exit needs no replacement — requiring one would trap the fund in a
+  // broken thesis.
+  const p = position({
+    ticker: "BRK", shares: 100, price: 100,
+    momentum: { total: 22, signal: "REJECT", hardBlocks: ["Below 200-day average"], dataQualityPct: 88 },
+    trend: { aboveSma50: false, aboveSma200: false, return1m: -9, return3m: -21 },
+  });
+  const m = runCommitteeMeeting(input({ positions: [p] })).motions[0];
+  ok("an exit is not blocked by the replacement rule", m.kind === "EXIT" && m.veto === null, `${m.kind} ${JSON.stringify(m.veto)}`);
+}
+
+section("Rule #2 — staggered deploy before a Tier-1 event");
+{
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const full = runCommitteeMeeting(input({ ideas: [idea], positions: [] })).motions[0];
+  const near = runCommitteeMeeting(input({ ideas: [idea], positions: [], daysToTierOneEvent: 3 })).motions[0];
+  ok("a Tier-1 event within five days cuts the size", near.sizeUsd < full.sizeUsd, `${near.sizeUsd} vs ${full.sizeUsd}`);
+  const plan = 0.08 * NAV;
+  ok("to one third of the planned size", Math.abs(near.sizeUsd - plan / 3) < 1, `${near.sizeUsd} vs plan ${plan}`);
+  ok("the meeting is told what was held back", near.reasons.some((r) => /held back/.test(r.finding)), JSON.stringify(near.reasons.map((r) => r.finding)));
+  ok("and why", near.reasons.some((r) => /Tier-1 event/.test(r.finding)));
+}
+{
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const m = runCommitteeMeeting(input({ ideas: [idea], positions: [], daysToTierOneEvent: 20 })).motions[0];
+  // The regime still applies: 62/100 is Neutral, which permits 75% of plan.
+  ok("an event outside the window leaves only the regime cap", Math.abs(m.sizeUsd - 0.08 * NAV * 0.75) < 1, `${m.sizeUsd}`);
+}
+{
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const riskOn = { ...regime, score: 78, regime: "RISK-ON", icon: "🟢", cashMinPct: 10 };
+  const m = runCommitteeMeeting(input({ ideas: [idea], positions: [], regime: riskOn })).motions[0];
+  ok("a Risk-On regime deploys the full plan", Math.abs(m.sizeUsd - 0.08 * NAV) < 1, `${m.sizeUsd}`);
+}
+{
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const crisis = { ...regime, score: 12, regime: "CRISIS", icon: "⚫", cashMinPct: 40 };
+  const meeting = runCommitteeMeeting(input({ ideas: [idea], positions: [], regime: crisis, cashBalance: 90_000, cashBufferPct: 45 }));
+  const m = meeting.motions.find((x) => x.ticker === "AVDV");
+  ok("a Crisis regime freezes deployment entirely", m.sizeUsd === 0, `${m.sizeUsd}`);
+  ok("and the reason names the freeze", m.reasons.some((r) => /frozen|0% of plan/i.test(r.finding)), JSON.stringify(m.reasons.map((r) => r.finding)));
+}
+
+section("Rule #6 — win-rate disclosure");
+{
+  const m = runCommitteeMeeting(input({ track: { completed: 24, winRatePct: 58, averageReturnPct: 7.4 } })).motions[0];
+  const priya = m.votes.find((v) => /Priya/.test(v.member));
+  ok("a rate below 100 trades still shows", /58/.test(priya.rationale), priya.rationale);
+  ok("but carries the Component Estimate label", /Component Estimate/.test(priya.rationale), priya.rationale);
+  ok("and the desk does not vote on it", priya.ballot === "ABSTAIN", priya.ballot);
+}
+{
+  const m = runCommitteeMeeting(input({ track: { completed: 140, winRatePct: 61, averageReturnPct: 8.2 } })).motions[0];
+  const priya = m.votes.find((v) => /Priya/.test(v.member));
+  ok("past 100 live trades the rate stands on its own", priya.ballot === "FOR", priya.ballot);
+  ok("and drops the estimate label", !/Component Estimate/.test(priya.rationale), priya.rationale);
+  ok("citing the sample size", /140 live trades/.test(priya.rationale), priya.rationale);
 }
 
 /* ──────────────────── referrals from the scanner ──────────────────── */

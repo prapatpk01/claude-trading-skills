@@ -15,10 +15,12 @@ export const ROSTER: Record<string, Member> = {
   leo: { name: "Leo Tanaka", role: "Real-time Data Analyst", desk: "Executive", owns: "Live feed parsing, timestamps" },
   sofia: { name: "Sofia Reyes", role: "Sr. Fundamental Analyst", desk: "Research", owns: "Business quality, moat, thesis" },
   marcus: { name: "Marcus Webb", role: "Sr. Financial Analyst", desk: "Research", owns: "Earnings trend, margins, revision momentum" },
-  // The two research seats are split by what they answer, not by title: Maya
-  // finds what is moving, Aisha decides whether there is a reason for it.
-  aisha: { name: "Aisha Fontaine", role: "Catalyst & Thematic Analyst", desk: "Research", owns: "Theme, thesis, catalyst scoring, measured PEAD, event calendar" },
-  maya: { name: "Maya Chen", role: "Momentum Analyst", desk: "Research", owns: "Momentum scoring v3.0, hard blocks, entry layer" },
+  // The fund gives both research seats the same title. They are not split by
+  // rank or by remit — they hold one role in parallel, use different
+  // techniques, and present their findings to the meeting together. Maya works
+  // the scanner and the tape; Aisha works the catalyst and the calendar.
+  aisha: { name: "Aisha Fontaine", role: "Momentum & Catalyst Analyst", desk: "Research", owns: "Catalyst scoring matrix (strength × horizon × uniqueness), measured PEAD, sector heatmap, event calendar, flow flags" },
+  maya: { name: "Maya Chen", role: "Momentum & Catalyst Analyst", desk: "Research", owns: "Institutional momentum scanner, high-beta expansion filter, 7-15 day swing setups, hard blocks, entry layer" },
   priya: { name: "Priya Nair", role: "Quantitative Strategist", desk: "Quant", owns: "Win-rate tracking, factor attribution" },
   thomas: { name: "Thomas Eriksson", role: "Head of Valuation", desk: "Quant", owns: "DCF, comps, margin of safety" },
   daniel: { name: "Daniel Cho", role: "Head of Macro Strategy", desk: "Macro", owns: "Regime score, cash buffer, rotation" },

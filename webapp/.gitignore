@@ -10,3 +10,4 @@ next-env.d.ts
 .test-build/
 .test-build-swing/
 .test-build-conv/
+.test-build-const/

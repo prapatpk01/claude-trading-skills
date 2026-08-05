@@ -22,6 +22,10 @@
 // Pure functions only — no network, no clock beyond the asOf it is given.
 
 import { ROSTER, type Member } from "./roster";
+import {
+  TRIM_REQUIRES_REPLACEMENT, POSITION_ZONES, RISK_LIMITS,
+  winRatePresentation, permittedDeployFraction, WIN_RATE_DISCLOSURE, FUND_CONSTITUTION_VERSION,
+} from "./constitution";
 import type { RegimeAssessment } from "./governance";
 import type { ZoneAssessment } from "./risk";
 import type { BookReview } from "./book";
@@ -95,6 +99,17 @@ export interface CommitteeInput {
   book: BookReview | null;
   /** Priya Nair — the fund's own recorded hit rate. */
   track: { completed: number; winRatePct: number | null; averageReturnPct: number | null } | null;
+  /**
+   * Rule #2 — days until the next Tier-1 macro event (FOMC, CPI, NFP), when
+   * one is known. Inside the five-day window, deployment is capped at a third.
+   */
+  daysToTierOneEvent?: number | null;
+  /**
+   * Rule #3 — names research has put forward as replacements for a trimmed
+   * position. **A trim may not be executed until one is named.** Keyed by the
+   * ticker being trimmed.
+   */
+  replacements?: Record<string, { ticker: string; note: string }[]>;
   /** Sources that could not be reached, named so the minutes can say so. */
   unavailable: string[];
 }
@@ -435,7 +450,13 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
   // The size the meeting wants, not the size it can currently afford. Funding
   // is decided once, in the capital plan, where the cut can be named — sizing a
   // motion at $0 because the cash is short reads as a decision nobody made.
-  const requested = round2((targetPct / 100) * input.nav);
+  const planned = round2((targetPct / 100) * input.nav);
+
+  // Rule #2, and a hard rule: the regime and any near Tier-1 event both cap
+  // what may go in today, and the stricter of the two wins. The full plan stays
+  // visible so the meeting can see what it is holding back and why.
+  const permitted = permittedDeployFraction(input.regime?.score ?? 50, input.daysToTierOneEvent ?? null);
+  const requested = round2(planned * permitted.fraction);
 
   reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `Referred from ${idea.source} rated ${idea.rating}${idea.conviction == null ? " with no conviction score recorded" : ` at conviction ${idea.conviction}/100`}${idea.ageDays == null ? "" : ` ${idea.ageDays} day(s) ago`}.` });
   if (idea.upsidePct != null) reasons.push({ desk: "Quant", member: ROSTER.thomas.name, finding: `Upside to target ${pct1(idea.upsidePct)}${idea.target == null ? "" : ` (target ${money(idea.target)})`}.` });
@@ -445,7 +466,13 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
   if (idea.ageDays != null && idea.ageDays > STALE_REFERRAL_DAYS) {
     reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `The referral is ${idea.ageDays} days old, past the ${STALE_REFERRAL_DAYS}-day shelf life. A paper that has sat this long is a starting point, not a recommendation.` });
   }
-  reasons.push({ desk: "Risk", member: ROSTER.kai.name, finding: `Starter size ${plain(targetPct)}% of NAV — ${money(requested)} — set by conviction band, well inside the ${HARD_CAP_PCT}% cap.` });
+  reasons.push({ desk: "Risk", member: ROSTER.kai.name, finding: `Starter size ${plain(targetPct)}% of NAV — ${money(planned)} at full plan — set by conviction band, well inside the ${HARD_CAP_PCT}% cap.` });
+  if (permitted.fraction < 1) {
+    reasons.push({
+      desk: "Macro", member: ROSTER.daniel.name,
+      finding: `Deployment is capped at ${Math.round(permitted.fraction * 100)}% of plan today, so ${money(requested)} goes in and ${money(planned - requested)} is held back. ${permitted.reason}`,
+    });
+  }
   if (idea.dataQuality) reasons.push({ desk: "Executive", member: ROSTER.nina.name, finding: `The scanner reported data quality ${idea.dataQuality} on this name.` });
   if (idea.note) reasons.push({ desk: "Research", member: ROSTER.sofia.name, finding: idea.note });
 
@@ -598,10 +625,19 @@ function castVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReaso
   }
 
   // Priya Nair — does the fund's own record support this kind of decision?
-  if (input.track && input.track.completed >= 10) {
-    seat("priya", "FOR", `${input.track.completed} closed decisions on record, hit rate ${plain(input.track.winRatePct)}%, average return ${pct1(input.track.averageReturnPct)}.`);
-  } else {
-    seat("priya", "ABSTAIN", `Only ${input.track?.completed ?? 0} closed decisions are on record — too few to quote a win rate that means anything.`);
+  {
+    const wr = winRatePresentation(input.track?.completed ?? 0, input.track?.winRatePct ?? null);
+    if (!wr.quotable) {
+      seat("priya", "ABSTAIN", wr.label);
+    } else {
+      // Rule #6: the rate may be quoted at any sample size, but below 100 live
+      // trades it must carry the Component Estimate label — an unlabelled hit
+      // rate on a small sample is the most persuasive wrong number the fund
+      // produces, and the label is what stops it being read as a backtest.
+      const verified = (input.track?.completed ?? 0) >= WIN_RATE_DISCLOSURE.liveTradesRequired;
+      seat("priya", verified ? "FOR" : "ABSTAIN",
+        `Hit rate ${plain(wr.value)}% across ${input.track?.completed ?? 0} closed decision(s), average return ${pct1(input.track?.averageReturnPct)}. ${wr.label}${verified ? "" : " On that basis the quant desk records the number but does not vote on it."}`);
+    }
   }
 
   // Aisha Fontaine — catalyst and theme. A referral has a shelf life: she is
@@ -683,7 +719,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const anyZone = input.positions.some((p) => p.zone != null) || input.ideas.length > 0;
   const anyLiquidity = input.positions.some((p) => p.liquidity?.sessionsToExit != null);
   const anyPrice = priced > 0 || input.ideas.some((i) => i.price != null);
-  const trackReady = (input.track?.completed ?? 0) >= 10;
+  const trackReady = (input.track?.completed ?? 0) >= WIN_RATE_DISCLOSURE.liveTradesRequired;
 
   const attendance: Attendee[] = [
     { key: "james", present: true, contribution: "Chairs the meeting and carries the final verdict." },
@@ -694,7 +730,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     { key: "sofia", present: false, contribution: "Fundamental work sits in the ticker analysis; none was tabled for this book review." },
     { key: "marcus", present: false, contribution: "No updated earnings-quality readings were tabled for this book review." },
     { key: "thomas", present: anyValuation, contribution: anyValuation ? "Fair-value reads on the priced holdings." : "No fair-value anchor could be built for any holding." },
-    { key: "priya", present: trackReady, contribution: trackReady ? `${input.track!.completed} closed decisions in the record.` : `Only ${input.track?.completed ?? 0} closed decisions — too few to quote a hit rate.` },
+    { key: "priya", present: trackReady, contribution: trackReady ? `${input.track!.completed} closed decisions in the record — past the ${WIN_RATE_DISCLOSURE.liveTradesRequired}-trade bar, so the hit rate stands on its own.` : `${input.track?.completed ?? 0} closed decisions. Rule #6 requires ${WIN_RATE_DISCLOSURE.liveTradesRequired} before a win rate is quoted without the Component Estimate label.` },
     { key: "kai", present: anyZone, contribution: anyZone ? "Concentration zones, the trims they imply, and the starter size on every referral." : "No position could be weighted and nothing was referred, so there was nothing to size." },
     { key: "lena", present: input.positions.length > 0 || input.ideas.length > 0, contribution: input.positions.length ? "Sleeve balance, yield contribution and the objective scorecard." : input.ideas.length ? "Sleeve effect of each referral against the barbell targets." : "No open positions and no referrals to review." },
     { key: "ryan", present: anyLiquidity, contribution: anyLiquidity ? "Sessions-to-exit at 20% of median volume." : "Volume history unavailable; no execution read." },
@@ -757,6 +793,21 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     if (draft.evidenceCoveragePct < MIN_COVERAGE_PCT && draft.kind !== "HOLD") {
       veto = { member: ROSTER.miriam.name, reason: `Evidence coverage ${draft.evidenceCoveragePct}% is below the ${MIN_COVERAGE_PCT}% floor. Missing: ${draft.missingEvidence.join("; ")}.` };
     }
+    // Rule #3, and one of the fund's ten hard rules: research must name a
+    // replacement before a trim is executed. Selling a position with nothing
+    // identified to take its place is how a sleeve quietly becomes cash.
+    // An EXIT is not caught by this — exiting a broken thesis needs no
+    // replacement, and requiring one would keep the fund in a failed position.
+    if (!veto && draft.kind === "TRIM" && TRIM_REQUIRES_REPLACEMENT) {
+      const named = input.replacements?.[draft.ticker] ?? [];
+      if (!named.length) {
+        veto = {
+          member: ROSTER.sofia.name,
+          reason: `Rule #3: a trim may not be executed until research names a replacement. ${draft.ticker} sits in the ${p?.sleeve ?? "unclassified"} sleeve — ${p?.sleeve === "income" ? "the replacement's yield must be at least as high" : "the replacement needs comparable return or momentum"}. If nothing qualifies, the proceeds park in SGOV/JAAA and the trim waits.`,
+        };
+      }
+    }
+
     // A referral priced 20% ago is not a stale opinion, it is arithmetic about
     // a different security. Send it back rather than size it.
     if (!veto && idea?.priceDriftPct != null && Math.abs(idea.priceDriftPct) >= MAX_REFERRAL_DRIFT_PCT) {
@@ -952,10 +1003,13 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   ];
 
   const disclosures: string[] = [
+    `Run against the fund's own rules — ${FUND_CONSTITUTION_VERSION}. Thresholds are read from lib/team/constitution.ts, not restated here.`,
     "Decision support only. The committee produces proposals; it has no execution path and never places an order.",
     "A seat that could not measure its own input abstained and said so. Abstentions are shown in every tally so a thin vote reads as thin.",
     ...(input.unavailable.length ? [`Sources unavailable this meeting: ${input.unavailable.join("; ")}. Motions depending on them were deferred rather than decided.`] : []),
-    ...((input.track?.completed ?? 0) < 10 ? [`The fund has ${input.track?.completed ?? 0} closed decisions on record. No win rate is quoted below 10 — a hit rate on a handful of trades is noise with a percentage sign.`] : []),
+    ...((input.track?.completed ?? 0) < WIN_RATE_DISCLOSURE.liveTradesRequired
+      ? [`Rule #6: the fund has ${input.track?.completed ?? 0} closed decisions on record against the ${WIN_RATE_DISCLOSURE.liveTradesRequired} required. Any win rate shown carries the "${WIN_RATE_DISCLOSURE.label}" label and is not a backtest.`]
+      : []),
     ...(capitalPlan.cutForFunding.length ? [`${capitalPlan.cutForFunding.length} approved use(s) were cut or reduced so the plan would balance. They are named in the capital plan, not dropped silently.`] : []),
   ];
 
