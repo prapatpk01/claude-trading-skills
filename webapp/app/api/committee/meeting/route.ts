@@ -228,20 +228,28 @@ export async function GET(req: NextRequest) {
         .filter((row) => String(row?.action ?? "").toUpperCase() === "COMMITTEE")
         .map((row) => {
           const payload = row?.payload ?? {};
-          const price = finite(payload?.price) ?? finite(payload?.currentPrice);
+          // The price the paper was written at, kept apart from today's price
+          // so the meeting can see how far the thesis has drifted from it.
+          const referencePrice = finite(payload?.price) ?? finite(payload?.currentPrice);
           const target = finite(payload?.target) ?? finite(payload?.targetPrice);
+          const submittedAt = row?.created_at ? String(row.created_at) : null;
+          const ageDays = submittedAt ? Math.max(0, Math.round((Date.now() - new Date(submittedAt).getTime()) / 86400000)) : null;
           return {
             ticker: String(row?.ticker ?? "").toUpperCase(),
             rating: String(row?.rating ?? "WATCH").toUpperCase(),
             conviction: finite(row?.conviction),
             source: String(payload?.source ?? "Stock Analyze"),
-            price,
+            price: referencePrice,
             target,
-            upsidePct: price != null && target != null && price > 0 ? Math.round((target / price - 1) * 1000) / 10 : null,
-            submittedAt: row?.created_at ? String(row.created_at).slice(0, 10) : null,
+            upsidePct: null,
+            submittedAt: submittedAt ? submittedAt.slice(0, 10) : null,
             note: payload?.thesis ? String(payload.thesis).slice(0, 240) : null,
             alreadyHeld: false,
             sleeve: null,
+            ageDays,
+            referencePrice,
+            priceDriftPct: null,
+            dataQuality: payload?.dataQuality ? String(payload.dataQuality) : null,
           } as IdeaEvidence;
         })
         .filter((idea) => /^[A-Z.\-]{1,10}$/.test(idea.ticker));
@@ -257,12 +265,18 @@ export async function GET(req: NextRequest) {
           dailyCandles(idea.ticker, 320).catch(() => [] as Candle[]),
           forwardYield(idea.ticker, idea.price),
         ]);
-        const price = idea.price ?? finite(quote?.price) ?? finite(candles.at(-1)?.close);
+        // Today's price is what the fund would actually pay; the referral's is
+        // only the number the thesis was written against.
+        const price = finite(quote?.price) ?? finite(candles.at(-1)?.close) ?? idea.referencePrice;
         const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
         return {
           ...idea,
           price,
-          upsidePct: price != null && idea.target != null && price > 0 ? Math.round((idea.target / price - 1) * 1000) / 10 : idea.upsidePct,
+          upsidePct: price != null && idea.target != null && price > 0 ? Math.round((idea.target / price - 1) * 1000) / 10 : null,
+          priceDriftPct:
+            price != null && idea.referencePrice != null && idea.referencePrice > 0
+              ? Math.round((price / idea.referencePrice - 1) * 1000) / 10
+              : null,
           sleeve: yieldPct != null || beta != null ? classifySleeve(idea.ticker, yieldPct, beta) : null,
         };
       });

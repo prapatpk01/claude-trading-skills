@@ -81,6 +81,20 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "unavailable",
 ]);
 
+// ── research must be able to hand a name to the committee ──
+// The "Committee Ready" stage existed for months with no way to send anything.
+requireTokens("app/components/ResearchWorkspaceV12.tsx", [
+  "referToCommittee",
+  '"COMMITTEE"',
+  "/api/analyze/actions",
+  "Refer to committee",
+  "Refer the shortlist to the investment committee",
+  // The referral must carry the price it was written at, or the committee
+  // cannot tell that the thesis has drifted off it.
+  "price:candidate.price",
+  "source:engine",
+]);
+
 requireTokens("app/page.tsx", ["CIOCommandCenterV12", 'section === "command"']);
 
 if (failures.length) {

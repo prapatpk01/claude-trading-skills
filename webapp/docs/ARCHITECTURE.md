@@ -53,6 +53,13 @@ routes reach the page only through it — `macro/intelligence`, `v10/cio` and
 `portfolio/analytics`. A dependency walk that only follows `.tsx` files reports
 them as dormant. They are not.
 
+One loop is now closed end to end: **research → committee → ledger**. The
+scanner refers a name (with the price its thesis was written at) into the
+analysis action queue; `committee/meeting` turns each referral into a motion
+with a size, a vote and a funding source; the blotter hands the survivors to a
+human, who records the fill in `portfolio/transactions`. No step in that chain
+executes anything by itself.
+
 The live half is coherent and has a clear centre of gravity: **the ledger is the
 source of truth**. `portfolio/transactions` records what happened, the fund
 snapshot derives position and cash from it, and `portfolio/integrity` checks the

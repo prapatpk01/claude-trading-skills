@@ -71,6 +71,14 @@ export interface IdeaEvidence {
   alreadyHeld: boolean;
   /** Which sleeve the money would land in, when it could be classified. */
   sleeve: string | null;
+  /** Days since research referred it. A paper has a shelf life. */
+  ageDays: number | null;
+  /** The price the thesis was written at, when the referral recorded one. */
+  referencePrice: number | null;
+  /** How far the price has moved since. Positive = it ran without us. */
+  priceDriftPct: number | null;
+  /** The scanner's own coverage read on the name, when it reported one. */
+  dataQuality: string | null;
 }
 
 export interface CommitteeInput {
@@ -212,6 +220,14 @@ const REVIEW_PCT = 15;
 const MIN_VOTING_SEATS = 4;
 /** Below this evidence coverage the CRO defers rather than lets a vote stand. */
 const MIN_COVERAGE_PCT = 50;
+/** A referral older than this is a paper, not a live idea. */
+const STALE_REFERRAL_DAYS = 21;
+/**
+ * How far the price may move from the referral before the thesis has to be
+ * written again. A target and an upside computed at one price do not survive
+ * the stock running 20% — the work was done on a different security.
+ */
+const MAX_REFERRAL_DRIFT_PCT = 15;
 
 function addDays(iso: string, days: number): string {
   const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
@@ -331,9 +347,16 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
   const targetPct = conviction >= 80 ? 8 : conviction >= 65 ? 6 : conviction >= 50 ? 4 : 3;
   const requested = Math.min(input.deployableCash, (targetPct / 100) * input.nav);
 
-  reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `Referred from ${idea.source} rated ${idea.rating}${idea.conviction == null ? " with no conviction score recorded" : ` at conviction ${idea.conviction}/100`}.` });
+  reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `Referred from ${idea.source} rated ${idea.rating}${idea.conviction == null ? " with no conviction score recorded" : ` at conviction ${idea.conviction}/100`}${idea.ageDays == null ? "" : ` ${idea.ageDays} day(s) ago`}.` });
   if (idea.upsidePct != null) reasons.push({ desk: "Quant", member: ROSTER.thomas.name, finding: `Upside to target ${pct1(idea.upsidePct)}${idea.target == null ? "" : ` (target ${money(idea.target)})`}.` });
+  if (idea.priceDriftPct != null && Math.abs(idea.priceDriftPct) >= MAX_REFERRAL_DRIFT_PCT) {
+    reasons.push({ desk: "Executive", member: ROSTER.leo.name, finding: `The price has moved ${pct1(idea.priceDriftPct)} since the referral was written at ${money(idea.referencePrice ?? 0)}. The target and upside were computed on a different price.` });
+  }
+  if (idea.ageDays != null && idea.ageDays > STALE_REFERRAL_DAYS) {
+    reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `The referral is ${idea.ageDays} days old, past the ${STALE_REFERRAL_DAYS}-day shelf life. A paper that has sat this long is a starting point, not a recommendation.` });
+  }
   reasons.push({ desk: "Risk", member: ROSTER.kai.name, finding: `Starter size ${plain(targetPct)}% of NAV — ${money(requested)} — set by conviction band, well inside the ${HARD_CAP_PCT}% cap.` });
+  if (idea.dataQuality) reasons.push({ desk: "Executive", member: ROSTER.nina.name, finding: `The scanner reported data quality ${idea.dataQuality} on this name.` });
   if (idea.note) reasons.push({ desk: "Research", member: ROSTER.sofia.name, finding: idea.note });
 
   const px = idea.price;
@@ -454,10 +477,18 @@ function castVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReaso
     seat("priya", "ABSTAIN", `Only ${input.track?.completed ?? 0} closed decisions are on record — too few to quote a win rate that means anything.`);
   }
 
-  // Aisha Fontaine — catalyst and theme.
+  // Aisha Fontaine — catalyst and theme. A referral has a shelf life: she is
+  // the seat that owns the thesis, so she is the one who withdraws a stale one.
   if (idea) {
-    seat("aisha", (idea.conviction ?? 0) >= 50 ? "FOR" : "ABSTAIN",
-      idea.conviction == null ? "The referral arrived without a conviction score, so the catalyst read cannot be reconstructed here." : `Referral conviction ${idea.conviction}/100 from ${idea.source}.`);
+    const stale = idea.ageDays != null && idea.ageDays > STALE_REFERRAL_DAYS;
+    if (idea.conviction == null) {
+      seat("aisha", "ABSTAIN", "The referral arrived without a conviction score, so the catalyst read cannot be reconstructed here.");
+    } else if (stale) {
+      seat("aisha", "AGAINST", `Referral conviction ${idea.conviction}/100 from ${idea.source}, but it is ${idea.ageDays} days old — past the ${STALE_REFERRAL_DAYS}-day shelf life. Re-run the scan before sizing it.`);
+    } else {
+      seat("aisha", idea.conviction >= 50 ? "FOR" : "ABSTAIN",
+        `Referral conviction ${idea.conviction}/100 from ${idea.source}${idea.ageDays == null ? "" : `, ${idea.ageDays} day(s) old`}.`);
+    }
   } else {
     seat("aisha", "ABSTAIN", "No catalyst or earnings-event evidence was attached to this holding for the meeting.");
   }
@@ -475,8 +506,12 @@ function castVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReaso
   }
   if (p?.priceAsOf) {
     seat("leo", "FOR", `Price as of ${p.priceAsOf}.`);
+  } else if (idea?.priceDriftPct != null) {
+    const drifted = Math.abs(idea.priceDriftPct) >= MAX_REFERRAL_DRIFT_PCT;
+    seat("leo", drifted ? "AGAINST" : "FOR",
+      `Price has moved ${pct1(idea.priceDriftPct)} since the referral was written at ${money(idea.referencePrice ?? 0)}.${drifted ? ` That is past the ${MAX_REFERRAL_DRIFT_PCT}% limit — the numbers in the paper describe a different price.` : ""}`);
   } else if (idea?.price != null) {
-    seat("leo", "FOR", `Referral carries a price of ${money(idea.price)}.`);
+    seat("leo", "FOR", `Referral carries a price of ${money(idea.price)}, with no earlier price to measure drift against.`);
   } else {
     seat("leo", "ABSTAIN", "No timestamped price was available for this name.");
   }
@@ -512,28 +547,32 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const meetingId = `IC-${asOf.slice(0, 10).replace(/-/g, "")}`;
 
   /* 1. Attendance. A seat is present when it brought a measurement. */
+  // A desk is present when it measured something on this agenda — and the
+  // agenda is the holdings *and* the referrals. A meeting convened to review
+  // new ideas is a normal meeting, not an inquorate one.
   const priced = input.positions.filter((p) => p.price != null).length;
-  const anyMomentum = input.positions.some((p) => p.momentum != null);
-  const anyValuation = input.positions.some((p) => p.valuation != null);
-  const anyZone = input.positions.some((p) => p.zone != null);
+  const anyMomentum = input.positions.some((p) => p.momentum != null) || input.ideas.some((i) => i.conviction != null);
+  const anyValuation = input.positions.some((p) => p.valuation != null) || input.ideas.some((i) => i.target != null || i.upsidePct != null);
+  const anyZone = input.positions.some((p) => p.zone != null) || input.ideas.length > 0;
   const anyLiquidity = input.positions.some((p) => p.liquidity?.sessionsToExit != null);
+  const anyPrice = priced > 0 || input.ideas.some((i) => i.price != null);
   const trackReady = (input.track?.completed ?? 0) >= 10;
 
   const attendance: Attendee[] = [
     { key: "james", present: true, contribution: "Chairs the meeting and carries the final verdict." },
     { key: "miriam", present: true, contribution: "Evidence coverage and the pre-trade gates on every motion." },
     { key: "daniel", present: input.regime != null, contribution: input.regime ? `Regime ${input.regime.regime} at ${input.regime.score}/100, cash floor ${input.regime.cashMinPct}%.` : "Benchmark history unavailable — no regime read this meeting." },
-    { key: "maya", present: anyMomentum, contribution: anyMomentum ? "Momentum v3.0 scores and hard blocks across the book." : "No candle history reached the model; no scores tabled." },
+    { key: "maya", present: anyMomentum, contribution: anyMomentum ? "Momentum v3.0 scores and hard blocks across the book, plus the conviction on each referral." : "No candle history reached the model; no scores tabled." },
     { key: "aisha", present: input.ideas.length > 0, contribution: input.ideas.length ? `${input.ideas.length} referral(s) carried into the meeting.` : "No new referrals this meeting." },
     { key: "sofia", present: false, contribution: "Fundamental work sits in the ticker analysis; none was tabled for this book review." },
     { key: "marcus", present: false, contribution: "No updated earnings-quality readings were tabled for this book review." },
     { key: "thomas", present: anyValuation, contribution: anyValuation ? "Fair-value reads on the priced holdings." : "No fair-value anchor could be built for any holding." },
     { key: "priya", present: trackReady, contribution: trackReady ? `${input.track!.completed} closed decisions in the record.` : `Only ${input.track?.completed ?? 0} closed decisions — too few to quote a hit rate.` },
-    { key: "kai", present: anyZone, contribution: anyZone ? "Concentration zones and the trims they imply." : "No position could be weighted, so no zone was assessed." },
-    { key: "lena", present: input.positions.length > 0, contribution: input.positions.length ? "Sleeve balance, yield contribution and the objective scorecard." : "No open positions to review." },
+    { key: "kai", present: anyZone, contribution: anyZone ? "Concentration zones, the trims they imply, and the starter size on every referral." : "No position could be weighted and nothing was referred, so there was nothing to size." },
+    { key: "lena", present: input.positions.length > 0 || input.ideas.length > 0, contribution: input.positions.length ? "Sleeve balance, yield contribution and the objective scorecard." : input.ideas.length ? "Sleeve effect of each referral against the barbell targets." : "No open positions and no referrals to review." },
     { key: "ryan", present: anyLiquidity, contribution: anyLiquidity ? "Sessions-to-exit at 20% of median volume." : "Volume history unavailable; no execution read." },
     { key: "nina", present: input.unavailable.length === 0, contribution: input.unavailable.length ? `Incomplete source coverage: ${input.unavailable.join("; ")}.` : "Every source responded." },
-    { key: "leo", present: priced > 0, contribution: priced > 0 ? `${priced} of ${input.positions.length} position(s) carry a timestamped price.` : "No live prices were available." },
+    { key: "leo", present: anyPrice, contribution: anyPrice ? `${priced} of ${input.positions.length} position(s) carry a timestamped price${input.ideas.length ? `, and ${input.ideas.filter((i) => i.priceDriftPct != null).length} of ${input.ideas.length} referral(s) can be checked for price drift` : ""}.` : "No live prices were available." },
   ].map(({ key, present, contribution }) => {
     const member = ROSTER[key];
     return { member: member.name, role: member.role, desk: member.desk, present, contribution };
@@ -575,6 +614,14 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     let veto: Motion["veto"] = null;
     if (draft.evidenceCoveragePct < MIN_COVERAGE_PCT && draft.kind !== "HOLD") {
       veto = { member: ROSTER.miriam.name, reason: `Evidence coverage ${draft.evidenceCoveragePct}% is below the ${MIN_COVERAGE_PCT}% floor. Missing: ${draft.missingEvidence.join("; ")}.` };
+    }
+    // A referral priced 20% ago is not a stale opinion, it is arithmetic about
+    // a different security. Send it back rather than size it.
+    if (!veto && idea?.priceDriftPct != null && Math.abs(idea.priceDriftPct) >= MAX_REFERRAL_DRIFT_PCT) {
+      veto = {
+        member: ROSTER.miriam.name,
+        reason: `${idea.ticker} has moved ${pct1(idea.priceDriftPct)} since the referral was written at ${money(idea.referencePrice ?? 0)}. The target, the upside and the conviction were all computed at that price. Re-run the analysis before this is sized.`,
+      };
     }
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && input.nav > 0) {
       const currentPct = p?.weightPct ?? 0;

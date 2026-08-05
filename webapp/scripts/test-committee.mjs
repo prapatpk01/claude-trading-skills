@@ -274,6 +274,78 @@ section("Dissent");
   }
 }
 
+/* ──────────────────── referrals from the scanner ──────────────────── */
+
+section("Referral shelf life and price drift");
+
+const idea = (over = {}) => ({
+  ticker: "BBB", rating: "BUY", conviction: 78, source: "Momentum scan · Technology",
+  price: 100, target: 130, upsidePct: 30, submittedAt: "2026-08-01", note: null,
+  alreadyHeld: false, sleeve: "growth", ageDays: 2, referencePrice: 100, priceDriftPct: 0,
+  dataQuality: "HIGH", ...over,
+});
+
+{
+  // A meeting convened to review new ideas is a normal meeting: the desks that
+  // scored, valued and sized the referral are present even with no holdings.
+  const meeting = runCommitteeMeeting(input({ ideas: [idea()], positions: [] }));
+  ok("a referral-only meeting is quorate", meeting.quorum.met, meeting.quorum.note);
+  ok("the seats that measured the referral are marked present",
+    ["Maya Chen", "Thomas Eriksson", "Kai Tanaka", "Lena Müller", "Leo Tanaka"]
+      .every((name) => meeting.attendance.find((a) => a.member === name)?.present));
+  ok("the execution desk still abstains on an unheld name",
+    !meeting.attendance.find((a) => a.member === "Ryan Blackwood").present);
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea()], positions: [] })).motions[0];
+  ok("a fresh, undrifted referral becomes a sized new buy", m.kind === "NEW BUY" && m.sizeUsd > 0, `${m.kind} ${m.sizeUsd}`);
+  ok("it carries", m.outcome === "CARRIED", m.outcomeReason);
+  ok("the engine that found it is named in the reasons",
+    m.reasons.some((r) => /Momentum scan · Technology/.test(r.finding)));
+  ok("the scanner's data-quality read is on the record",
+    m.reasons.some((r) => /data quality HIGH/i.test(r.finding)));
+}
+{
+  // Price ran 22% since the paper was written.
+  const m = runCommitteeMeeting(input({ ideas: [idea({ price: 122, priceDriftPct: 22 })], positions: [] })).motions[0];
+  ok("a referral whose price has run past the limit is vetoed", m.veto?.member === "Miriam Osei", JSON.stringify(m.veto));
+  ok("the veto defers rather than rejects", m.outcome === "DEFERRED", m.outcome);
+  ok("the veto quotes the drift and the price it was written at", /22/.test(m.veto.reason) && /100/.test(m.veto.reason));
+  ok("the real-time desk votes against it",
+    m.votes.find((v) => /Leo Tanaka/.test(v.member)).ballot === "AGAINST");
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({ price: 88, priceDriftPct: -12 })], positions: [] })).motions[0];
+  ok("a drift inside the limit does not veto", m.veto === null, JSON.stringify(m.veto));
+  ok("but the drift is still shown to the meeting",
+    m.votes.find((v) => /Leo Tanaka/.test(v.member)).rationale.includes("12"));
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({ ageDays: 40 })], positions: [] })).motions[0];
+  const aisha = m.votes.find((v) => /Aisha/.test(v.member));
+  ok("the catalyst desk withdraws its own stale referral", aisha.ballot === "AGAINST", aisha.rationale);
+  ok("the age is quoted", /40 days old/.test(aisha.rationale), aisha.rationale);
+  ok("the staleness is in the motion's reasons",
+    m.reasons.some((r) => /shelf life/i.test(r.finding)));
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({ ageDays: 21 })], positions: [] })).motions[0];
+  ok("a referral exactly at the shelf life is still live",
+    m.votes.find((v) => /Aisha/.test(v.member)).ballot === "FOR");
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({ referencePrice: null, priceDriftPct: null })], positions: [] })).motions[0];
+  ok("a referral with no reference price is not vetoed for drift", m.veto === null);
+  ok("the missing reference price is named, not assumed",
+    m.votes.find((v) => /Leo Tanaka/.test(v.member)).rationale.includes("no earlier price"));
+}
+{
+  // A held name referred again is an addition to the line, not a new position.
+  const held = position({ ticker: "BBB", shares: 100, price: 100 });
+  const m = runCommitteeMeeting(input({ ideas: [idea()], positions: [held] })).motions.find((x) => x.id === "IDEA-BBB");
+  ok("a referral for a name already held is an ADD, not a NEW BUY", m.kind === "ADD", m.kind);
+}
+
 /* ───────────────────────── sleeve discipline ──────────────────────── */
 
 section("Sleeve drift");

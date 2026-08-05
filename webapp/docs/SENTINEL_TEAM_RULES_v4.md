@@ -422,6 +422,26 @@ Referred ideas are sized by conviction band — 80+ takes 8% of NAV, 65+ takes 6
 50+ takes 4%, everything else 3% — capped by deployable cash. A referral with
 **no** conviction score gets the floor, not the benefit of the doubt.
 
+### How a name reaches the meeting
+
+The research workspace refers directly: every candidate at the **Committee
+Ready** stage carries a *Refer to committee* button, and the shortlist can be
+sent in one action. The referral is written to the analysis action queue with
+`action: "COMMITTEE"`, and it carries four things the meeting needs — the
+engine that found it, the conviction score, the target, and **the price the
+thesis was written at**. A referral from the ticker analysis works the same way.
+
+A referral is not evidence forever:
+
+| Rule | Threshold | Who acts |
+|---|---|---|
+| **Price drift** | ±15% from the referral price | **Miriam Osei vetoes.** The target, the upside and the conviction were all computed at a price that no longer exists — this is arithmetic about a different security, not a stale opinion. |
+| **Shelf life** | 21 days | **Aisha Fontaine votes against her own desk's paper.** She owns the thesis, so she is the seat that withdraws it. |
+
+Both defer rather than reject: re-run the scan and refer again. A referral for a
+name the fund already holds becomes an **ADD** to the existing line, never a new
+position, so the concentration cap still binds.
+
 ### Voting
 
 All fourteen seats are polled on every motion. **A seat that cannot measure its
