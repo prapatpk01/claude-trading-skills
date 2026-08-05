@@ -182,7 +182,13 @@ fund snapshot                 positions and cash DERIVED, never stored twice
 Three invariants hold this together, and each was a bug once:
 
 1. **Position and cash are derived from transactions, never stored alongside
-   them.** Two writable copies of one truth is how they diverge.
+   them.** Two writable copies of one truth is how they diverge. Enforced by
+   `lib/portfolioSource.ts` — one function, reading `live_holdings_ledger`,
+   which every route describing the current book calls. It also reports what the
+   old `holdings` table still carries that the ledger does not back, by name,
+   instead of picking a winner silently. Before it existed, the performance
+   panel and the cash-buffer panel read different tables and printed different
+   NAVs for the same portfolio on the same screen.
 2. **Broker cash and reserve assets are different things.** A T-bill ETF is not
    settled cash, and the liquidity buffer is computed from broker cash only.
 3. **The CIO review and the holdings table read the same snapshot.** Cost basis

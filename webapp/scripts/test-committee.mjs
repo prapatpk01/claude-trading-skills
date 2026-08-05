@@ -208,7 +208,9 @@ section("Capital plan");
     ticker, rating: "BUY", conviction: 85 - i * 10, source: "Stock Analyze",
     price: 50, target: 70, upsidePct: 40, submittedAt: "2026-08-01", note: null, alreadyHeld: false,
   }));
-  const meeting = runCommitteeMeeting(input({ ideas, deployableCash: 5_000, cashBalance: 5_000 }));
+  // Cash sits above the 10% floor (20,000 on 200,000 NAV) with 5,000 spare, so
+  // the constraint under test is funding, not the liquidity buffer.
+  const meeting = runCommitteeMeeting(input({ ideas, deployableCash: 5_000, cashBalance: 25_000 }));
   const plan = meeting.capitalPlan;
   ok("an overcommitted meeting still balances", plan.usesUsd <= plan.sourcesUsd + 0.01, `${plan.usesUsd} vs ${plan.sourcesUsd}`);
   ok("every unfunded motion is named", plan.cutForFunding.length > 0);
@@ -272,6 +274,82 @@ section("Dissent");
   } else {
     ok("a motion that did not carry records no dissent", meeting.dissent.length === 0);
   }
+}
+
+/* ─────────────────────── the liquidity motion ─────────────────────── */
+
+section("Liquidity buffer");
+
+// The shape the real book was in: broker cash negative, a reserve line held.
+const overdrawn = (over = {}) => input({
+  cashBalance: -125.65,
+  deployableCash: 0,
+  cashBufferPct: -1,
+  targetCashPct: 8,
+  regime: { ...regime, cashMinPct: 8 },
+  positions: [
+    position({ ticker: "GPIQ", shares: 200, price: 100 }),
+    position({ ticker: "SGOV", shares: 15, price: 100, isReserve: true, sleeve: "cash", zone: null, momentum: null, valuation: { verdict: "CASH EQUIVALENT", deviationPct: 0, confidence: "high" }, trend: null }),
+  ],
+  ...over,
+});
+
+{
+  const meeting = runCommitteeMeeting(overdrawn());
+  const liq = meeting.motions.find((m) => m.kind === "RAISE CASH");
+  ok("a cash floor breach produces a liquidity motion", liq != null);
+  ok("it is taken first", meeting.motions[0].kind === "RAISE CASH");
+  ok("it names the reserve to sell, not just 'raise the buffer'", liq.ticker === "SGOV", liq.ticker);
+  ok("it is a sale", liq.sizeUsd < 0);
+  ok("it is sized to the shortfall, capped by the reserve",
+    Math.abs(liq.sizeUsd) <= 1500 + 0.01 && Math.abs(liq.sizeUsd) > 0, `${liq.sizeUsd}`);
+  ok("an overdraft is called an overdraft",
+    liq.reasons.some((r) => /overdrawn/i.test(r.finding)));
+  ok("the destination is stated explicitly",
+    liq.reasons.some((r) => /proceeds stay as settled cash/i.test(r.finding)));
+  ok("it says it is not a reallocation",
+    liq.reasons.some((r) => /not a reallocation/i.test(r.finding)));
+  ok("it carries", liq.outcome === "CARRIED", liq.outcomeReason);
+}
+{
+  const meeting = runCommitteeMeeting(overdrawn({
+    ideas: [{ ticker: "BBB", rating: "BUY", conviction: 90, source: "Scan", price: 50, target: 80, upsidePct: 60, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "growth", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" }],
+  }));
+  const buy = meeting.motions.find((m) => m.ticker === "BBB");
+  ok("no new position opens while the fund is below its cash floor", buy.outcome === "DEFERRED", buy.outcomeReason);
+  ok("the block names the CRO and the floor", /Miriam/.test(buy.veto.member) && /floor/i.test(buy.veto.reason));
+}
+{
+  const meeting = runCommitteeMeeting(overdrawn());
+  const plan = meeting.capitalPlan;
+  ok("the raised cash is ring-fenced, not counted as a funding source",
+    plan.earmarkedForCashUsd > 0 && !plan.sourceLines.some((l) => /SGOV/.test(l.label)), JSON.stringify(plan.sourceLines));
+  ok("the plan says the money stays as cash", /ring-fenced/i.test(plan.note));
+  ok("the blotter line warns against reinvesting the proceeds",
+    meeting.blotter.some((l) => l.ticker === "SGOV" && /Do not reinvest/i.test(l.reason)));
+  ok("the resolution says leave the proceeds in cash",
+    meeting.resolutions.some((r) => /leave the proceeds in settled cash/i.test(r.text)));
+  ok("the minutes record the breach and the fix",
+    meeting.minutes.some((line) => /Liquidity:/.test(line) && /below the/.test(line)));
+}
+{
+  // A book already inside policy raises nothing.
+  const meeting = runCommitteeMeeting(input({ cashBalance: 40_000, cashBufferPct: 20 }));
+  ok("a funded book has no liquidity motion", !meeting.motions.some((m) => m.kind === "RAISE CASH"));
+  ok("and new positions are not blocked",
+    !meeting.motions.some((m) => m.veto && /floor/i.test(m.veto.reason)));
+}
+{
+  // No reserve to sell, and a $1,500 gap: GPIQ ($20,000) would cover it but
+  // SPMO ($2,000) is the smallest line that does, so SPMO is the one to name.
+  const meeting = runCommitteeMeeting(overdrawn({
+    cashBalance: 14_500,
+    positions: [position({ ticker: "GPIQ", shares: 200, price: 100 }), position({ ticker: "SPMO", shares: 20, price: 100 })],
+  }));
+  const liq = meeting.motions.find((m) => m.kind === "RAISE CASH");
+  ok("with no reserve the motion still names a source", liq != null && /risk position/i.test(liq.reasons.map((r) => r.finding).join(" ")));
+  ok("and it names the smallest line that closes the gap",
+    liq.reasons.some((r) => /SPMO is the smallest line/.test(r.finding)), liq.reasons.map((r) => r.finding).join(" | "));
 }
 
 /* ──────────────────── referrals from the scanner ──────────────────── */

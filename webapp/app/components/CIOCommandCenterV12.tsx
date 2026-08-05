@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AppLang } from "../page";
 
 type Ballot = "FOR" | "AGAINST" | "ABSTAIN";
-type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY";
+type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY" | "RAISE CASH";
 type Outcome = "CARRIED" | "FAILED" | "DEFERRED";
 
 type Vote = { member: string; role: string; desk: string; ballot: Ballot; rationale: string };
@@ -33,7 +33,7 @@ type Meeting = {
     usesUsd: number; useLines: { label: string; amountUsd: number }[];
     balanceUsd: number; funded: boolean;
     cutForFunding: { ticker: string; requestedUsd: number; reason: string }[];
-    cashAfterPct: number | null; note: string;
+    cashAfterPct: number | null; earmarkedForCashUsd: number; note: string;
   };
   blotter: { side: "BUY" | "SELL"; ticker: string; approxShares: number | null; approxUsd: number; referencePrice: number | null; reason: string }[];
   resolutions: { id: string; text: string; owner: string; reviewBy: string; status: "APPROVED" | "DEFERRED" | "REJECTED" }[];
@@ -49,7 +49,7 @@ const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
 const money = (v: number) => `${v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
 const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v.toFixed(d)}%`);
 
-const KIND_TONE: Record<MotionKind, string> = { EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
+const KIND_TONE: Record<MotionKind, string> = { "RAISE CASH": "#facc15", EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
 const OUTCOME_TONE: Record<Outcome, string> = { CARRIED: "#34d399", DEFERRED: "#fbbf24", FAILED: "#94a3b8" };
 const BALLOT_TONE: Record<Ballot, string> = { FOR: "#34d399", AGAINST: "#f87171", ABSTAIN: "#64748b" };
 
@@ -83,9 +83,11 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
   const motions = useMemo(() => {
     const all = meeting?.motions ?? [];
-    const rank: Record<MotionKind, number> = { EXIT: 0, TRIM: 1, "NEW BUY": 2, ADD: 3, HOLD: 4 };
+    // The liquidity motion sorts first wherever it appears: while the fund is
+    // below its own cash floor, it is the meeting.
+    const rank: Record<MotionKind, number> = { "RAISE CASH": -1, EXIT: 0, TRIM: 1, "NEW BUY": 2, ADD: 3, HOLD: 4 };
     const filtered =
-      filter === "reduce" ? all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM")
+      filter === "reduce" ? all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM" || m.kind === "RAISE CASH")
       : filter === "deploy" ? all.filter((m) => m.kind === "ADD" || m.kind === "NEW BUY")
       : filter === "hold" ? all.filter((m) => m.kind === "HOLD")
       : all;
@@ -96,7 +98,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
     const all = meeting?.motions ?? [];
     return {
       all: all.length,
-      reduce: all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM").length,
+      reduce: all.filter((m) => m.kind === "EXIT" || m.kind === "TRIM" || m.kind === "RAISE CASH").length,
       deploy: all.filter((m) => m.kind === "ADD" || m.kind === "NEW BUY").length,
       hold: all.filter((m) => m.kind === "HOLD").length,
       carried: all.filter((m) => m.outcome === "CARRIED").length,
@@ -315,6 +317,16 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
           <Metric label={tr(lang, "Uncommitted", "เงินคงเหลือ")} value={money(plan.balanceUsd)} />
           <Metric label={tr(lang, "Cash after", "เงินสดหลังแผน")} value={pct(plan.cashAfterPct)} />
         </div>
+        {plan.earmarkedForCashUsd > 0 && (
+          <div className="notice" style={{ marginTop: 14, borderColor: "#facc15" }}>
+            <b>{tr(lang, "Ring-fenced for the liquidity buffer", "กันไว้สำหรับเงินสดสำรอง")} · {money(plan.earmarkedForCashUsd)}</b>
+            <p style={{ margin: "6px 0 0" }}>
+              {tr(lang,
+                "This money is raised to restore the cash floor and stays as settled cash. It is not a source of funds for anything on this agenda — restoring the buffer is what it buys.",
+                "เงินก้อนนี้ระดมมาเพื่อคืนเงินสดขั้นต่ำและจะคงอยู่เป็นเงินสด ไม่ใช่แหล่งเงินสำหรับรายการอื่นในวาระนี้ — การคืนระดับเงินสดสำรองคือปลายทางของมันเอง")}
+            </p>
+          </div>
+        )}
         <div className="grid cols-2" style={{ marginTop: 14 }}>
           <div className="card" style={{ margin: 0 }}>
             <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Where the money comes from", "เงินมาจากไหน")}</h4>

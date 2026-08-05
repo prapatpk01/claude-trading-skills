@@ -61,7 +61,30 @@ requireTokens("lib/team/committee.ts", [
   "cutForFunding",
   "veto",
   "dissent",
+  // The liquidity motion must state both ends: what to sell, and that the
+  // proceeds stay put. Either one missing turns it back into "raise the buffer".
+  "RAISE CASH",
+  "motionForLiquidity",
+  "earmarkedForCashUsd",
+  "proceeds stay as settled cash",
+  "overdrawn",
 ]);
+
+// One source of truth for what the fund owns. Routes that describe the current
+// book must not read the holdings table directly — that is how two panels came
+// to print two different NAVs for one portfolio.
+requireTokens("lib/portfolioSource.ts", ["live_holdings_ledger", "ledger_shares", "unbacked", "shareMismatches"]);
+for (const file of [
+  "app/api/portfolio/cash-buffer/route.ts",
+  "app/api/portfolio/analytics/route.ts",
+  "app/api/committee/meeting/route.ts",
+]) {
+  requireTokens(file, ["loadOpenHoldings"]);
+  forbidTokens(file, [['from("holdings")', "reads the holdings table directly instead of the ledger source"]]);
+}
+
+// The optimizer must name a funding source and a destination for the cash.
+requireTokens("app/api/portfolio/optimizer/route.ts", ["fundingSource", "proceedsDestination", "restoring the buffer is the destination"]);
 forbidTokens("lib/team/committee.ts", [
   ["fetch(", "the meeting engine must not touch the network"],
   ["Date.now()", "the engine must use the asOf it is given, not the clock"],

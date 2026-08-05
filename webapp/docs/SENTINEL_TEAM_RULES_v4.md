@@ -402,6 +402,26 @@ desk in the path.
 workspace. The meeting is where the desks' separate measurements become one
 decision, and it produces the artefacts a real fund meeting produces.
 
+### The liquidity motion comes first
+
+When broker cash is below the regime's floor, the meeting opens with a **RAISE
+CASH** motion and **no new position may be opened until the floor is met** —
+the CRO defers every ADD and NEW BUY, naming the breach.
+
+"Raise the buffer" is not an instruction. The motion therefore states both ends:
+
+- **What to sell.** Reserves first, largest line first — that is what reserves
+  are for. If reserves cannot cover the shortfall it names the smallest risk
+  position that closes the rest in one ticket, rather than leaving the choice to
+  whoever places the order.
+- **Where the money goes.** Nowhere. **The proceeds stay as settled cash.**
+  Restoring the buffer is the destination, not the funding for a purchase. The
+  amount is ring-fenced in the capital plan and never appears as a source, the
+  blotter line says *do not reinvest*, and the resolution repeats it.
+
+A negative cash balance is called an overdraft in plain words: until it is
+positive the fund is carrying its own positions on credit.
+
 ### One motion per position, one per referred idea
 
 Motions are ordered by severity and the first rule that fires wins, so a

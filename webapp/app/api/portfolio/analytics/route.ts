@@ -5,6 +5,7 @@ import { buildPerformance } from "@/lib/performance";
 import { buildDividendSummary } from "@/lib/dividends";
 import { getLightQuote } from "@/lib/marketData";
 import { openOnly } from "@/lib/openPositions";
+import { loadOpenHoldings } from "@/lib/portfolioSource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,14 +14,9 @@ export const maxDuration = 60;
 async function loadHoldings(): Promise<{ ticker: string; shares: number; avg_cost: number; closed_at?: string | null }[]> {
   const sb = getSupabase();
   if (sb) {
-    let { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost,closed_at");
-    if (error && /closed_at/i.test(error.message)) {
-      ({ data, error } = await sb.from("holdings").select("ticker,shares,avg_cost"));
-    }
-    if (error) throw new Error(error.message);
-    return openOnly((data ?? []) as any[])
-      .filter((h: any) => Number(h.shares) > 0)
-      .map((h: any) => ({ ticker: String(h.ticker).toUpperCase(), shares: Number(h.shares), avg_cost: Number(h.avg_cost) || 0, closed_at: h.closed_at ?? null }));
+    // Ledger-derived, so analytics and the cash buffer describe one portfolio.
+    const read = await loadOpenHoldings(sb);
+    return read.rows.map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost, closed_at: null }));
   }
   return openOnly(memStore.holdings)
     .filter((h) => Number(h.shares) > 0)

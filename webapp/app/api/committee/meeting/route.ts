@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { memStore } from "@/lib/store";
 import { openOnly } from "@/lib/openPositions";
+import { loadOpenHoldings } from "@/lib/portfolioSource";
 import { dailyCandles, getLightQuote } from "@/lib/marketData";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
 import { computeBeta } from "@/lib/derive";
@@ -60,17 +61,18 @@ async function internalJson(req: NextRequest, path: string): Promise<any> {
   return json;
 }
 
-async function loadHoldings() {
+/**
+ * Positions as the transaction ledger sees them. The meeting must reason about
+ * the same book the holdings screen shows, or its motions describe a portfolio
+ * the fund does not have.
+ */
+async function loadHoldings(): Promise<{ rows: { ticker: string; shares: number; avg_cost: number }[]; note: string }> {
   const sb = getSupabase();
   if (sb) {
-    let { data, error } = await sb.from("holdings").select("ticker,shares,avg_cost,closed_at");
-    if (error && /closed_at/i.test(error.message)) {
-      ({ data, error } = await sb.from("holdings").select("ticker,shares,avg_cost"));
-    }
-    if (error) throw new Error(error.message);
-    return openOnly((data ?? []) as any[]) as { ticker: string; shares: number; avg_cost: number }[];
+    const read = await loadOpenHoldings(sb);
+    return { rows: read.rows.map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost })), note: read.note };
   }
-  return openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost }));
+  return { rows: openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost })), note: "" };
 }
 
 /** Forward yield from the name's own distribution history, or null. */
@@ -103,7 +105,8 @@ function sessionsToExit(candles: Candle[], positionValue: number): number | null
 export async function GET(req: NextRequest) {
   const unavailable: string[] = [];
   try {
-    const holdings = await loadHoldings();
+    const { rows: holdings, note: reconciliationNote } = await loadHoldings();
+    if (reconciliationNote) unavailable.push(reconciliationNote);
 
     // ── benchmark first: the regime, beta and momentum all lean on it ──
     const benchmark = await dailyCandles("SPY", 320).catch(() => [] as Candle[]);

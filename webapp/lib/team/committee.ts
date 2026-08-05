@@ -101,7 +101,7 @@ export interface CommitteeInput {
 
 /* ────────────────────────────── outputs ───────────────────────────── */
 
-export type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY";
+export type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY" | "RAISE CASH";
 export type Ballot = "FOR" | "AGAINST" | "ABSTAIN";
 export type MotionOutcome = "CARRIED" | "FAILED" | "DEFERRED";
 
@@ -159,6 +159,11 @@ export interface CapitalPlan {
   /** Motions cut because the plan did not balance, lowest conviction first. */
   cutForFunding: { ticker: string; requestedUsd: number; reason: string }[];
   cashAfterPct: number | null;
+  /**
+   * Sale proceeds earmarked for the liquidity buffer. Ring-fenced: this money
+   * is not available to fund a purchase, because it is the purchase.
+   */
+  earmarkedForCashUsd: number;
   note: string;
 }
 
@@ -233,6 +238,88 @@ function addDays(iso: string, days: number): string {
   const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * The liquidity motion.
+ *
+ * When broker cash sits below the regime's floor the fund has one job before
+ * any other: get back inside policy. Saying "raise the buffer" without naming
+ * what to sell is not an instruction, and leaving out where the proceeds go
+ * invites the obvious wrong answer — that the money is there to buy something.
+ * It is not. Restoring the buffer IS the destination.
+ *
+ * Reserves are sold first: that is what they are for. Only when reserves cannot
+ * cover the shortfall does the motion say a risk position has to go, and it
+ * names the smallest line that closes the gap rather than leaving it unstated.
+ */
+function motionForLiquidity(input: CommitteeInput): Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReason" | "veto"> | null {
+  const floorPct = input.regime?.cashMinPct ?? input.targetCashPct;
+  if (floorPct == null || input.nav <= 0) return null;
+  const targetCash = (floorPct / 100) * input.nav;
+  const shortfall = round2(targetCash - input.cashBalance);
+  if (shortfall <= 0) return null;
+
+  const reasons: Reason[] = [];
+  if (input.cashBalance < 0) {
+    reasons.push({
+      desk: "Portfolio", member: ROSTER.lena.name,
+      finding: `Broker cash is −${money(input.cashBalance)} — the account is overdrawn. Until it is positive the fund is carrying its own positions on credit, and nothing else at this meeting matters more.`,
+    });
+  }
+  reasons.push({
+    desk: "Macro", member: ROSTER.daniel.name,
+    finding: `The ${input.regime?.regime ?? "current"} regime sets a ${plain(floorPct)}% cash floor — ${money(targetCash)} on ${money(input.nav)} of NAV. Cash is ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)}, a shortfall of ${money(shortfall)}.`,
+  });
+
+  const reserves = input.positions
+    .filter((p) => p.isReserve && (p.marketValue ?? 0) > 0)
+    .sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0));
+  const reserveTotal = reserves.reduce((s, p) => s + (p.marketValue ?? 0), 0);
+  const source = reserves[0] ?? null;
+  const fromReserves = Math.min(shortfall, reserveTotal);
+  const remainder = round2(shortfall - fromReserves);
+
+  if (source) {
+    reasons.push({
+      desk: "Risk", member: ROSTER.kai.name,
+      finding: `Sell ${money(Math.min(shortfall, source.marketValue ?? 0))} of ${source.ticker}. Reserves total ${money(reserveTotal)} across ${reserves.length} line(s) — this is exactly what they are held for.`,
+    });
+  } else {
+    reasons.push({
+      desk: "Risk", member: ROSTER.kai.name,
+      finding: "The fund holds no reserve asset, so the shortfall has to come out of a risk position. That is a decision the meeting must take explicitly rather than leave to whoever places the order.",
+    });
+  }
+  if (remainder > 0) {
+    const smallest = input.positions
+      .filter((p) => !p.isReserve && (p.marketValue ?? 0) >= remainder)
+      .sort((a, b) => (a.marketValue ?? 0) - (b.marketValue ?? 0))[0];
+    reasons.push({
+      desk: "Portfolio", member: ROSTER.lena.name,
+      finding: smallest
+        ? `Reserves cover ${money(fromReserves)} of it. The remaining ${money(remainder)} has to come from a risk position — ${smallest.ticker} is the smallest line that closes the gap in one ticket.`
+        : `Reserves cover ${money(fromReserves)} of it. The remaining ${money(remainder)} is larger than any single position, so it needs more than one sale.`,
+    });
+  }
+  reasons.push({
+    desk: "Executive", member: ROSTER.miriam.name,
+    finding: "The proceeds stay as settled cash. This is not a reallocation and it does not fund a purchase — restoring the buffer is the purchase. No new risk position may be opened until the floor is met.",
+  });
+
+  const px = source?.price ?? null;
+  const size = Math.min(shortfall, source?.marketValue ?? shortfall);
+  return {
+    id: "LIQ-BUFFER",
+    ticker: source?.ticker ?? "LIQUIDITY",
+    kind: "RAISE CASH",
+    sizeUsd: -round2(size),
+    approxShares: px && px > 0 ? Math.max(1, Math.round(size / px)) : null,
+    proposedBy: ROSTER.lena.name,
+    reasons,
+    evidenceCoveragePct: 100,
+    missingEvidence: [],
+  };
 }
 
 /* ──────────────────────── motion construction ─────────────────────── */
@@ -345,7 +432,10 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
   // gets the floor, not the benefit of the doubt.
   const conviction = idea.conviction ?? 0;
   const targetPct = conviction >= 80 ? 8 : conviction >= 65 ? 6 : conviction >= 50 ? 4 : 3;
-  const requested = Math.min(input.deployableCash, (targetPct / 100) * input.nav);
+  // The size the meeting wants, not the size it can currently afford. Funding
+  // is decided once, in the capital plan, where the cut can be named — sizing a
+  // motion at $0 because the cash is short reads as a decision nobody made.
+  const requested = round2((targetPct / 100) * input.nav);
 
   reasons.push({ desk: "Research", member: ROSTER.aisha.name, finding: `Referred from ${idea.source} rated ${idea.rating}${idea.conviction == null ? " with no conviction score recorded" : ` at conviction ${idea.conviction}/100`}${idea.ageDays == null ? "" : ` ${idea.ageDays} day(s) ago`}.` });
   if (idea.upsidePct != null) reasons.push({ desk: "Quant", member: ROSTER.thomas.name, finding: `Upside to target ${pct1(idea.upsidePct)}${idea.target == null ? "" : ` (target ${money(idea.target)})`}.` });
@@ -374,6 +464,43 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
 }
 
 /* ────────────────────────────── voting ────────────────────────────── */
+
+/**
+ * The liquidity motion gets its own vote sheet: it is a policy compliance
+ * question, not a view on a security, and the desks that would normally have
+ * nothing to say about a T-bill sale do have something to say about the fund
+ * being outside its own cash floor.
+ */
+function castLiquidityVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReason" | "veto">, input: CommitteeInput): Vote[] {
+  const votes: Vote[] = [];
+  const seat = (key: string, ballot: Ballot, rationale: string) => {
+    const member = ROSTER[key] as Member;
+    votes.push({ member: member.name, role: member.role, desk: member.desk, ballot, rationale });
+  };
+  const floorPct = input.regime?.cashMinPct ?? input.targetCashPct;
+  const overdrawn = input.cashBalance < 0;
+  const reserves = input.positions.filter((p) => p.isReserve && (p.marketValue ?? 0) > 0);
+  const reserveTotal = reserves.reduce((s, p) => s + (p.marketValue ?? 0), 0);
+
+  seat("daniel", "FOR", `The regime sets a ${plain(floorPct)}% floor and the book is at ${plain(input.cashBufferPct)}%. This is policy, not a judgement call.`);
+  seat("lena", "FOR", overdrawn ? `Cash is negative. Restoring it is the first call on any capital raised at this meeting.` : `Cash is ${plain(input.cashBufferPct)}% against a ${plain(floorPct)}% floor. The buffer comes before any new position.`);
+  seat("kai", "FOR", reserveTotal > 0 ? `${money(reserveTotal)} of reserves are available, so the buffer can be restored without touching a risk position.` : "No reserve is available, so this has to come out of a risk position — that is the cost of running the buffer short.");
+  seat("miriam", "FOR", "Deployment stays blocked until the floor is met. Approving this motion is what unblocks the rest of the book, not what spends it.");
+  seat("ryan", reserves.length ? "FOR" : "ABSTAIN", reserves.length ? `A reserve ETF fills at size without market impact; this can be done in one ticket.` : "Without a reserve line there is nothing here for the execution desk to price.");
+  seat("james", "FOR", "A fund outside its own liquidity policy has one decision in front of it. Carried.");
+
+  // The desks with no measurement bearing on a cash-floor breach say so.
+  seat("maya", "ABSTAIN", "A liquidity motion is not a momentum question. The trend on a T-bill fund is not a reason to hold or sell it.");
+  seat("thomas", "ABSTAIN", "Reserve assets are cash-equivalent; there is no fair value to argue about.");
+  seat("aisha", "ABSTAIN", "No catalyst bears on a cash-floor breach.");
+  seat("sofia", "ABSTAIN", "No fundamental question arises on a reserve sale.");
+  seat("marcus", "ABSTAIN", "No earnings-quality question arises on a reserve sale.");
+  seat("priya", "ABSTAIN", "Restoring a policy floor is not a trade with an expected hit rate.");
+  seat("nina", input.unavailable.length ? "ABSTAIN" : "FOR", input.unavailable.length ? `Source coverage is incomplete this meeting: ${input.unavailable.join("; ")}.` : "The cash balance and every position price came through cleanly.");
+  seat("leo", "FOR", `Cash balance read as ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)} against ${money(input.nav)} of NAV.`);
+
+  return votes;
+}
 
 /**
  * Each seat votes only on what it measured. The abstention text names the
@@ -593,7 +720,22 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   /* 2. Motions — one per position, one per referred idea. */
   const heldTickers = new Set(input.positions.map((p) => p.ticker));
   const drafts: { draft: ReturnType<typeof motionForPosition>; p: PositionEvidence | null; idea: IdeaEvidence | null }[] = [];
-  for (const p of input.positions) drafts.push({ draft: motionForPosition(p, input), p, idea: null });
+  // The liquidity motion is taken first: while the fund is below its cash floor
+  // every other motion is being decided inside a policy breach.
+  const liquidity = motionForLiquidity(input);
+  if (liquidity) drafts.push({ draft: liquidity, p: null, idea: null });
+  for (const p of input.positions) {
+    const draft = motionForPosition(p, input);
+    // A reserve the liquidity motion is already selling should not also appear
+    // as an untouched hold. One position, one instruction.
+    if (liquidity && p.ticker === liquidity.ticker) {
+      draft.reasons = [{
+        desk: "Portfolio", member: ROSTER.lena.name,
+        finding: `${p.ticker} is the funding source for the liquidity motion above — ${money(liquidity.sizeUsd)} of it is being sold to restore the cash floor. The remainder is held.`,
+      }];
+    }
+    drafts.push({ draft, p, idea: null });
+  }
   for (const idea of input.ideas) {
     const marked: IdeaEvidence = { ...idea, alreadyHeld: heldTickers.has(idea.ticker) };
     drafts.push({ draft: motionForIdea(marked, input), p: null, idea: marked });
@@ -601,7 +743,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
 
   /* 3. Vote each motion, then resolve it. */
   const motions: Motion[] = drafts.map(({ draft, p, idea }) => {
-    const votes = castVotes(draft, p, idea, input);
+    const votes = draft.kind === "RAISE CASH" ? castLiquidityVotes(draft, input) : castVotes(draft, p, idea, input);
     const tally = {
       for: votes.filter((v) => v.ballot === "FOR").length,
       against: votes.filter((v) => v.ballot === "AGAINST").length,
@@ -621,6 +763,14 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
       veto = {
         member: ROSTER.miriam.name,
         reason: `${idea.ticker} has moved ${pct1(idea.priceDriftPct)} since the referral was written at ${money(idea.referencePrice ?? 0)}. The target, the upside and the conviction were all computed at that price. Re-run the analysis before this is sized.`,
+      };
+    }
+    // While the fund is below its own cash floor, nothing new opens. This is
+    // the rule the optimizer states and nothing used to enforce.
+    if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && liquidity) {
+      veto = {
+        member: ROSTER.miriam.name,
+        reason: `Broker cash is ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)} against a ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. New risk positions stay blocked until the buffer is restored — see the liquidity motion.`,
       };
     }
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && input.nav > 0) {
@@ -655,7 +805,11 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
 
   /* 4. Capital plan. Uses may not exceed sources. */
   const carried = motions.filter((m) => m.outcome === "CARRIED");
-  const sells = carried.filter((m) => m.sizeUsd < 0);
+  // Proceeds raised to fix the buffer are ring-fenced: that money is the
+  // decision, not the funding for one.
+  const earmarked = carried.filter((m) => m.kind === "RAISE CASH");
+  const earmarkedForCashUsd = round2(earmarked.reduce((s, m) => s + -m.sizeUsd, 0));
+  const sells = carried.filter((m) => m.sizeUsd < 0 && m.kind !== "RAISE CASH");
   const buysAll = carried.filter((m) => m.sizeUsd > 0);
 
   const sourceLines = [
@@ -691,7 +845,9 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
 
   const useLines = funded.map((m) => ({ label: `${m.kind} ${m.ticker}`, amountUsd: round2(m.sizeUsd) }));
   const usesUsd = round2(useLines.reduce((s, l) => s + l.amountUsd, 0));
-  const cashAfter = input.nav > 0 ? ((input.cashBalance + sells.reduce((s, m) => s + -m.sizeUsd, 0) - usesUsd) / input.nav) * 100 : null;
+  const cashAfter = input.nav > 0
+    ? ((input.cashBalance + earmarkedForCashUsd + sells.reduce((s, m) => s + -m.sizeUsd, 0) - usesUsd) / input.nav) * 100
+    : null;
 
   const capitalPlan: CapitalPlan = {
     sourcesUsd,
@@ -702,9 +858,15 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     funded: usesUsd <= sourcesUsd,
     cutForFunding,
     cashAfterPct: cashAfter == null ? null : round2(cashAfter),
-    note: usesUsd === 0
-      ? "No approved use of capital this meeting. Cash stays where it is."
-      : `${money(usesUsd)} of approved buying is funded from ${money(sourcesUsd)} of sources, leaving ${money(Math.max(0, sourcesUsd - usesUsd))} uncommitted.${cutForFunding.length ? ` ${cutForFunding.length} motion(s) were cut or reduced to make the plan balance.` : ""}`,
+    earmarkedForCashUsd,
+    note: [
+      earmarkedForCashUsd > 0
+        ? `${money(earmarkedForCashUsd)} is being raised to restore the liquidity buffer. That money stays as settled cash — it is ring-fenced and does not fund anything on this agenda.`
+        : "",
+      usesUsd === 0
+        ? "No approved use of capital this meeting. Cash stays where it is."
+        : `${money(usesUsd)} of approved buying is funded from ${money(sourcesUsd)} of sources, leaving ${money(Math.max(0, sourcesUsd - usesUsd))} uncommitted.${cutForFunding.length ? ` ${cutForFunding.length} motion(s) were cut or reduced to make the plan balance.` : ""}`,
+    ].filter(Boolean).join(" "),
   };
 
   /* 5. Blotter — what a human types into the ledger, and nothing more. */
@@ -718,7 +880,9 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
       approxShares: m.approxShares,
       approxUsd: round2(Math.abs(m.sizeUsd)),
       referencePrice: p?.price ?? idea?.price ?? null,
-      reason: `${m.kind} — ${m.outcomeReason}`,
+      reason: m.kind === "RAISE CASH"
+        ? `RAISE CASH — proceeds stay as settled cash to restore the liquidity buffer. Do not reinvest them. ${m.outcomeReason}`
+        : `${m.kind} — ${m.outcomeReason}`,
     };
     return line;
   }).sort((a, b) => (a.side === b.side ? b.approxUsd - a.approxUsd : a.side === "SELL" ? -1 : 1));
@@ -727,7 +891,9 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const resolutions: Resolution[] = motions.map((m, i) => {
     const owner = m.outcome === "CARRIED" && m.sizeUsd !== 0 ? ROSTER.ryan.name : m.outcome === "DEFERRED" ? (m.veto?.member ?? ROSTER.miriam.name) : m.proposedBy;
     const text =
-      m.outcome === "CARRIED" && m.sizeUsd !== 0
+      m.outcome === "CARRIED" && m.kind === "RAISE CASH"
+        ? `Sell ${money(m.sizeUsd)} of ${m.ticker}${m.approxShares ? ` (~${m.approxShares} shares)` : ""} and leave the proceeds in settled cash. This restores the liquidity buffer; it does not fund a purchase.`
+        : m.outcome === "CARRIED" && m.sizeUsd !== 0
         ? `${m.kind} ${m.ticker} — ${money(m.sizeUsd)}${m.approxShares ? ` (~${m.approxShares} shares)` : ""}. Record the transaction in the ledger; the committee does not execute.`
         : m.outcome === "CARRIED"
         ? `Hold ${m.ticker} unchanged. Reviewed and confirmed at this meeting.`
@@ -756,7 +922,10 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
 
   const agenda: AgendaItem[] = [
     { n: 1, title: "Call to order and quorum", covered: true, summary: quorum.note },
-    { n: 2, title: "Macro regime and cash policy", covered: input.regime != null, summary: input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash floor ${input.regime.cashMinPct}%, currently ${plain(input.cashBufferPct)}%. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash policy stands at its last setting." },
+    { n: 2, title: "Macro regime and cash policy", covered: input.regime != null, summary: [
+      input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash floor ${input.regime.cashMinPct}%, currently ${plain(input.cashBufferPct)}%. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash policy stands at its last setting.",
+      liquidity ? `The buffer is short by ${money(-liquidity.sizeUsd)} and a liquidity motion is on the agenda. New risk positions are blocked until it is met.` : "",
+    ].filter(Boolean).join(" ") },
     { n: 3, title: "Portfolio review", covered: input.positions.length > 0, summary: input.positions.length ? `${input.positions.length} position(s) reviewed at ${money(input.nav)} NAV. ${holds.length} hold, ${trims.length} trim, ${exits.length} exit.` : "No open positions to review." },
     { n: 4, title: "Risk register", covered: (input.book?.riskRegister.length ?? 0) > 0, summary: input.book?.riskRegister.length ? `${input.book.riskRegister.length} risk(s) filed, ${input.book.riskRegister.filter((r) => r.severity === "high").length} high severity.` : "No desk filed a risk with evidence behind it this meeting." },
     { n: 5, title: "New ideas from research", covered: input.ideas.length > 0, summary: input.ideas.length ? `${input.ideas.length} referral(s): ${input.ideas.map((i) => i.ticker).join(", ")}.` : "No name was referred to the committee since the last meeting." },
@@ -765,9 +934,13 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     { n: 8, title: "Execution handover", covered: blotter.length > 0, summary: blotter.length ? `${blotter.length} line(s) handed to Portfolio Operations for manual entry. The committee approves; a person executes.` : "Nothing to hand over — no motion carried with a size attached." },
   ];
 
+  const liqMotion = motions.find((m) => m.kind === "RAISE CASH");
   const minutes: string[] = [
     `${meetingId} · ${asOf.slice(0, 10)} · NAV ${money(input.nav)} · chaired by ${ROSTER.james.name}.`,
     quorum.note,
+    ...(liqMotion
+      ? [`Liquidity: broker cash ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)} is below the ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. ${liqMotion.outcome === "CARRIED" ? `Approved: sell ${money(liqMotion.sizeUsd)} of ${liqMotion.ticker}, proceeds held as cash. New risk positions remain blocked until settlement.` : liqMotion.outcomeReason}`]
+      : []),
     input.regime ? `Macro: ${input.regime.regime} at ${input.regime.score}/100. ${input.regime.note}` : "Macro: no regime read available this meeting.",
     exits.length ? `Exits proposed: ${exits.map((m) => `${m.ticker} (${m.outcome.toLowerCase()})`).join(", ")}.` : "No exit was proposed.",
     trims.length ? `Trims proposed: ${trims.map((m) => `${m.ticker} ${money(m.sizeUsd)} (${m.outcome.toLowerCase()})`).join(", ")}.` : "No trim was proposed.",
