@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
     const notes = [
       `Committee ${meetingId} · ${kind}`,
       verdict === "AMENDED" ? `AMENDED by ${approvedBy} from ${decision.proposedShares ?? "?"} shares` : `approved by ${approvedBy}`,
-      kind === "RAISE CASH" ? "proceeds held as cash to restore the liquidity buffer — not reinvested" : "",
+      kind === "RAISE CASH" ? "proceeds retained in the Cash Buffer as USD or approved reserves — not deployed into risk assets" : "",
       decision.note ?? "",
     ].filter(Boolean).join(" · ");
 

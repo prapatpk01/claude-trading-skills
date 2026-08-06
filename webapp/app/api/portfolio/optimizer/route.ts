@@ -72,30 +72,24 @@ export async function GET(req: NextRequest) {
     }
 
     if(buffer.posture==="UNDERFUNDED"){
-      // "Raise the buffer" is not an instruction until it says what to sell and
-      // where the money goes. Both were missing, and the obvious wrong reading
-      // — that the cash is there to buy something — is the expensive one.
+      // Selling SGOV into USD only changes the form of the Cash Buffer; it does
+      // not increase the combined sleeve. A genuine shortfall must therefore
+      // be filled by retaining new cash or reducing a risk asset.
       const shortfall=Math.abs(buffer.gapValue ?? 0);
-      const reserves=positions.filter(p=>p.isReserve).sort((a,b)=>b.marketValue-a.marketValue);
-      const reserveTotal=reserves.reduce((s,p)=>s+p.marketValue,0);
-      const source=reserves[0]??null;
-      const remainder=Math.max(0,shortfall-reserveTotal);
-      const smallestRisk=positions.filter(p=>!p.isReserve&&p.marketValue>=remainder).sort((a,b)=>a.marketValue-b.marketValue)[0]??null;
-      const fundingPlan=source
-        ? `Sell ${Math.min(shortfall,source.marketValue).toFixed(2)} USD of ${source.ticker} — reserves total ${reserveTotal.toFixed(2)} USD across ${reserves.length} line(s), and this is what they are held for.${remainder>0?` Reserves fall ${remainder.toFixed(2)} USD short; ${smallestRisk?`${smallestRisk.ticker} is the smallest risk position that closes the rest in one ticket.`:"the remainder is larger than any single position and needs more than one sale."}`:""}`
-        : smallestRisk
-        ? `The fund holds no reserve asset, so this has to come from a risk position — ${smallestRisk.ticker} is the smallest line that closes the gap in one ticket.`
-        : "The fund holds no reserve asset and no single position covers the shortfall, so it needs more than one sale.";
+      const smallestRisk=positions.filter(p=>!p.isReserve&&p.marketValue>=shortfall).sort((a,b)=>a.marketValue-b.marketValue)[0]??null;
+      const fundingPlan=smallestRisk
+        ? `${smallestRisk.ticker} is the smallest risk position that can close the shortfall in one ticket.`
+        : "No single risk position covers the shortfall, so Asset Management must submit a multi-line reduction plan or add external cash.";
       proposals.unshift({
-        ticker:source?.ticker??"LIQUIDITY",
+        ticker:smallestRisk?.ticker??"CASH BUFFER",
         action:"RAISE BUFFER",
         priority:"CRITICAL",
         currentWeightPct:buffer.bufferPct,
         targetWeightPct:buffer.targetPct,
         capitalUsd:shortfall,
-        fundingSource:source?.ticker??null,
-        proceedsDestination:"SETTLED CASH — not reinvested",
-        reason:`Broker cash is ${Number(buffer.cashBalance ?? 0).toFixed(2)} USD against a ${buffer.targetPct}% floor (${Number(buffer.targetValue ?? 0).toFixed(2)} USD), a shortfall of ${shortfall.toFixed(2)} USD.${Number(buffer.cashBalance ?? 0)<0?" The account is overdrawn.":""} ${fundingPlan} The proceeds stay as settled cash: restoring the buffer is the destination, not the funding for a purchase. New risk deployment stays blocked until the floor is met.`,
+        fundingSource:smallestRisk?.ticker??null,
+        proceedsDestination:"CASH BUFFER — USD or approved reserve instrument",
+        reason:`Total Cash Buffer (USD plus haircut-adjusted reserves) is ${Number(buffer.bufferPct ?? 0).toFixed(1)}% against a ${buffer.targetPct}% target (${Number(buffer.targetValue ?? 0).toFixed(2)} USD), a shortfall of ${shortfall.toFixed(2)} USD. ${fundingPlan} SGOV and other approved reserves are already inside the buffer, so converting them to USD cannot close this gap. New risk deployment stays blocked until the combined floor is met.`,
       });
     }else if(buffer.posture==="OVERFUNDED"){
       proposals.unshift({
@@ -105,9 +99,9 @@ export async function GET(req: NextRequest) {
         currentWeightPct:buffer.bufferPct,
         targetWeightPct:buffer.targetPct,
         capitalUsd:Math.max(0,buffer.gapValue ?? 0),
-        fundingSource:"BROKER CASH",
+        fundingSource:"CASH BUFFER EXCESS — USD/reserves as needed",
         proceedsDestination:"COMMITTEE-APPROVED POSITIONS ONLY",
-        reason:`Broker cash is ${Number(buffer.bufferPct ?? 0).toFixed(1)}% against a ${buffer.targetPct}% target, leaving ${Math.max(0,buffer.gapValue ?? 0).toFixed(2)} USD deployable. It funds committee-approved opportunities only; a name has to carry a motion before this money moves. Reserve instruments are not automatic sell candidates.`,
+        reason:`Total Cash Buffer is ${Number(buffer.bufferPct ?? 0).toFixed(1)}% against a ${buffer.targetPct}% target, leaving ${Math.max(0,buffer.gapValue ?? 0).toFixed(2)} USD deployable. Use broker USD first; convert an approved reserve only to fund a named purchase. A reserve conversion is a liquidity transfer, not a buffer increase.`,
       });
     }else{
       proposals.unshift({ticker:"LIQUIDITY",action:"MAINTAIN",priority:"NORMAL",currentWeightPct:buffer.bufferPct,targetWeightPct:buffer.targetPct,capitalUsd:0,reason:"Liquidity is inside the regime-adjusted policy band."});

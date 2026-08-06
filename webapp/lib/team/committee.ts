@@ -329,21 +329,22 @@ function addDays(iso: string, days: number): string {
 /**
  * The liquidity motion.
  *
- * When broker cash sits below the regime's floor the fund has one job before
+ * When the combined Cash Buffer sits below the regime's floor the fund has one job before
  * any other: get back inside policy. Saying "raise the buffer" without naming
  * what to sell is not an instruction, and leaving out where the proceeds go
  * invites the obvious wrong answer — that the money is there to buy something.
  * It is not. Restoring the buffer IS the destination.
  *
- * Reserves are sold first: that is what they are for. Only when reserves cannot
- * cover the shortfall does the motion say a risk position has to go, and it
- * names the smallest line that closes the gap rather than leaving it unstated.
+ * USD cash and approved reserves already belong to that buffer. Selling SGOV
+ * into USD changes its form but cannot increase its size, so only a risk-asset
+ * reduction or external contribution can repair a genuine policy shortfall.
  */
 function motionForLiquidity(input: CommitteeInput): Omit<Motion, "votes" | "decisionGates" | "tally" | "outcome" | "outcomeReason" | "veto">[] {
   const floorPct = input.regime?.cashMinPct ?? input.targetCashPct;
   if (floorPct == null || input.nav <= 0) return [];
   const targetCash = (floorPct / 100) * input.nav;
-  const shortfall = round2(targetCash - input.cashBalance);
+  const currentBuffer = input.cashBufferPct != null ? (input.cashBufferPct / 100) * input.nav : input.cashBalance;
+  const shortfall = round2(targetCash - currentBuffer);
   if (shortfall <= 0) return [];
 
   const reasons: Reason[] = [];
@@ -355,36 +356,25 @@ function motionForLiquidity(input: CommitteeInput): Omit<Motion, "votes" | "deci
   }
   reasons.push({
     desk: "Macro", member: ROSTER.daniel.name,
-    finding: `The ${input.regime?.regime ?? "current"} regime sets a ${plain(floorPct)}% cash floor — ${money(targetCash)} on ${money(input.nav)} of NAV. Cash is ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)}, a shortfall of ${money(shortfall)}.`,
+      finding: `The ${input.regime?.regime ?? "current"} regime sets a ${plain(floorPct)}% Cash Buffer floor — ${money(targetCash)} on ${money(input.nav)} of NAV. USD cash plus haircut-adjusted approved reserves total ${money(currentBuffer)}, a shortfall of ${money(shortfall)}.`,
+    });
+
+  reasons.push({
+    desk: "Risk", member: ROSTER.kai.name,
+    finding: "SGOV and other approved reserves are already inside the Cash Buffer. Converting one to USD is a liquidity transfer, not a buffer increase; the shortfall must come from a risk reduction or external cash.",
   });
 
-  const reserves = input.positions
-    .filter((p) => p.isReserve && (p.marketValue ?? 0) > 0)
-    .sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0));
-  const reserveTotal = reserves.reduce((s, p) => s + (p.marketValue ?? 0), 0);
-  if (!reserves.length) {
-    reasons.push({
-      desk: "Risk", member: ROSTER.kai.name,
-      finding: "The fund holds no reserve asset, so the shortfall has to come out of a risk position. That is a decision the meeting must take explicitly rather than leave to whoever places the order.",
-    });
-  }
-
-  // Produce one executable motion per real security. Reserves fund the gap
-  // first; only the remaining shortfall reaches risk positions. A synthetic
-  // ticker such as "LIQUIDITY" cannot be approved or written to the ledger.
+  // Produce one executable motion per risk security. Reserve instruments are
+  // deliberately excluded because selling one cannot repair the combined gap.
   const risk = input.positions
     .filter((p) => !p.isReserve && (p.marketValue ?? 0) > 0)
     .sort((a, b) => (a.marketValue ?? 0) - (b.marketValue ?? 0));
-  const reserveQueue = [...reserves];
   const riskQueue = [...risk];
   const drafts: Omit<Motion, "votes" | "decisionGates" | "tally" | "outcome" | "outcomeReason" | "veto">[] = [];
   let remaining = shortfall;
 
-  while (remaining > 0.01 && (reserveQueue.length || riskQueue.length)) {
-    // Exhaust real reserve assets before touching a risk position. Within the
-    // active pool use the smallest line that covers the gap; otherwise use the
-    // largest available line and continue with another executable motion.
-    const pool = reserveQueue.length ? reserveQueue : riskQueue;
+  while (remaining > 0.01 && riskQueue.length) {
+    const pool = riskQueue;
     const coveringIndex = pool.findIndex((p) => (p.marketValue ?? 0) >= remaining);
     const index = coveringIndex >= 0 ? coveringIndex : pool.reduce((best, p, i, rows) => (p.marketValue ?? 0) > (rows[best].marketValue ?? 0) ? i : best, 0);
     const source = pool.splice(index, 1)[0];
@@ -395,15 +385,13 @@ function motionForLiquidity(input: CommitteeInput): Omit<Motion, "votes" | "deci
     const sourceReasons: Reason[] = [
       ...reasons,
       {
-        desk: source.isReserve ? "Risk" : "Portfolio",
-        member: source.isReserve ? ROSTER.kai.name : ROSTER.lena.name,
-        finding: source.isReserve
-          ? `Sell ${money(size)} of ${source.ticker}. Reserves total ${money(reserveTotal)} across ${reserves.length} line(s) — this is exactly what they are held for.`
-          : `${source.ticker} is the ${coveringIndex >= 0 ? "smallest" : "largest available"} risk position selected to raise ${money(size)} of the remaining cash shortfall.`,
+        desk: "Portfolio",
+        member: ROSTER.lena.name,
+        finding: `${source.ticker} is the ${coveringIndex >= 0 ? "smallest" : "largest available"} risk position selected to raise ${money(size)} of the remaining Cash Buffer shortfall.`,
       },
       {
         desk: "Executive", member: ROSTER.miriam.name,
-        finding: "The proceeds stay as settled cash. This is not a reallocation and it does not fund a purchase — restoring the buffer is the purchase. No new risk position may be opened until the floor is met.",
+        finding: "The proceeds stay inside the Cash Buffer as USD or an approved reserve instrument. This does not fund a purchase — restoring the combined buffer is the destination. No new risk position may be opened until the floor is met.",
       },
     ];
     drafts.push({
@@ -1226,7 +1214,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && liquidity.length) {
       veto = {
         member: ROSTER.miriam.name,
-        reason: `Broker cash is ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)} against a ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. New risk positions stay blocked until the buffer is restored — see the liquidity motion.`,
+        reason: `Total Cash Buffer is ${plain(input.cashBufferPct)}% against a ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. New risk positions stay blocked until the combined USD-plus-reserve buffer is restored — see the liquidity motion.`,
       };
     }
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && input.nav > 0) {
@@ -1268,12 +1256,12 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const buysAll = carried.filter((m) => m.sizeUsd > 0);
 
   const deployableSourceLines = [
-    { label: "Deployable cash (above the regime floor)", amountUsd: round2(input.deployableCash) },
+    { label: "Deployable Cash Buffer excess (USD/reserves as needed)", amountUsd: round2(input.deployableCash) },
     ...sells.map((m) => ({ label: `${m.kind} ${m.ticker}`, amountUsd: round2(-m.sizeUsd) })),
   ].filter((line) => line.amountUsd > 0);
   const deployableSourcesUsd = round2(deployableSourceLines.reduce((s, l) => s + l.amountUsd, 0));
   const sourceLines = [
-    ...earmarked.map((m) => ({ label: `${m.kind} ${m.ticker} → broker-cash floor`, amountUsd: round2(-m.sizeUsd) })),
+    ...earmarked.map((m) => ({ label: `RAISE BUFFER ${m.ticker} → Cash Buffer`, amountUsd: round2(-m.sizeUsd) })),
     ...deployableSourceLines,
   ];
   const sourcesUsd = round2(sourceLines.reduce((s, l) => s + l.amountUsd, 0));
@@ -1341,7 +1329,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const destinationLines: CapitalPlan["destinationLines"] = [
     ...(earmarkedForCashUsd > 0 ? [{
       category: "CASH_RESERVE" as const,
-      label: `Restore broker-cash floor`,
+      label: `Restore total Cash Buffer floor`,
       amountUsd: earmarkedForCashUsd,
       owner: ROSTER.lena.name,
       reviewBy: null,
@@ -1366,8 +1354,9 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const allocationComplete = unallocatedUsd <= 0.01 && destinationLines.every((line) =>
     Boolean(line.owner) && (line.category !== "TEMPORARY_PARKING" || Boolean(line.reviewBy))
   );
+  const startingBufferUsd = input.cashBufferPct != null ? input.nav * input.cashBufferPct / 100 : input.cashBalance;
   const cashAfter = input.nav > 0
-    ? ((input.cashBalance + earmarkedForCashUsd + sells.reduce((s, m) => s + -m.sizeUsd, 0) - usesUsd) / input.nav) * 100
+    ? ((startingBufferUsd + earmarkedForCashUsd + sells.reduce((s, m) => s + -m.sizeUsd, 0) - usesUsd) / input.nav) * 100
     : null;
 
   const capitalPlan: CapitalPlan = {
@@ -1392,7 +1381,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     fallbackOptions,
     note: [
       earmarkedForCashUsd > 0
-        ? `${money(earmarkedForCashUsd)} is being raised to restore the liquidity buffer. That money stays as settled cash — it is ring-fenced and does not fund anything on this agenda.`
+        ? `${money(earmarkedForCashUsd)} is being raised from risk assets to restore the total Cash Buffer. The proceeds stay as USD or an approved reserve instrument — they are ring-fenced and do not fund anything on this agenda.`
         : "",
       usesUsd === 0 && temporaryParkingUsd > 0
         ? `Investment approved no new risk use. Asset Management assigns ${money(temporaryParkingUsd)} to the temporary reserve and must return by ${reviewBy} with either a ranked ADD to an existing holding or a qualified new investment.`
@@ -1417,7 +1406,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
       approxUsd: round2(Math.abs(m.sizeUsd)),
       referencePrice: p?.price ?? idea?.price ?? null,
       reason: m.kind === "RAISE CASH"
-        ? `RAISE CASH — proceeds stay as settled cash to restore the liquidity buffer. Do not reinvest them. ${m.outcomeReason}`
+        ? `RAISE BUFFER — proceeds stay inside the Cash Buffer as USD or an approved reserve instrument. Do not deploy them into risk assets. ${m.outcomeReason}`
         : `${m.kind} — ${m.outcomeReason}`,
     };
     return line;
@@ -1428,7 +1417,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     const owner = m.outcome === "CARRIED" && m.sizeUsd !== 0 ? ROSTER.ryan.name : m.outcome === "DEFERRED" ? (m.veto?.member ?? ROSTER.miriam.name) : m.proposedBy;
     const text =
       m.outcome === "CARRIED" && m.kind === "RAISE CASH"
-        ? `Sell ${money(m.sizeUsd)} of ${m.ticker}${m.approxShares ? ` (~${m.approxShares} shares)` : ""} and leave the proceeds in settled cash. This restores the liquidity buffer; it does not fund a purchase.`
+        ? `Sell ${money(m.sizeUsd)} of ${m.ticker}${m.approxShares ? ` (~${m.approxShares} shares)` : ""} and retain the proceeds in the Cash Buffer as USD or an approved reserve instrument. This restores the combined buffer; it does not fund a purchase.`
         : m.outcome === "CARRIED" && m.sizeUsd !== 0
         ? `${m.kind} ${m.ticker} — ${money(m.sizeUsd)}${m.approxShares ? ` (~${m.approxShares} shares)` : ""}. Record the transaction in the ledger; the committee does not execute.`
         : m.outcome === "CARRIED"
@@ -1459,7 +1448,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const agenda: AgendaItem[] = [
     { n: 1, title: "Call to order and quorum", covered: true, summary: quorum.note },
     { n: 2, title: "Macro regime and cash policy", covered: input.regime != null, summary: [
-      input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash floor ${input.regime.cashMinPct}%, currently ${plain(input.cashBufferPct)}%. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash policy stands at its last setting.",
+      input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash Buffer floor ${input.regime.cashMinPct}%, currently ${plain(input.cashBufferPct)}% including USD and approved reserves. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash Buffer policy stands at its last setting.",
       liquidity.length ? `The buffer is short by ${money(liquidity.reduce((sum, motion) => sum + -motion.sizeUsd, 0))} and ${liquidity.length} executable liquidity motion(s) are on the agenda. New risk positions are blocked until it is met.` : "",
     ].filter(Boolean).join(" ") },
     { n: 3, title: "Portfolio review", covered: input.positions.length > 0, summary: input.positions.length ? `${input.positions.length} position(s) reviewed at ${money(input.nav)} NAV. ${holds.length} hold, ${trims.length} trim, ${exits.length} exit.` : "No open positions to review." },
@@ -1476,7 +1465,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     `${meetingId} · ${asOf.slice(0, 10)} · NAV ${money(input.nav)} · chaired by ${ROSTER.james.name}.`,
     quorum.note,
     ...(liqMotions.length
-      ? [`Liquidity: broker cash ${input.cashBalance < 0 ? "−" : ""}${money(input.cashBalance)} is below the ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. ${carriedLiquidity.length ? `Approved: ${carriedLiquidity.map((m) => `sell ${money(m.sizeUsd)} of ${m.ticker}`).join("; ")}, proceeds held as cash. New risk positions remain blocked until settlement.` : liqMotions.map((m) => m.outcomeReason).join(" ")}`]
+      ? [`Liquidity: total Cash Buffer is ${plain(input.cashBufferPct)}% versus the ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. ${carriedLiquidity.length ? `Approved: ${carriedLiquidity.map((m) => `sell ${money(m.sizeUsd)} of ${m.ticker}`).join("; ")}, proceeds retained in USD or approved reserves. New risk positions remain blocked until settlement.` : liqMotions.map((m) => m.outcomeReason).join(" ")}`]
       : []),
     input.regime ? `Macro: ${input.regime.regime} at ${input.regime.score}/100. ${input.regime.note}` : "Macro: no regime read available this meeting.",
     exits.length ? `Exits proposed: ${exits.map((m) => `${m.ticker} (${m.outcome.toLowerCase()})`).join(", ")}.` : "No exit was proposed.",
