@@ -71,6 +71,7 @@ type Meeting = {
   motions: Motion[];
   capitalPlan: {
     sourcesUsd: number;
+    deployableSourcesUsd: number;
     sourceLines: { label: string; amountUsd: number }[];
     usesUsd: number;
     useLines: { label: string; amountUsd: number }[];
@@ -79,6 +80,21 @@ type Meeting = {
     cutForFunding: { ticker: string; requestedUsd: number; reason: string }[];
     cashAfterPct: number | null;
     earmarkedForCashUsd: number;
+    temporaryParkingUsd: number;
+    unallocatedUsd: number;
+    allocationComplete: boolean;
+    approvalReady: boolean;
+    allocationStatus: "READY" | "INCOMPLETE";
+    reviewOwner: string;
+    reviewBy: string;
+    destinationLines: {
+      category: "CASH_RESERVE" | "NEW_INVESTMENT" | "ADD_HOLDING" | "TEMPORARY_PARKING";
+      label: string;
+      amountUsd: number;
+      owner: string;
+      reviewBy: string | null;
+    }[];
+    fallbackOptions: { ticker: string; action: "REVIEW ADD" | "KEEP RESERVE"; maxUsd: number; rationale: string }[];
     note: string;
   };
   blotter: { side: "BUY" | "SELL"; ticker: string; approxShares: number | null; approxUsd: number; referencePrice: number | null; reason: string }[];
@@ -188,7 +204,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       <Kpi label={tr(lang, "Market regime", "สภาวะตลาด")} value={meeting.regime ? `${meeting.regime.icon} ${meeting.regime.regime}` : "UNAVAILABLE"} note={meeting.regime ? `${meeting.regime.score}/100 · cash floor ${meeting.regime.cashMinPct}%` : "No benchmark evidence"} />
       <Kpi label={tr(lang, "New ideas", "หุ้นใหม่ที่เสนอ")} value={String(proposals.length)} note={meeting.scan ? `${meeting.scan.universeSize} scanned · ${meeting.scan.rejected} rejected` : "Research scan unavailable"} />
       <Kpi label={tr(lang, "Actions awaiting approval", "รายการรออนุมัติ")} value={String(actionLines.length)} note={`${carried.length} carried · ${blockers.length} blocked/deferred`} />
-      <Kpi label={tr(lang, "Capital after plan", "เงินคงเหลือหลังแผน")} value={money(meeting.capitalPlan.balanceUsd)} note={meeting.capitalPlan.funded ? "SOURCES = USES + BALANCE" : "PLAN IS NOT FUNDED"} />
+      <Kpi label={tr(lang, "Capital allocation", "แผนจัดสรรเงิน")} value={meeting.capitalPlan.allocationStatus} note={meeting.capitalPlan.allocationComplete ? `${money(meeting.capitalPlan.temporaryParkingUsd)} temporary reserve` : `${money(meeting.capitalPlan.unallocatedUsd)} has no destination`} />
     </section>
 
     <section className={`card ${styles.stageCard}`}>
@@ -231,9 +247,27 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       <section className={styles.twoCol}>
         <article className="card">
           <SectionTitle eyebrow="02 · FUNDING" title={tr(lang, "Every use names its source", "ทุกการใช้เงินต้องระบุแหล่งเงิน")} />
-          <div className="grid cols-3"><Kpi label="Sources" value={money(meeting.capitalPlan.sourcesUsd)} note={`${meeting.capitalPlan.sourceLines.length} source lines`} /><Kpi label="Uses" value={money(meeting.capitalPlan.usesUsd)} note={`${meeting.capitalPlan.useLines.length} approved uses`} /><Kpi label="Uncommitted" value={money(meeting.capitalPlan.balanceUsd)} note={`Cash after ${pct(meeting.capitalPlan.cashAfterPct)}`} /></div>
+          <div className={styles.capitalMetrics}>
+            <Kpi label={tr(lang, "Sale / cash sources", "เงินจากการขาย/เงินพร้อมใช้")} value={money(meeting.capitalPlan.sourcesUsd)} note={`${meeting.capitalPlan.sourceLines.length} source lines`} />
+            <Kpi label={tr(lang, "Approved investment", "เงินลงทุนที่อนุมัติ")} value={money(meeting.capitalPlan.usesUsd)} note={`${money(meeting.capitalPlan.deployableSourcesUsd)} deployable · ${meeting.capitalPlan.useLines.length} uses`} />
+            <Kpi label={tr(lang, "Temporary reserve", "พักเงินชั่วคราว")} value={money(meeting.capitalPlan.temporaryParkingUsd)} note={`${meeting.capitalPlan.reviewOwner} · review ${meeting.capitalPlan.reviewBy}`} />
+            <Kpi label={tr(lang, "Without destination", "เงินไม่มีปลายทาง")} value={money(meeting.capitalPlan.unallocatedUsd)} note={`Cash after ${pct(meeting.capitalPlan.cashAfterPct)}`} />
+          </div>
+          <div className={`${styles.allocationStatus} ${meeting.capitalPlan.allocationComplete ? styles.allocationReady : styles.allocationBlocked}`}>
+            <strong>{meeting.capitalPlan.allocationComplete ? tr(lang, "CAPITAL PLAN COMPLETE", "แผนเงินทุนครบถ้วน") : tr(lang, "INCOMPLETE CAPITAL PLAN", "แผนเงินทุนยังไม่ครบ")}</strong>
+            <span>{meeting.capitalPlan.allocationComplete ? tr(lang, "Every dollar has a destination, owner and review date.", "เงินทุกส่วนมีปลายทาง ผู้รับผิดชอบ และวันทบทวนแล้ว") : tr(lang, "Human approval is locked until Unallocated equals $0.", "ล็อกการอนุมัติจนกว่าเงินไม่มีปลายทางจะเป็น $0")}</span>
+          </div>
+          <div className={styles.flowGrid}>
+            <div><b>{tr(lang, "Sources", "แหล่งเงิน")}</b>{meeting.capitalPlan.sourceLines.length ? meeting.capitalPlan.sourceLines.map((line) => <div className={styles.flowLine} key={line.label}><span>{line.label}</span><strong>{money(line.amountUsd)}</strong></div>) : <p className="muted">—</p>}</div>
+            <div><b>{tr(lang, "Destinations", "ปลายทางเงิน")}</b>{meeting.capitalPlan.destinationLines.map((line) => <div className={styles.flowLine} key={`${line.category}-${line.label}`}><span>{line.label}<small>{line.owner}{line.reviewBy ? ` · ${tr(lang, "review", "ทบทวน")} ${line.reviewBy}` : ""}</small></span><strong>{money(line.amountUsd)}</strong></div>)}</div>
+          </div>
           <p className="notice" style={{ marginTop: 14 }}>{meeting.capitalPlan.note}</p>
           {!!meeting.capitalPlan.cutForFunding.length && <div className="err" style={{ marginTop: 12 }}>{meeting.capitalPlan.cutForFunding.map((line) => `${line.ticker}: ${line.reason}`).join(" · ")}</div>}
+          <div className={styles.fallbackPlan}>
+            <b>{tr(lang, "Asset Management fallback review", "แผนสำรองของทีม Asset Management")}</b>
+            <p>{tr(lang, "If Investment has no qualified new idea, Lena must rank existing holdings for an ADD. Nothing is bought until it is re-underwritten and approved.", "หากทีม Investment ไม่มีหุ้นใหม่ที่ผ่านเกณฑ์ Lena ต้องจัดอันดับ Holdings เดิมสำหรับการเพิ่มน้ำหนัก โดยยังไม่ซื้อจนกว่าจะวิเคราะห์ใหม่และผ่านการอนุมัติ")}</p>
+            {meeting.capitalPlan.fallbackOptions.map((option, index) => <div className={styles.fallbackLine} key={`${option.ticker}-${index}`}><span>{index + 1}</span><div><strong>{option.ticker} · {option.action}</strong><small>{option.rationale}</small></div><b>{money(option.maxUsd)} max</b></div>)}
+          </div>
         </article>
         <article className="card">
           <SectionTitle eyebrow="03 · TRADE BLOTTER" title={tr(lang, "What a human must enter", "รายการที่มนุษย์ต้องบันทึก")} />
@@ -285,7 +319,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       </section>
     </>}
 
-    {view === "approval" && <MeetingApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApplied={() => setRefreshKey((value) => value + 1)} />}
+    {view === "approval" && <MeetingApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={meeting.capitalPlan.approvalReady} approvalBlockReason={meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApplied={() => setRefreshKey((value) => value + 1)} />}
 
     <section className={`card ${styles.guardrail}`}><strong>HUMAN APPROVAL REQUIRED · NO AUTO EXECUTION</strong><span>{tr(lang, "Portfolio and cash come from the production ledger. Recommendations cannot alter holdings until an approved fill is recorded.", "ข้อมูลพอร์ตและเงินสดมาจาก ledger จริง คำแนะนำไม่สามารถเปลี่ยน holdings ได้จนกว่าจะบันทึกรายการที่อนุมัติและซื้อขายจริง")}</span></section>
   </div>;
