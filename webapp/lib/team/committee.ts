@@ -24,7 +24,8 @@
 import { ROSTER, type Member } from "./roster";
 import {
   TRIM_REQUIRES_REPLACEMENT, POSITION_ZONES, RISK_LIMITS,
-  winRatePresentation, permittedDeployFraction, WIN_RATE_DISCLOSURE, DATA_INTEGRITY, FUND_CONSTITUTION_VERSION,
+  winRatePresentation, permittedDeployFraction, WIN_RATE_DISCLOSURE, DATA_INTEGRITY,
+  SLEEVE_DRIFT_ALERT_PCT, DUAL_OBJECTIVE, FUND_CONSTITUTION_VERSION,
 } from "./constitution";
 import type { RegimeAssessment } from "./governance";
 import type { ZoneAssessment } from "./risk";
@@ -155,6 +156,35 @@ export interface Motion {
   veto: { member: string; reason: string } | null;
 }
 
+export interface DeskReportRow {
+  label: string;
+  value: string;
+  tone?: "good" | "warn" | "bad" | "neutral";
+  note?: string;
+}
+
+/**
+ * What a desk actually measured, as opposed to what it is responsible for.
+ *
+ * The attendance table says Maya brought momentum scores. This says what those
+ * scores were. A meeting where every seat states its remit and none states its
+ * findings is a meeting nobody can act on — the fund manager reads the numbers,
+ * not the job descriptions.
+ */
+export interface DeskReport {
+  member: string;
+  role: string;
+  desk: string;
+  /** The single figure this desk brought, or null when it measured nothing. */
+  headline: string | null;
+  /** The measurements themselves, usually one row per holding. */
+  rows: DeskReportRow[];
+  /** What the desk reads into it — its own conclusion, not a restatement. */
+  finding: string;
+  /** What this desk could not measure, named rather than left blank. */
+  gaps: string[];
+}
+
 export interface Attendee {
   member: string;
   role: string;
@@ -214,6 +244,8 @@ export interface CommitteeMeeting {
   attendance: Attendee[];
   quorum: { present: number; required: number; met: boolean; note: string };
   regime: RegimeAssessment | null;
+  /** Every seat's measured output across the whole book. */
+  deskReports: DeskReport[];
   motions: Motion[];
   capitalPlan: CapitalPlan;
   blotter: BlotterLine[];
@@ -708,6 +740,247 @@ function castVotes(m: Omit<Motion, "votes" | "tally" | "outcome" | "outcomeReaso
   return votes;
 }
 
+/* ───────────────────────── desk reports ───────────────────────────── */
+
+/**
+ * Every seat's work, shown rather than described.
+ *
+ * Each report answers three questions in the same order: what did you measure,
+ * what does it mean for this book, and what could you not measure. The third
+ * is not optional — a desk that reports only its findings and never its gaps
+ * lets the reader mistake a thin measurement for a complete one.
+ */
+function buildDeskReports(input: CommitteeInput): DeskReport[] {
+  const reports: DeskReport[] = [];
+  const risk = input.positions.filter((p) => !p.isReserve);
+  const priced = input.positions.filter((p) => p.price != null);
+  const add = (key: string, headline: string | null, rows: DeskReportRow[], finding: string, gaps: string[]) => {
+    const m = ROSTER[key] as Member;
+    reports.push({ member: m.name, role: m.role, desk: m.desk, headline, rows, finding, gaps });
+  };
+  const tone = (good: boolean, bad: boolean): DeskReportRow["tone"] => (bad ? "bad" : good ? "good" : "warn");
+
+  /* ── Daniel Cho — regime and cash policy ── */
+  {
+    const r = input.regime;
+    const rows: DeskReportRow[] = r
+      ? [
+          { label: "Regime", value: `${r.icon} ${r.regime} · ${r.score}/100`, tone: r.score >= 70 ? "good" : r.score >= 40 ? "warn" : "bad" },
+          { label: "Cash floor required", value: `${plain(r.cashMinPct)}%`, note: r.deployRule },
+          { label: "Cash held", value: `${plain(input.cashBufferPct)}%`, tone: input.cashBufferPct != null && input.cashBufferPct >= r.cashMinPct ? "good" : "bad" },
+          ...r.components.map((c) => ({ label: c.label, value: `${plain(c.points, 0)}/${c.max}`, note: c.detail })),
+        ]
+      : [];
+    add("daniel", r ? `${r.regime} ${r.score}/100` : null, rows,
+      r
+        ? `${r.note} Cash is ${plain(input.cashBufferPct)}% against a ${plain(r.cashMinPct)}% floor, so the book is ${input.cashBufferPct != null && input.cashBufferPct >= r.cashMinPct ? "inside policy and may deploy on the regime's terms" : "below its own floor and deployment is blocked until that is fixed"}.`
+        : "No regime could be read, so the cash floor stands at its last setting and this desk cannot clear any deployment.",
+      r ? [] : ["Benchmark history for the regime score"]);
+  }
+
+  /* ── Maya Chen — momentum across the book ── */
+  {
+    const scored = risk.filter((p) => p.momentum != null);
+    const rows: DeskReportRow[] = scored.map((p) => ({
+      label: p.ticker,
+      value: `${p.momentum!.total}/100 · ${p.momentum!.signal}`,
+      tone: tone(p.momentum!.total >= 65 && p.momentum!.hardBlocks.length === 0, p.momentum!.hardBlocks.length > 0),
+      note: p.momentum!.hardBlocks.length ? `Hard blocks: ${p.momentum!.hardBlocks.join("; ")}` : `Data quality ${p.momentum!.dataQualityPct}%`,
+    }));
+    const blocked = scored.filter((p) => p.momentum!.hardBlocks.length > 0);
+    const strong = scored.filter((p) => p.momentum!.total >= 65);
+    add("maya", scored.length ? `${strong.length} of ${scored.length} above the 65 entry bar` : null, rows,
+      scored.length
+        ? `${strong.length} name(s) score at or above the entry bar and ${blocked.length} carry a hard block${blocked.length ? ` — ${blocked.map((p) => p.ticker).join(", ")}` : ""}. ${blocked.length ? "A blocked name may be held, but nothing new is added to one." : "No hard block stands against the book."}`
+        : "No holding could be scored — the model needs price history that did not arrive.",
+      risk.filter((p) => p.momentum == null).map((p) => `${p.ticker}: no momentum score`));
+  }
+
+  /* ── Aisha Fontaine — catalysts and referrals ── */
+  {
+    const rows: DeskReportRow[] = input.ideas.map((i) => ({
+      label: i.ticker,
+      value: i.conviction == null ? "no conviction recorded" : `conviction ${i.conviction}/100`,
+      tone: tone((i.conviction ?? 0) >= 65, (i.conviction ?? 0) < 50),
+      note: [i.source, i.ageDays == null ? null : `${i.ageDays} day(s) old`, i.upsidePct == null ? null : `upside ${pct1(i.upsidePct)}`].filter(Boolean).join(" · "),
+    }));
+    add("aisha", input.ideas.length ? `${input.ideas.length} referral(s) carried in` : null, rows,
+      input.ideas.length
+        ? `${input.ideas.filter((i) => (i.conviction ?? 0) >= 65).length} referral(s) clear the 65 conviction bar. ${input.ideas.filter((i) => i.ageDays != null && i.ageDays > STALE_REFERRAL_DAYS).length} are past the ${STALE_REFERRAL_DAYS}-day shelf life and are withdrawn rather than sized.`
+        : "Nothing was referred to this meeting. The new-position sleeve has no candidate, which is a research gap rather than a decision.",
+      input.positions.length ? ["No per-holding catalyst or earnings-event read was tabled for the existing book"] : []);
+  }
+
+  /* ── Thomas Eriksson — fair value ── */
+  {
+    const valued = input.positions.filter((p) => p.valuation != null);
+    const rows: DeskReportRow[] = valued.map((p) => ({
+      label: p.ticker,
+      value: `${p.valuation!.verdict}${p.valuation!.deviationPct == null ? "" : ` · ${pct1(p.valuation!.deviationPct)}`}`,
+      tone: /PREMIUM|EXPENSIVE|OVERVALUED/i.test(p.valuation!.verdict) ? "bad" : /DISCOUNT|CHEAP|UNDERVALUED/i.test(p.valuation!.verdict) ? "good" : "neutral",
+      note: `confidence ${p.valuation!.confidence}`,
+    }));
+    const rich = valued.filter((p) => /PREMIUM|EXPENSIVE|OVERVALUED/i.test(p.valuation!.verdict));
+    const cheap = valued.filter((p) => /DISCOUNT|CHEAP|UNDERVALUED/i.test(p.valuation!.verdict));
+    add("thomas", valued.length ? `${rich.length} rich · ${cheap.length} cheap of ${valued.length}` : null, rows,
+      valued.length
+        ? `${rich.length} holding(s) trade above the anchor stack${rich.length ? ` — ${rich.map((p) => p.ticker).join(", ")}` : ""} and ${cheap.length} below it${cheap.length ? ` — ${cheap.map((p) => p.ticker).join(", ")}` : ""}. A premium is a sizing question here, not a sell signal: it only forces a trim above the ${REVIEW_PCT}% review weight.`
+        : "No fair-value anchor could be built for any holding, so valuation carries no weight in today's motions.",
+      input.positions.filter((p) => p.valuation == null).map((p) => `${p.ticker}: no fair-value anchor`));
+  }
+
+  /* ── Kai Tanaka — concentration and stops ── */
+  {
+    const zoned = input.positions.filter((p) => p.zone != null);
+    const rows: DeskReportRow[] = zoned.map((p) => ({
+      label: p.ticker,
+      value: `${p.zone!.icon} ${p.zone!.zone} · ${plain(p.weightPct)}%`,
+      tone: p.zone!.zone === "BASE" ? "good" : p.zone!.zone === "WATCH" ? "warn" : "bad",
+      note: p.zone!.trimToTarget ? `Trim ${money(p.zone!.trimToTarget)} to reach the 18–19% band` : p.zone!.action,
+    }));
+    const hot = zoned.filter((p) => p.zone!.zone === "TRIM" || p.zone!.zone === "EMERGENCY");
+    add("kai", zoned.length ? `${hot.length} name(s) past the trim line` : null, rows,
+      zoned.length
+        ? hot.length
+          ? `${hot.map((p) => p.ticker).join(", ")} sit${hot.length === 1 ? "s" : ""} at or above the ${POSITION_ZONES.trimLowerPct}% mandatory-trim line. Rule #3 holds the trim until research names a replacement — the size is the risk, not the name.`
+          : `Every position is inside the ${POSITION_ZONES.basePct}% base zone. Concentration is not the book's live risk today.`
+        : "No position could be weighted, so no concentration zone was assessed.",
+      input.positions.filter((p) => p.zone == null && !p.isReserve).map((p) => `${p.ticker}: unweighted, no zone`));
+  }
+
+  /* ── Lena Müller — sleeves, yield and the dual objective ── */
+  {
+    const sleeves = input.book?.sleeves ?? [];
+    // The sleeve engine already decided what counts as drift. Re-deriving it
+    // here from the same threshold invites the two to disagree at the boundary,
+    // so this desk reports the flag the engine set rather than its own read.
+    const rows: DeskReportRow[] = [
+      ...sleeves.map((sl) => ({
+        label: `${sl.sleeve} sleeve`,
+        value: `${plain(sl.actualPct)}% vs ${plain(sl.targetPct)}% target`,
+        tone: (sl.alert ? "bad" : "good") as DeskReportRow["tone"],
+        note: `drift ${pct1(sl.driftPct)}${sl.alert ? ` — past the ${SLEEVE_DRIFT_ALERT_PCT}% alert` : ""}`,
+      })),
+      ...(input.book?.blendedYieldPct != null
+        ? [{ label: "Blended yield", value: `${plain(input.book.blendedYieldPct)}%`, tone: (input.book.blendedYieldPct >= DUAL_OBJECTIVE.yieldFloorPct ? "good" : "bad") as DeskReportRow["tone"], note: `against the ${DUAL_OBJECTIVE.yieldFloorPct}% objective` }]
+        : []),
+      ...(input.book?.objectives ?? []).map((o: any) => ({
+        label: String(o.label ?? "Objective"),
+        value: String(o.status ?? o.value ?? "—"),
+        tone: (/pass|beat|✅/i.test(String(o.status ?? "")) ? "good" : "warn") as DeskReportRow["tone"],
+      })),
+    ];
+    const drifted = sleeves.filter((sl) => sl.alert);
+    add("lena", sleeves.length ? `${drifted.length} sleeve(s) past the ${SLEEVE_DRIFT_ALERT_PCT}% drift alert` : null, rows,
+      sleeves.length
+        ? drifted.length
+          ? `${drifted.map((sl) => `${sl.sleeve} is ${pct1(sl.driftPct)} off target`).join("; ")}. Rule #7 makes that an alert, and the next deployments should close the gap rather than widen it.`
+          : "Every sleeve is inside its band. Capital can go where conviction points rather than where the barbell needs repairing."
+        : "No sleeve breakdown was available, so drift could not be measured.",
+      input.book ? [] : ["Sleeve breakdown and the dual-objective scorecard"]);
+  }
+
+  /* ── Ryan Blackwood — exit liquidity ── */
+  {
+    const liquid = input.positions.filter((p) => p.liquidity?.sessionsToExit != null);
+    const rows: DeskReportRow[] = liquid.map((p) => ({
+      label: p.ticker,
+      value: `${plain(p.liquidity!.sessionsToExit)} session(s)`,
+      tone: tone((p.liquidity!.sessionsToExit ?? 0) <= 1, (p.liquidity!.sessionsToExit ?? 0) > 3),
+      note: "to exit the full line at 20% of median volume",
+    }));
+    const slow = liquid.filter((p) => (p.liquidity!.sessionsToExit ?? 0) > 3);
+    add("ryan", liquid.length ? `${slow.length} name(s) take more than 3 sessions to exit` : null, rows,
+      liquid.length
+        ? slow.length
+          ? `${slow.map((p) => p.ticker).join(", ")} cannot be sold in one order without moving the price. Work those over several days rather than in a single ticket.`
+          : "Every line exits inside a session at 20% of median volume. Liquidity does not constrain any motion today."
+        : "Volume history was unavailable, so exit liquidity is unmeasured across the book.",
+      input.positions.filter((p) => p.liquidity?.sessionsToExit == null).map((p) => `${p.ticker}: no volume history`));
+  }
+
+  /* ── Priya Nair — the fund's own record ── */
+  {
+    const wr = winRatePresentation(input.track?.completed ?? 0, input.track?.winRatePct ?? null);
+    const rows: DeskReportRow[] = input.track
+      ? [
+          { label: "Closed decisions", value: String(input.track.completed), tone: input.track.completed >= WIN_RATE_DISCLOSURE.liveTradesRequired ? "good" : "warn" },
+          { label: "Hit rate", value: wr.value == null ? "not measured" : `${plain(wr.value)}%`, note: wr.label },
+          { label: "Average return", value: pct1(input.track.averageReturnPct) },
+        ]
+      : [];
+    add("priya", input.track ? `${input.track.completed} closed decisions` : null, rows,
+      input.track
+        ? input.track.completed >= WIN_RATE_DISCLOSURE.liveTradesRequired
+          ? `The record is large enough to quote: ${plain(wr.value)}% across ${input.track.completed} closed decisions.`
+          : `Rule #6 applies — ${input.track.completed} closed decisions is short of ${WIN_RATE_DISCLOSURE.liveTradesRequired}, so the rate is shown with the Component Estimate label and this desk does not vote on it.`
+        : "No decision record was available, so no hit rate exists to quote.",
+      input.track ? [] : ["The closed-decision ledger"]);
+  }
+
+  /* ── Miriam Osei — evidence and the gates ── */
+  {
+    const rows: DeskReportRow[] = [
+      { label: "Positions priced", value: `${priced.length} of ${input.positions.length}`, tone: tone(priced.length === input.positions.length, priced.length < input.positions.length) },
+      { label: "Data-quality floor", value: `${DATA_INTEGRITY.minDataQualityPct}% (Gate 7)`, note: "A motion below this is deferred, not decided" },
+      ...input.unavailable.map((u) => ({ label: "Source unavailable", value: u, tone: "bad" as const })),
+    ];
+    add("miriam", `${input.unavailable.length} source gap(s)`, rows,
+      input.unavailable.length
+        ? `${input.unavailable.length} source(s) did not answer. Motions that depend on them are deferred rather than decided, and Rule #5 scores what is missing as zero rather than dropping it from the average.`
+        : "Every source the meeting depends on responded. No motion is being decided on absent evidence.",
+      []);
+  }
+
+  /* ── Nina Okonkwo and Leo Tanaka — data lineage and freshness ── */
+  {
+    add("nina", `${input.unavailable.length ? "incomplete" : "complete"} coverage`,
+      input.unavailable.map((u) => ({ label: "Missing", value: u, tone: "bad" as const })),
+      input.unavailable.length
+        ? `Feed coverage is incomplete: ${input.unavailable.join("; ")}. Every figure downstream of these is either absent or flagged.`
+        : "Every feed the meeting reads responded, and every figure below carries a source.",
+      []);
+
+    const stale = input.positions.filter((p) => p.priceAsOf == null);
+    add("leo", `${priced.length} of ${input.positions.length} priced`,
+      input.positions.map((p) => ({
+        label: p.ticker,
+        value: p.price == null ? "no price" : `${money(p.price)} as of ${p.priceAsOf ?? "unknown"}`,
+        tone: tone(p.price != null && p.priceAsOf != null, p.price == null),
+      })),
+      stale.length
+        ? `${stale.map((p) => p.ticker).join(", ")} carry no timestamped price, so their weights and any motion sized against them are unreliable.`
+        : "Every holding carries a timestamped price. Weights and sizes below are measured, not assumed.",
+      stale.map((p) => `${p.ticker}: no timestamped price`));
+  }
+
+  /* ── Sofia Reyes and Marcus Webb — the seats with nothing tabled ── */
+  {
+    add("sofia", null, [],
+      "No fundamental work was tabled for this book review. Business quality, moat and thesis are produced in the ticker analysis, and none was carried into this meeting — so this desk abstains rather than voting on a price chart.",
+      ["Business quality and moat assessment for every holding"]);
+    add("marcus", null, [],
+      "No updated earnings-quality or revision reading was tabled for any holding. This desk abstains for the same reason: an opinion without a measurement behind it is not evidence.",
+      ["Earnings quality, revision momentum and beat/miss history for every holding"]);
+  }
+
+  /* ── James Hartwell — what the meeting adds up to ── */
+  {
+    const rows: DeskReportRow[] = [
+      { label: "NAV", value: money(input.nav) },
+      { label: "Cash", value: `${money(input.cashBalance)} · ${plain(input.cashBufferPct)}%`, tone: input.cashBalance < 0 ? "bad" : "neutral" },
+      { label: "Deployable", value: money(input.deployableCash) },
+      { label: "Positions", value: `${input.positions.length} (${risk.length} risk, ${input.positions.length - risk.length} reserve)` },
+      { label: "Referrals", value: String(input.ideas.length) },
+    ];
+    add("james", `${input.positions.length} position(s) · ${money(input.nav)}`, rows,
+      `The book is ${money(input.nav)} across ${input.positions.length} position(s) with ${money(input.deployableCash)} deployable. The desks above are the evidence; the motions below are what the meeting does about it.`,
+      []);
+  }
+
+  return reports;
+}
+
 /* ─────────────────────────── the meeting ──────────────────────────── */
 
 export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
@@ -757,6 +1030,8 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
       ? `${presentCount} of ${attendance.length} seats brought a measurement. The meeting is quorate.`
       : `Only ${presentCount} of ${attendance.length} seats brought a measurement, below the ${requiredQuorum} required. Every motion is deferred until the missing evidence is restored.`,
   };
+
+  const deskReports = buildDeskReports(input);
 
   /* 2. Motions — one per position, one per referred idea. */
   const heldTickers = new Set(input.positions.map((p) => p.ticker));
@@ -1026,6 +1301,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     attendance,
     quorum,
     regime: input.regime,
+    deskReports,
     motions,
     capitalPlan,
     blotter,

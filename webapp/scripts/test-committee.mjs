@@ -539,5 +539,64 @@ section("Track record");
   ok("the reason is disclosed", meeting.disclosures.some((d) => /closed decisions/i.test(d)));
 }
 
+/* ──────────────────────────── desk reports ────────────────────────── */
+
+// The attendance table states what a seat is responsible for. The desk report
+// is the work: what it measured on this book, what it concluded, and what it
+// could not measure. A meeting that publishes only the first is a staff list.
+
+section("Desk reports");
+{
+  const meeting = runCommitteeMeeting(input());
+  const reports = meeting.deskReports;
+  ok("every seat files a report", reports.length === meeting.attendance.length, `${reports.length} vs ${meeting.attendance.length} seats`);
+  ok("each report names the person and the desk", reports.every((r) => r.member.length > 3 && r.desk.length > 3));
+  ok("each report carries a finding, never an empty one", reports.every((r) => r.finding.length > 30));
+
+  const maya = reports.find((r) => /Maya/.test(r.member));
+  ok("the momentum desk shows a reading per holding", maya.rows.length === 1, JSON.stringify(maya.rows));
+  ok("and the reading is the score, not the remit", /55\/100/.test(maya.rows[0].value), maya.rows[0].value);
+
+  const daniel = reports.find((r) => /Daniel/.test(r.member));
+  ok("the macro desk shows the regime it read", /NEUTRAL/.test(daniel.headline ?? ""), daniel.headline);
+  ok("and the cash floor beside the cash held", daniel.rows.some((row) => /Cash floor/i.test(row.label)) && daniel.rows.some((row) => /Cash held/i.test(row.label)));
+
+  const kai = reports.find((r) => /Kai/.test(r.member));
+  ok("the risk desk shows the weight and the zone", /%/.test(kai.rows[0].value), kai.rows[0].value);
+
+  const james = reports.find((r) => /James/.test(r.member));
+  ok("the chair totals the book", james.rows.some((row) => row.label === "NAV"));
+}
+{
+  // A desk with nothing tabled must say so rather than filing an empty card.
+  const sofia = runCommitteeMeeting(input()).deskReports.find((r) => /Sofia/.test(r.member));
+  ok("an untabled desk states the absence", /none was carried into this meeting/i.test(sofia.finding), sofia.finding);
+  ok("and names the gap it leaves", sofia.gaps.length > 0, JSON.stringify(sofia.gaps));
+}
+{
+  // Rule #5's discipline applied to the reports themselves: an unmeasured
+  // holding is listed as unmeasured, not silently missing from the desk's rows.
+  const blind = position({ momentum: null, valuation: null, liquidity: {}, priceAsOf: null, price: 100 });
+  const reports = runCommitteeMeeting(input({ positions: [blind] })).deskReports;
+  const maya = reports.find((r) => /Maya/.test(r.member));
+  ok("an unscored holding leaves the rows empty rather than inventing one", maya.rows.length === 0);
+  ok("and is named in the gaps", maya.gaps.some((g) => /AAA/.test(g)), JSON.stringify(maya.gaps));
+  const leo = reports.find((r) => /Leo/.test(r.member));
+  ok("an untimestamped price is called out by the data desk", leo.gaps.some((g) => /AAA/.test(g)), JSON.stringify(leo.gaps));
+  const ryan = reports.find((r) => /Ryan/.test(r.member));
+  ok("unmeasured liquidity is a gap, not a pass", ryan.gaps.length === 1, JSON.stringify(ryan.gaps));
+}
+{
+  const meeting = runCommitteeMeeting(input({ unavailable: ["Yahoo chart endpoint", "SEC EDGAR"] }));
+  const miriam = meeting.deskReports.find((r) => /Miriam/.test(r.member));
+  ok("source gaps appear on the evidence desk's own report", miriam.rows.filter((row) => /unavailable/i.test(row.label)).length === 2);
+  ok("and the finding says motions are deferred rather than decided", /deferred rather than decided/i.test(miriam.finding), miriam.finding);
+}
+{
+  const meeting = runCommitteeMeeting(input({ track: { completed: 4, winRatePct: 100, averageReturnPct: 22 } }));
+  const priya = meeting.deskReports.find((r) => /Priya/.test(r.member));
+  ok("a short record is reported as short on the desk's own card", /Rule #6/.test(priya.finding), priya.finding);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -30,6 +30,12 @@ requireTokens("app/components/CommitteeMeetingPanel.tsx", [
   "Investment Committee",
   "Agenda",
   "Attendance and quorum",
+  // The attendance table states each seat's remit. The desk reports are the
+  // work itself — the readings, the conclusion and the declared gaps. A meeting
+  // that shows only the remit is a staff list, not a review.
+  "Desk reports — what each seat measured",
+  "deskReports",
+  "Could not measure",
   "Macro regime and cash policy",
   "Motions",
   "Capital plan",
@@ -138,6 +144,10 @@ requireTokens("lib/team/constitution.ts", [
 requireTokens("lib/team/committee.ts", [
   "TRIM_REQUIRES_REPLACEMENT", "permittedDeployFraction", "winRatePresentation",
   "Rule #3", "Rule #2", "FUND_CONSTITUTION_VERSION",
+  // Every seat reports what it measured, what it concluded and what it could
+  // not measure. The third field is not optional: a desk that publishes only
+  // findings invites a thin measurement to be read as a complete one.
+  "buildDeskReports", "deskReports", "gaps",
 ]);
 if (!fs.existsSync(path.join(root, "docs/INVESTMENT_SYSTEM.md"))) {
   failures.push("docs/INVESTMENT_SYSTEM.md: the fund's rulebook must be committed alongside the code that enforces it");

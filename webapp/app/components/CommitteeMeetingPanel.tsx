@@ -29,10 +29,13 @@ type Motion = {
   votes: Vote[]; tally: { for: number; against: number; abstain: number };
   outcome: Outcome; outcomeReason: string; veto: { member: string; reason: string } | null;
 };
+type DeskRow = { label: string; value: string; tone?: "good" | "warn" | "bad" | "neutral"; note?: string };
+type DeskReport = { member: string; role: string; desk: string; headline: string | null; rows: DeskRow[]; finding: string; gaps: string[] };
 type Meeting = {
   meetingId: string; asOf: string; nav: number;
   agenda: { n: number; title: string; covered: boolean; summary: string }[];
   attendance: { member: string; role: string; desk: string; present: boolean; contribution: string }[];
+  deskReports: DeskReport[];
   quorum: { present: number; required: number; met: boolean; note: string };
   regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
   motions: Motion[];
@@ -60,6 +63,7 @@ const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v.t
 const KIND_TONE: Record<MotionKind, string> = { "RAISE CASH": "#facc15", EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
 const OUTCOME_TONE: Record<Outcome, string> = { CARRIED: "#34d399", DEFERRED: "#fbbf24", FAILED: "#94a3b8" };
 const BALLOT_TONE: Record<Ballot, string> = { FOR: "#34d399", AGAINST: "#f87171", ABSTAIN: "#64748b" };
+const ROW_TONE: Record<NonNullable<DeskRow["tone"]>, string> = { good: "#34d399", warn: "#fbbf24", bad: "#f87171", neutral: "var(--fg)" };
 
 type Filter = "all" | "reduce" | "deploy" | "hold";
 
@@ -70,6 +74,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
   const [refreshKey, setRefreshKey] = useState(0);
   const [filter, setFilter] = useState<Filter>("all");
   const [openMotion, setOpenMotion] = useState<string | null>(null);
+  const [openDesks, setOpenDesks] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let active = true;
@@ -116,6 +121,16 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
       deferred: all.filter((m) => m.outcome === "DEFERRED").length,
     };
   }, [meeting?.motions]);
+
+  const deskStats = useMemo(() => {
+    const desks = meeting?.deskReports ?? [];
+    return {
+      total: desks.length,
+      withRows: desks.filter((d) => d.rows.length > 0).length,
+      rows: desks.reduce((sum, d) => sum + d.rows.length, 0),
+      gaps: desks.reduce((sum, d) => sum + d.gaps.length, 0),
+    };
+  }, [meeting?.deskReports]);
 
   if (loading) return <section className="card"><p className="muted">{tr(lang, "Convening the committee — gathering each desk's measurements…", "กำลังเรียกประชุม — รวบรวมการวัดผลจากแต่ละฝ่าย…")}</p></section>;
   if (error || !meeting) {
@@ -168,6 +183,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
           {[
             ["agenda", tr(lang, "Agenda", "ระเบียบวาระ")],
             ["attendance", tr(lang, "Attendance", "ผู้เข้าประชุม")],
+            ["desks", tr(lang, "Desk reports", "รายงานแต่ละฝ่าย")],
             ["motions", tr(lang, "Motions", "ญัตติ")],
             ["capital", tr(lang, "Capital plan", "แผนเงินทุน")],
             ["blotter", tr(lang, "Trade blotter", "รายการซื้อขาย")],
@@ -187,8 +203,8 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
         <div className="grid cols-2">
           {meeting.agenda.map((item) => (
             <article key={item.n} className="metric" style={{ alignItems: "flex-start", opacity: item.covered ? 1 : 0.65 }}>
-              <span>{item.covered ? "●" : "○"} {tr(lang, "Item", "วาระที่")} {item.n} · {item.title}</span>
-              <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{item.summary}</strong>
+              <div className="label">{item.covered ? "●" : "○"} {tr(lang, "Item", "วาระที่")} {item.n} · {item.title}</div>
+              <strong className="value" style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{item.summary}</strong>
             </article>
           ))}
         </div>
@@ -219,9 +235,71 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
         </div>
       </section>
 
-      {/* ── 3. Macro ── */}
+      {/* ── 3. Desk reports — the work itself, not the remit ── */}
+      <section className="card" id="ic-desks">
+        <Head n="3" title={tr(lang, "Desk reports — what each seat measured", "รายงานของแต่ละฝ่าย — ผลการวัดจริง")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang,
+            "The table above says what each desk is responsible for. This is what each desk actually found in this book: the readings, the conclusion drawn from them, and what it could not measure. Every motion below is built from these lines and nothing else.",
+            "ตารางด้านบนบอกว่าแต่ละฝ่ายรับผิดชอบอะไร ส่วนนี้คือสิ่งที่แต่ละฝ่ายวัดได้จริงจากพอร์ตนี้ — ตัวเลขที่อ่านได้ ข้อสรุปจากตัวเลขนั้น และสิ่งที่วัดไม่ได้ ทุกญัตติด้านล่างสร้างจากบรรทัดเหล่านี้เท่านั้น")}
+        </p>
+        <div className="grid cols-3" style={{ marginTop: 14 }}>
+          <Metric label={tr(lang, "Desks reporting", "ฝ่ายที่มีผลการวัด")} value={`${deskStats.withRows} / ${deskStats.total}`} />
+          <Metric label={tr(lang, "Measurements tabled", "จำนวนรายการที่วัดได้")} value={String(deskStats.rows)} />
+          <Metric label={tr(lang, "Gaps declared", "ช่องว่างที่ประกาศไว้")} value={String(deskStats.gaps)} />
+        </div>
+
+        <div className="grid cols-2" style={{ marginTop: 16 }}>
+          {(meeting.deskReports ?? []).map((desk) => {
+            const open = openDesks.has(desk.member);
+            const shown = open ? desk.rows : desk.rows.slice(0, 4);
+            return (
+              <article key={desk.member} className="card" style={{ margin: 0, opacity: desk.rows.length ? 1 : 0.75 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div>
+                    <strong style={{ fontSize: 15 }}>{desk.member}</strong>
+                    <small className="muted" style={{ display: "block" }}>{desk.role} · {desk.desk}</small>
+                  </div>
+                  {desk.headline && <span className="tag" style={{ whiteSpace: "nowrap" }}>{desk.headline}</span>}
+                </div>
+
+                {shown.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    {shown.map((row, i) => (
+                      <div key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 }}>
+                          <span className="muted">{row.label}</span>
+                          <strong style={{ color: ROW_TONE[row.tone ?? "neutral"], textAlign: "right" }}>{row.value}</strong>
+                        </div>
+                        {row.note && <small className="muted" style={{ display: "block", marginTop: 2, fontSize: 11.5, lineHeight: 1.45 }}>{row.note}</small>}
+                      </div>
+                    ))}
+                    {desk.rows.length > 4 && (
+                      <button className="btn ghost sm" type="button" style={{ marginTop: 10 }}
+                        onClick={() => setOpenDesks((prev) => { const next = new Set(prev); next.has(desk.member) ? next.delete(desk.member) : next.add(desk.member); return next; })}>
+                        {open ? tr(lang, "Show fewer", "แสดงน้อยลง") : `+ ${desk.rows.length - 4} ${tr(lang, "more measurements", "รายการเพิ่มเติม")}`}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <p style={{ margin: "12px 0 0", fontSize: 13, lineHeight: 1.6 }}>{desk.finding}</p>
+
+                {desk.gaps.length > 0 && (
+                  <div className="notice" style={{ marginTop: 12, fontSize: 12 }}>
+                    <b>{tr(lang, "Could not measure", "วัดไม่ได้")}</b>
+                    <p style={{ margin: "5px 0 0", lineHeight: 1.55 }}>{desk.gaps.join(" · ")}</p>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ── 4. Macro ── */}
       <section className="card">
-        <Head n="3" title={tr(lang, "Macro regime and cash policy", "สภาวะตลาดและนโยบายเงินสด")} />
+        <Head n="4" title={tr(lang, "Macro regime and cash policy", "สภาวะตลาดและนโยบายเงินสด")} />
         {meeting.regime ? (
           <>
             <div className="grid cols-4">
@@ -239,7 +317,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 4. Motions ── */}
       <section className="card" id="ic-motions">
-        <Head n="4" title={tr(lang, "Motions", "ญัตติ")} />
+        <Head n="5" title={tr(lang, "Motions", "ญัตติ")} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {([
             ["all", tr(lang, "All", "ทั้งหมด"), counts.all],
@@ -318,7 +396,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 5. Capital plan ── */}
       <section className="card" id="ic-capital">
-        <Head n="5" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
+        <Head n="6" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Uses may not exceed sources. When the meeting approves more buying than it has funded, the lowest-conviction uses are cut and named — never dropped quietly.",
             "การใช้เงินต้องไม่เกินแหล่งเงิน หากที่ประชุมอนุมัติซื้อมากกว่าเงินที่มี ญัตติที่มีความเชื่อมั่นต่ำสุดจะถูกตัดออกและระบุชื่อไว้ ไม่ตัดทิ้งเงียบๆ")}
@@ -366,7 +444,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 6. Blotter ── */}
       <section className="card" id="ic-blotter">
-        <Head n="6" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
+        <Head n="7" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
         {meeting.blotter.length ? (
           <>
             <div className="table-wrap">
@@ -399,7 +477,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 7. Resolutions and dissent ── */}
       <section className="card" id="ic-resolutions">
-        <Head n="7" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
+        <Head n="8" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>{tr(lang, "Status", "สถานะ")}</th><th>{tr(lang, "Resolution", "มติ")}</th><th>{tr(lang, "Owner", "ผู้รับผิดชอบ")}</th><th>{tr(lang, "Review by", "ทบทวนภายใน")}</th></tr></thead>
@@ -432,7 +510,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 8. Risk register and round table ── */}
       <section className="card" id="ic-risk">
-        <Head n="8" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
+        <Head n="9" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Any desk may file a risk, with the measurement behind it. Risk is not one person's column.",
             "ทุกฝ่ายสามารถแจ้งความเสี่ยงได้ พร้อมหลักฐานการวัด ความเสี่ยงไม่ใช่หน้าที่ของคนเดียว")}
@@ -462,8 +540,8 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
             <div className="grid cols-2" style={{ marginTop: 10 }}>
               {meeting.roundTable.map((entry) => (
                 <article key={entry.member} className="metric" style={{ alignItems: "flex-start", opacity: entry.tabled ? 1 : 0.65 }}>
-                  <span>{entry.member} · {entry.role}</span>
-                  <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{entry.view}</strong>
+                  <div className="label">{entry.member} · {entry.role}</div>
+                  <strong className="value" style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{entry.view}</strong>
                 </article>
               ))}
             </div>
@@ -490,7 +568,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 9. Minutes ── */}
       <section className="card" id="ic-minutes">
-        <Head n="9" title={tr(lang, "Minutes", "รายงานการประชุม")} />
+        <Head n="10" title={tr(lang, "Minutes", "รายงานการประชุม")} />
         <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
           {meeting.minutes.map((line, i) => <li key={i}>{line}</li>)}
         </ol>
@@ -516,10 +594,10 @@ function Head({ n, title }: { n: string; title: string }) {
   return <h3 className="sub" style={{ marginTop: 0 }}><span className="tag" style={{ marginRight: 8 }}>{n}</span>{title}</h3>;
 }
 function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="metric"><span>{label}</span><strong style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
+  return <div className="metric"><div className="label">{label}</div><strong className="value" style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
 }
 function Guard({ title, text }: { title: string; text: string }) {
-  return <div className="metric"><span>{title}</span><strong style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 500 }}>{text}</strong></div>;
+  return <div className="metric"><div className="label">{title}</div><strong className="value" style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 500 }}>{text}</strong></div>;
 }
 function Coverage({ value }: { value: number }) {
   const tone = value >= 80 ? "#34d399" : value >= 50 ? "#fbbf24" : "#f87171";
