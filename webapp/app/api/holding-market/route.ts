@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dailyCandles, getLightQuote } from "@/lib/marketData";
+import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export async function GET(req:NextRequest){
 
   const rows=await mapLimit(tickers,5,async ticker=>{
     try{
-      const [candles,quote]=await Promise.all([dailyCandles(ticker,320).catch(()=>[]),getLightQuote(ticker).catch(()=>null)]);
+      const [candles,quote]=await Promise.all([dailyCandles(ticker,460).catch(()=>[]),getLightQuote(ticker).catch(()=>null)]);
       if(!candles.length&&!quote)return {ticker,data:null};
       const price=quote?.price??candles.at(-1)?.close??null;
       const closes=candles.map(c=>c.close).filter(x=>Number.isFinite(x)&&x>0);
@@ -36,7 +37,8 @@ export async function GET(req:NextRequest){
       const high52=year.length?Math.max(...year.map(c=>c.high)):null;
       const pos52=price!=null&&low52!=null&&high52!=null&&high52>low52?Math.max(0,Math.min(100,(price-low52)/(high52-low52)*100)):null;
       const ytdStart=ytd[0]?.close??null;
-      return {ticker,data:{price,change1w,ytdChangePct:pct(ytdStart,price),ytdSeries,low52,high52,pos52,asOf:quote?.asOf??candles.at(-1)?.date??null}};
+      const technicalOverlay=computePortfolioTechnicalOverlay(candles);
+      return {ticker,data:{price,change1w,ytdChangePct:pct(ytdStart,price),ytdSeries,low52,high52,pos52,technicalOverlay,asOf:quote?.asOf??candles.at(-1)?.date??null}};
     }catch{return {ticker,data:null};}
   });
   return NextResponse.json({items:Object.fromEntries(rows.map(r=>[r.ticker,r.data]))});
