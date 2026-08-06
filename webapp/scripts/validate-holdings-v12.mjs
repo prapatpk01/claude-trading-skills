@@ -16,7 +16,9 @@ requireTokens("app/components/HoldingsDashboardV12.tsx",[
 // (the method is now chosen at the call site rather than hard-coded), so assert
 // the capability rather than the literal string a previous version used.
 requireTokens("app/components/HoldingsMarketMonitor.tsx",[
- "holding-reconciliation","Shares","Average cost","Save corrected holding","reconcil","PATCH"
+ "holding-reconciliation","Shares","Average cost","Save corrected holding","reconcil","PATCH",
+ "Portfolio & Watchlist Market Monitor","/api/watchlist","TECHNICAL WATCHLIST OVERLAY","BUY CANDIDATE","AVOID NEW BUY","REMOVE REVIEW",
+ "Investment must verify thesis, valuation and catalyst","No automatic promotion or execution","WatchlistTable"
 ]);
 requireTokens("app/api/portfolio/route.ts",[
  "execute_portfolio_trade","export async function PATCH","export async function DELETE","Shares support up to 7 decimal places","split-brain"
