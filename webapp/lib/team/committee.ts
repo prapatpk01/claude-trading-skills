@@ -340,7 +340,10 @@ function addDays(iso: string, days: number): string {
  * reduction or external contribution can repair a genuine policy shortfall.
  */
 function motionForLiquidity(input: CommitteeInput): Omit<Motion, "votes" | "decisionGates" | "tally" | "outcome" | "outcomeReason" | "veto">[] {
-  const floorPct = input.regime?.cashMinPct ?? input.targetCashPct;
+  // The Cash Buffer API is the single policy source. Its target already
+  // incorporates the current regime; do not replace it with a second regime
+  // calculation or the meeting can manufacture a shortfall that does not exist.
+  const floorPct = input.targetCashPct ?? input.regime?.cashMinPct;
   if (floorPct == null || input.nav <= 0) return [];
   const targetCash = (floorPct / 100) * input.nav;
   const currentBuffer = input.cashBufferPct != null ? (input.cashBufferPct / 100) * input.nav : input.cashBalance;
@@ -1214,7 +1217,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && liquidity.length) {
       veto = {
         member: ROSTER.miriam.name,
-        reason: `Total Cash Buffer is ${plain(input.cashBufferPct)}% against a ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. New risk positions stay blocked until the combined USD-plus-reserve buffer is restored — see the liquidity motion.`,
+        reason: `Total Cash Buffer is ${plain(input.cashBufferPct)}% against a ${plain(input.targetCashPct ?? input.regime?.cashMinPct)}% floor. New risk positions stay blocked until the combined USD-plus-reserve buffer is restored — see the liquidity motion.`,
       };
     }
     if (!veto && (draft.kind === "ADD" || draft.kind === "NEW BUY") && input.nav > 0) {
@@ -1448,7 +1451,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const agenda: AgendaItem[] = [
     { n: 1, title: "Call to order and quorum", covered: true, summary: quorum.note },
     { n: 2, title: "Macro regime and cash policy", covered: input.regime != null, summary: [
-      input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash Buffer floor ${input.regime.cashMinPct}%, currently ${plain(input.cashBufferPct)}% including USD and approved reserves. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash Buffer policy stands at its last setting.",
+      input.regime ? `${input.regime.icon} ${input.regime.regime} at ${input.regime.score}/100. Cash Buffer policy target ${plain(input.targetCashPct ?? input.regime.cashMinPct)}%, currently ${plain(input.cashBufferPct)}% including USD and approved reserves. ${input.regime.deployRule}` : "No regime read: the benchmark history the macro desk needs was unavailable. Cash Buffer policy stands at its last setting.",
       liquidity.length ? `The buffer is short by ${money(liquidity.reduce((sum, motion) => sum + -motion.sizeUsd, 0))} and ${liquidity.length} executable liquidity motion(s) are on the agenda. New risk positions are blocked until it is met.` : "",
     ].filter(Boolean).join(" ") },
     { n: 3, title: "Portfolio review", covered: input.positions.length > 0, summary: input.positions.length ? `${input.positions.length} position(s) reviewed at ${money(input.nav)} NAV. ${holds.length} hold, ${trims.length} trim, ${exits.length} exit.` : "No open positions to review." },
@@ -1465,7 +1468,7 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
     `${meetingId} · ${asOf.slice(0, 10)} · NAV ${money(input.nav)} · chaired by ${ROSTER.james.name}.`,
     quorum.note,
     ...(liqMotions.length
-      ? [`Liquidity: total Cash Buffer is ${plain(input.cashBufferPct)}% versus the ${plain(input.regime?.cashMinPct ?? input.targetCashPct)}% floor. ${carriedLiquidity.length ? `Approved: ${carriedLiquidity.map((m) => `sell ${money(m.sizeUsd)} of ${m.ticker}`).join("; ")}, proceeds retained in USD or approved reserves. New risk positions remain blocked until settlement.` : liqMotions.map((m) => m.outcomeReason).join(" ")}`]
+      ? [`Liquidity: total Cash Buffer is ${plain(input.cashBufferPct)}% versus the ${plain(input.targetCashPct ?? input.regime?.cashMinPct)}% floor. ${carriedLiquidity.length ? `Approved: ${carriedLiquidity.map((m) => `sell ${money(m.sizeUsd)} of ${m.ticker}`).join("; ")}, proceeds retained in USD or approved reserves. New risk positions remain blocked until settlement.` : liqMotions.map((m) => m.outcomeReason).join(" ")}`]
       : []),
     input.regime ? `Macro: ${input.regime.regime} at ${input.regime.score}/100. ${input.regime.note}` : "Macro: no regime read available this meeting.",
     exits.length ? `Exits proposed: ${exits.map((m) => `${m.ticker} (${m.outcome.toLowerCase()})`).join(", ")}.` : "No exit was proposed.",
