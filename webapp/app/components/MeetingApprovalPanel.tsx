@@ -1,17 +1,13 @@
 "use client";
 
-// Stage 5: the human approval screen.
-//
-// This is the only place in the app where a person turns the committee's
-// recommendation into a ledger entry. Three things it deliberately will not do:
-//
-//   It does not pre-approve anything. Every line starts undecided, including
-//   the ones the committee carried unanimously.
-//   It does not carry the committee's reference price into the ledger. That
-//   number is an estimate; a fill is a fact, and the two must not be confused.
-//   It does not submit twice. Once a meeting is applied the form locks.
+// Stage 5 is a broker-to-committee reconciliation, not an execution screen.
+// The portfolio ledger is already the source of truth after the owner records
+// the real broker trade in Holdings. This panel finds those transactions,
+// proposes a checklist, and records the owner's accept/reject decision without
+// creating the same trade a second time.
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReconciliationMatch } from "@/lib/committeeReconciliation";
 import type { AppLang } from "../page";
 
 type Verdict = "PENDING" | "APPROVED" | "AMENDED" | "REJECTED";
@@ -29,238 +25,188 @@ export interface ApprovalMotion {
 
 interface Line extends ApprovalMotion {
   verdict: Verdict;
-  shares: string;
-  price: string;
   note: string;
 }
 
 const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
-const money = (v: number) => `${v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
-const SELLS = new Set(["EXIT", "TRIM", "RAISE CASH"]);
-const VERDICT_TONE: Record<Verdict, string> = { PENDING: "#64748b", APPROVED: "#34d399", AMENDED: "#38bdf8", REJECTED: "#f87171" };
+const money = (value: number | null | undefined) => value == null
+  ? "—"
+  : `${value < 0 ? "−" : ""}$${Math.abs(Math.round(value)).toLocaleString("en-US")}`;
+const statusTone: Record<ReconciliationMatch["status"], string> = {
+  MATCHED: "#34d399", DIFFERENT: "#fbbf24", NOT_FOUND: "#94a3b8",
+};
 
 export default function MeetingApprovalPanel({
   lang, meetingId, meeting, motions, approvalReady = true, approvalBlockReason, onApplied,
 }: {
   lang: AppLang;
   meetingId: string;
-  /** The meeting object, passed through to the minutes record verbatim. */
   meeting?: Record<string, unknown>;
   motions: ApprovalMotion[];
   approvalReady?: boolean;
   approvalBlockReason?: string;
   onApplied?: () => void;
 }) {
-  const [approvedBy, setApprovedBy] = useState("");
-  const [tradeDate, setTradeDate] = useState(new Date().toISOString().slice(0, 10));
-  const [lines, setLines] = useState<Line[]>(() =>
-    motions.filter((m) => m.kind !== "HOLD").map((m) => ({
-      ...m,
-      verdict: "PENDING" as Verdict,
-      shares: m.approxShares != null ? String(m.approxShares) : "",
-      price: "",
-      note: "",
-    }))
-  );
+  const initialDate = String(meeting?.asOf ?? new Date().toISOString()).slice(0, 10);
+  const [approvedBy, setApprovedBy] = useState(() => typeof window === "undefined" ? "" : localStorage.getItem("sentinel.approverName") ?? "");
+  const [tradeDate, setTradeDate] = useState(initialDate);
+  const [lines, setLines] = useState<Line[]>(() => motions.filter((motion) => motion.kind !== "HOLD").map((motion) => ({ ...motion, verdict: "PENDING", note: "" })));
+  const [matches, setMatches] = useState<ReconciliationMatch[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [checkedOnce, setCheckedOnce] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const initialCheckStarted = useRef(false);
 
-  const update = (id: string, patch: Partial<Line>) =>
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const matchById = useMemo(() => new Map(matches.map((match) => [match.resolutionId, match])), [matches]);
+  const update = (id: string, patch: Partial<Line>) => setLines((previous) => previous.map((line) => line.id === id ? { ...line, ...patch } : line));
 
-  const decided = lines.filter((l) => l.verdict !== "PENDING");
-  const willTrade = lines.filter((l) => l.verdict === "APPROVED" || l.verdict === "AMENDED");
-  const missingPrice = willTrade.filter((l) => !(Number(l.price) > 0));
-  const missingShares = willTrade.filter((l) => !(Number(l.shares) > 0));
+  const reconcile = useCallback(async () => {
+    if (!lines.length || checking || result) return;
+    setChecking(true); setError(null);
+    try {
+      const response = await fetch("/api/committee/minutes", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meetingId, tradeDate, tolerancePct: 40,
+          motions: lines.map((line) => ({ id: line.id, ticker: line.ticker, kind: line.kind, proposedUsd: line.sizeUsd, proposedShares: line.approxShares })),
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error ?? "Holdings reconciliation failed.");
+      const found: ReconciliationMatch[] = Array.isArray(json.matches) ? json.matches : [];
+      setMatches(found);
+      const byId = new Map(found.map((match) => [match.resolutionId, match]));
+      setLines((previous) => previous.map((line) => {
+        if (line.verdict === "REJECTED") return line;
+        const match = byId.get(line.id);
+        return { ...line, verdict: match?.status === "MATCHED" ? "APPROVED" : "PENDING" };
+      }));
+      setCheckedOnce(true);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : "Holdings reconciliation failed.");
+    } finally { setChecking(false); }
+  }, [checking, lines, meetingId, result, tradeDate]);
 
+  useEffect(() => {
+    if (initialCheckStarted.current || !lines.length) return;
+    initialCheckStarted.current = true;
+    void reconcile();
+  }, [lines.length, reconcile]);
+
+  const pending = lines.filter((line) => line.verdict === "PENDING");
+  const confirmed = lines.filter((line) => line.verdict === "APPROVED" || line.verdict === "AMENDED");
   const blockers = useMemo(() => {
-    const out: string[] = [];
-    if (!approvalReady) out.push(approvalBlockReason ?? tr(lang, "The capital plan is incomplete.", "แผนเงินทุนยังไม่ครบถ้วน"));
-    if (!approvedBy.trim()) out.push(tr(lang, "An approver name is required.", "ต้องระบุชื่อผู้อนุมัติ"));
-    if (!decided.length) out.push(tr(lang, "No line has been decided yet.", "ยังไม่ได้ตัดสินใจรายการใดเลย"));
-    if (missingPrice.length) out.push(tr(lang, `An execution price is missing for ${missingPrice.map((l) => l.ticker).join(", ")}.`, `ยังไม่ได้กรอกราคาที่ซื้อขายจริงของ ${missingPrice.map((l) => l.ticker).join(", ")}`));
-    if (missingShares.length) out.push(tr(lang, `A share count is missing for ${missingShares.map((l) => l.ticker).join(", ")}.`, `ยังไม่ได้กรอกจำนวนหุ้นของ ${missingShares.map((l) => l.ticker).join(", ")}`));
-    return out;
-  }, [approvalReady, approvalBlockReason, approvedBy, decided.length, missingPrice, missingShares, lang]);
+    const output: string[] = [];
+    if (!approvalReady) output.push(approvalBlockReason ?? tr(lang, "The capital plan is incomplete.", "แผนเงินทุนยังไม่ครบถ้วน"));
+    if (!approvedBy.trim()) output.push(tr(lang, "Enter the portfolio owner's name once.", "กรอกชื่อเจ้าของพอร์ตหนึ่งครั้ง"));
+    if (!checkedOnce) output.push(tr(lang, "Check the actual Holdings transactions first.", "กดตรวจรายการจริงจาก Holdings ก่อน"));
+    if (pending.length) output.push(tr(lang, `Decide the remaining ${pending.length} line(s): confirm or reject.`, `ตัดสินใจอีก ${pending.length} รายการ: ยืนยันหรือปฏิเสธ`));
+    return output;
+  }, [approvalReady, approvalBlockReason, approvedBy, checkedOnce, pending.length, lang]);
 
   async function submit() {
-    if (blockers.length || submitting || result?.recorded) return;
+    if (blockers.length || submitting || result) return;
     setSubmitting(true); setError(null);
     try {
+      localStorage.setItem("sentinel.approverName", approvedBy.trim());
       const response = await fetch("/api/committee/minutes", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          humanApproved: true,
-          approvedBy: approvedBy.trim(),
-          meetingId,
-          tradeDate,
+          mode: "RECONCILE_EXISTING", tolerancePct: 40,
+          humanApproved: true, approvedBy: approvedBy.trim(), meetingId, tradeDate,
           ...(meeting ?? {}),
-          decisions: decided.map((l) => ({
-            resolutionId: l.id, ticker: l.ticker, kind: l.kind,
-            proposedUsd: l.sizeUsd, proposedShares: l.approxShares,
-            verdict: l.verdict,
-            approvedShares: Number(l.shares) || null,
-            approvedPrice: Number(l.price) || null,
-            note: l.note || null,
+          decisions: lines.map((line) => ({
+            resolutionId: line.id, ticker: line.ticker, kind: line.kind,
+            proposedUsd: line.sizeUsd, proposedShares: line.approxShares,
+            verdict: line.verdict, note: line.note || null,
           })),
         }),
       });
       const json = await response.json();
-      if (!response.ok && response.status !== 207) throw new Error(json?.error ?? "The approval could not be submitted.");
-      setResult(json);
-      onApplied?.();
+      if (!response.ok && response.status !== 207) throw new Error(json?.error ?? "The reconciliation could not be recorded.");
+      setResult(json); onApplied?.();
     } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : "The approval could not be submitted.");
+      setError(cause instanceof Error ? cause.message : "The reconciliation could not be recorded.");
     } finally { setSubmitting(false); }
   }
 
   const locked = Boolean(result);
 
   return (
-    <section className="card" data-approval-version="1.0" style={{ borderTop: "2px solid var(--accent)" }}>
+    <section className="card" data-approval-version="2.0-auto-reconcile" style={{ borderTop: "2px solid var(--accent)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div>
-          <span className="tag">{tr(lang, "STAGE 5 · HUMAN APPROVAL", "ขั้นที่ 5 · การอนุมัติโดยมนุษย์")}</span>
-          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Approve, amend or reject each line", "อนุมัติ แก้ไข หรือปฏิเสธทีละรายการ")}</h3>
-          <p className="muted" style={{ margin: 0, maxWidth: 780, fontSize: 13 }}>
+          <span className="tag">{tr(lang, "STAGE 5 · AUTO RECONCILE CHECKLIST", "ขั้นที่ 5 · เช็กลิสต์เทียบพอร์ตอัตโนมัติ")}</span>
+          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Record real trades in Holdings, then confirm the matches", "แก้ Holdings ตามพอร์ตจริง แล้วตรวจยืนยันรายการที่จับคู่ได้")}</h3>
+          <p className="muted" style={{ margin: 0, maxWidth: 820, fontSize: 13 }}>
             {tr(lang,
-              "Every line starts undecided, including the ones the committee carried unanimously. Record the price the trade actually filled at — the committee's reference price is an estimate, and the ledger holds facts.",
-              "ทุกรายการเริ่มต้นที่ยังไม่ตัดสินใจ แม้แต่รายการที่ที่ประชุมผ่านเป็นเอกฉันท์ ให้กรอกราคาที่ซื้อขายได้จริง — ราคาอ้างอิงของที่ประชุมเป็นค่าประมาณ ส่วน ledger เก็บข้อเท็จจริง")}
+              "The system matches ticker, BUY/SELL direction and transactions from the meeting date. A size within ±40% is checked automatically. Different sizes remain available as amendments; rejected ideas never change the portfolio. Recording this checklist does not create another trade.",
+              "ระบบจับคู่ชื่อหุ้น ฝั่ง BUY/SELL และธุรกรรมตั้งแต่วันประชุม หากขนาดต่างไม่เกิน ±40% จะติ๊กให้อัตโนมัติ ขนาดที่ต่างกว่านั้นยืนยันเป็นรายการแก้ไขได้ ส่วนหุ้นที่ปฏิเสธจะไม่เปลี่ยนพอร์ต การบันทึกเช็กลิสต์จะไม่สร้างรายการซื้อขายซ้ำ")}
           </p>
         </div>
         <span className="tag">{meetingId}</span>
       </div>
 
-      {!approvalReady && <div className="err" style={{ marginTop: 16 }}>⚠ {tr(lang, "APPROVAL LOCKED", "ล็อกการอนุมัติ")} · {approvalBlockReason ?? tr(lang, "Complete the capital allocation plan first.", "ต้องจัดทำแผนจัดสรรเงินให้ครบก่อน")}</div>}
+      {!approvalReady && <div className="err" style={{ marginTop: 16 }}>⚠ {tr(lang, "APPROVAL LOCKED", "ล็อกการอนุมัติ")} · {approvalBlockReason}</div>}
 
-      {lines.length === 0 ? (
-        <div className="notice" style={{ marginTop: 16 }}>
-          {tr(lang, "No motion carried with a trade attached. Nothing to approve.", "ไม่มีญัตติที่ผ่านพร้อมรายการซื้อขาย ไม่มีอะไรให้อนุมัติ")}
-        </div>
-      ) : (
-        <>
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>{tr(lang, "Motion", "ญัตติ")}</th>
-                  <th>{tr(lang, "Committee proposed", "ที่ประชุมเสนอ")}</th>
-                  <th>{tr(lang, "Decision", "การตัดสินใจ")}</th>
-                  <th className="num">{tr(lang, "Shares", "จำนวนหุ้น")}</th>
-                  <th className="num">{tr(lang, "Fill price", "ราคาที่ได้จริง")}</th>
-                  <th>{tr(lang, "Note", "หมายเหตุ")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l) => {
-                  const side = SELLS.has(l.kind) ? "SELL" : "BUY";
-                  return (
-                    <tr key={l.id} style={{ opacity: l.verdict === "REJECTED" ? 0.55 : 1 }}>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <strong>{l.ticker}</strong>
-                        <small style={{ display: "block", color: side === "SELL" ? "#f87171" : "#34d399", fontWeight: 600 }}>{side} · {l.kind}</small>
-                      </td>
-                      <td style={{ fontSize: 13 }}>
-                        {money(l.sizeUsd)}{l.approxShares != null ? ` · ~${l.approxShares.toLocaleString()} ${tr(lang, "shares", "หุ้น")}` : ""}
-                        <small style={{ display: "block", color: "var(--muted)" }}>{l.referencePrice == null ? tr(lang, "no reference price", "ไม่มีราคาอ้างอิง") : `${tr(lang, "ref", "อ้างอิง")} $${l.referencePrice.toFixed(2)}`}</small>
-                      </td>
-                      <td>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {(["APPROVED", "AMENDED", "REJECTED"] as Verdict[]).map((v) => (
-                            <button
-                              key={v} type="button" disabled={locked}
-                              className={`btn ${l.verdict === v ? "" : "ghost"} sm`}
-                              style={l.verdict === v ? { borderColor: VERDICT_TONE[v], color: VERDICT_TONE[v] } : undefined}
-                              onClick={() => update(l.id, { verdict: l.verdict === v ? "PENDING" : v })}
-                            >
-                              {v === "APPROVED" ? tr(lang, "Approve", "อนุมัติ") : v === "AMENDED" ? tr(lang, "Amend", "แก้ไข") : tr(lang, "Reject", "ปฏิเสธ")}
-                            </button>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="num">
-                        <input value={l.shares} disabled={locked || l.verdict === "REJECTED" || l.verdict === "PENDING"} inputMode="decimal"
-                          onChange={(e) => update(l.id, { shares: e.target.value })} style={{ width: 90, textAlign: "right" }} />
-                      </td>
-                      <td className="num">
-                        <input value={l.price} disabled={locked || l.verdict === "REJECTED" || l.verdict === "PENDING"} inputMode="decimal"
-                          placeholder={tr(lang, "required", "ต้องกรอก")} onChange={(e) => update(l.id, { price: e.target.value })}
-                          style={{ width: 100, textAlign: "right", borderColor: (l.verdict === "APPROVED" || l.verdict === "AMENDED") && !(Number(l.price) > 0) ? "#f87171" : undefined }} />
-                      </td>
-                      <td>
-                        <input value={l.note} disabled={locked} onChange={(e) => update(l.id, { note: e.target.value })}
-                          placeholder={tr(lang, "optional", "ไม่บังคับ")} style={{ minWidth: 130 }} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 16 }}>
+        <input type="date" value={tradeDate} disabled={locked || checking} onChange={(event) => { setTradeDate(event.target.value); setCheckedOnce(false); setMatches([]); }} />
+        <button className="btn" type="button" onClick={reconcile} disabled={locked || checking || !lines.length}>
+          {checking ? tr(lang, "Checking Holdings…", "กำลังตรวจ Holdings…") : tr(lang, "↻ Check actual Holdings", "↻ ตรวจรายการจริงจาก Holdings")}
+        </button>
+        {checkedOnce && <span className="tag">{matches.filter((match) => match.status === "MATCHED").length} {tr(lang, "auto-matched", "ตรงอัตโนมัติ")} · {matches.filter((match) => match.status === "DIFFERENT").length} {tr(lang, "different size", "ขนาดต่าง")}</span>}
+      </div>
 
-          <div className="searchbar" style={{ marginTop: 16 }}>
-            <input value={approvedBy} disabled={locked} onChange={(e) => setApprovedBy(e.target.value)}
-              placeholder={tr(lang, "Approver name — required", "ชื่อผู้อนุมัติ — ต้องกรอก")} style={{ flex: 1, minWidth: 200 }} />
-            <input type="date" value={tradeDate} disabled={locked} onChange={(e) => setTradeDate(e.target.value)} />
-            <button className="btn" type="button" onClick={submit} disabled={locked || submitting || blockers.length > 0}>
-              {submitting ? tr(lang, "Applying…", "กำลังบันทึก…") : locked ? tr(lang, "Applied", "บันทึกแล้ว") : tr(lang, `Apply ${willTrade.length} trade(s) and record the minutes`, `บันทึก ${willTrade.length} รายการและเก็บรายงานการประชุม`)}
-            </button>
-          </div>
+      <div className="table-wrap" style={{ marginTop: 16 }}>
+        <table className="tbl">
+          <thead><tr>
+            <th>{tr(lang, "Proposal", "ข้อเสนอ")}</th>
+            <th>{tr(lang, "Actual Holdings transaction", "รายการจริงใน Holdings")}</th>
+            <th>{tr(lang, "Auto status", "ผลตรวจอัตโนมัติ")}</th>
+            <th>{tr(lang, "Your checklist", "เช็กลิสต์ของคุณ")}</th>
+            <th>{tr(lang, "Note", "หมายเหตุ")}</th>
+          </tr></thead>
+          <tbody>{lines.map((line) => {
+            const match = matchById.get(line.id);
+            const accepted = line.verdict === "APPROVED" || line.verdict === "AMENDED";
+            return <tr key={line.id} style={{ opacity: line.verdict === "REJECTED" ? 0.55 : 1 }}>
+              <td style={{ whiteSpace: "nowrap" }}><strong>{line.kind} {line.ticker}</strong><small style={{ display: "block", color: "var(--muted)" }}>{money(line.sizeUsd)} · ~{line.approxShares ?? "—"} {tr(lang, "shares", "หุ้น")}</small></td>
+              <td>{match?.actualShares != null ? <><strong>{match.expectedSide} {match.actualShares} {tr(lang, "shares", "หุ้น")}</strong><small style={{ display: "block", color: "var(--muted)" }}>@ ${match.actualPrice?.toFixed(2)} · {money(match.actualValueUsd)}</small></> : <span className="muted">{tr(lang, "Not found", "ยังไม่พบรายการ")}</span>}</td>
+              <td><span className="tag" style={{ color: match ? statusTone[match.status] : "#94a3b8", borderColor: match ? statusTone[match.status] : undefined }}>{match?.status ?? "NOT CHECKED"}</span>{match?.variancePct != null && <small style={{ display: "block", marginTop: 5, color: "var(--muted)" }}>{match.variancePct > 0 ? "+" : ""}{match.variancePct}% {tr(lang, "vs proposal", "เทียบข้อเสนอ")}</small>}</td>
+              <td style={{ minWidth: 210 }}>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                  <input type="checkbox" checked={accepted} disabled={locked || !match || match.status === "NOT_FOUND"} onChange={(event) => update(line.id, { verdict: event.target.checked ? (match?.status === "MATCHED" ? "APPROVED" : "AMENDED") : "PENDING" })} />
+                  {tr(lang, "This is a trade I actually made", "นี่คือรายการที่ฉันซื้อขายจริง")}
+                </label>
+                <button className="btn ghost sm" type="button" disabled={locked} onClick={() => update(line.id, { verdict: line.verdict === "REJECTED" ? "PENDING" : "REJECTED" })} style={{ marginTop: 7, color: line.verdict === "REJECTED" ? "#f87171" : undefined }}>
+                  {line.verdict === "REJECTED" ? tr(lang, "Rejected ✓", "ปฏิเสธแล้ว ✓") : tr(lang, "Reject proposal", "ไม่เห็นด้วย / ปฏิเสธ")}
+                </button>
+              </td>
+              <td><input value={line.note} disabled={locked} onChange={(event) => update(line.id, { note: event.target.value })} placeholder={tr(lang, "optional", "ไม่บังคับ")} style={{ minWidth: 140 }} /></td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
 
-          {!locked && blockers.length > 0 && (
-            <div className="notice" style={{ marginTop: 12, borderColor: "var(--amber)" }}>
-              <b>{tr(lang, "Before this can be applied", "ก่อนบันทึกได้ ต้อง")}</b>
-              <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
-                {blockers.map((b, i) => <li key={i}>{b}</li>)}
-              </ul>
-            </div>
-          )}
-          {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
-        </>
-      )}
+      <div className="searchbar" style={{ marginTop: 16 }}>
+        <input value={approvedBy} disabled={locked} onChange={(event) => setApprovedBy(event.target.value)} placeholder={tr(lang, "Portfolio owner name", "ชื่อเจ้าของพอร์ต")} style={{ flex: 1, minWidth: 200 }} />
+        <button className="btn" type="button" onClick={submit} disabled={locked || submitting || blockers.length > 0}>
+          {submitting ? tr(lang, "Recording…", "กำลังบันทึก…") : locked ? tr(lang, "Recorded", "บันทึกแล้ว") : tr(lang, `Record checklist: ${confirmed.length} confirmed`, `บันทึกเช็กลิสต์: ยืนยัน ${confirmed.length} รายการ`)}
+        </button>
+      </div>
 
-      {result && (
-        <div className="card" style={{ marginTop: 16, borderLeft: `3px solid ${result.failed?.length ? "#f87171" : "#34d399"}` }}>
-          <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Result", "ผลลัพธ์")}</h4>
-          <p style={{ margin: "0 0 10px", fontSize: 14 }}><strong>{result.summary}</strong></p>
-          {!!result.applied?.length && (
-            <div className="table-wrap">
-              <table className="tbl">
-                <thead><tr><th>{tr(lang, "Side", "ฝั่ง")}</th><th>{tr(lang, "Ticker", "หุ้น")}</th><th className="num">{tr(lang, "Shares", "หุ้น")}</th><th className="num">{tr(lang, "Price", "ราคา")}</th><th>{tr(lang, "Verdict", "มติ")}</th></tr></thead>
-                <tbody>
-                  {result.applied.map((a: any, i: number) => (
-                    <tr key={i}>
-                      <td style={{ color: a.side === "SELL" ? "#f87171" : "#34d399", fontWeight: 700 }}>{a.side}</td>
-                      <td><strong>{a.ticker}</strong></td>
-                      <td className="num">{a.shares}</td>
-                      <td className="num">${Number(a.price).toFixed(2)}</td>
-                      <td>{a.verdict}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {!!result.failed?.length && (
-            <div className="err" style={{ marginTop: 12 }}>
-              <b>{tr(lang, "Not recorded", "ไม่ได้บันทึก")}</b>
-              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                {result.failed.map((f: any, i: number) => <li key={i}>{f.ticker} {f.kind} — {f.error}</li>)}
-              </ul>
-            </div>
-          )}
-          {!!result.skipped?.length && (
-            <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>
-              {tr(lang, "Required no transaction", "ไม่ต้องมีรายการซื้อขาย")}: {result.skipped.map((s: any) => `${s.ticker} (${s.reason})`).join(" · ")}
-            </p>
-          )}
-          <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>{result.note}</p>
-          <ul className="muted" style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
-            {(result.disclosures ?? []).map((d: string, i: number) => <li key={i}>{d}</li>)}
-          </ul>
-        </div>
-      )}
+      {!locked && blockers.length > 0 && <div className="notice" style={{ marginTop: 12, borderColor: "var(--amber)" }}><b>{tr(lang, "Before recording", "ก่อนบันทึก")}</b><ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{blockers.map((blocker, index) => <li key={index}>{blocker}</li>)}</ul></div>}
+      {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
+
+      {result && <div className="card" style={{ marginTop: 16, borderLeft: `3px solid ${result.failed?.length ? "#f87171" : "#34d399"}` }}>
+        <h4 className="sub" style={{ marginTop: 0 }}>{tr(lang, "Reconciliation recorded", "บันทึกผลเทียบพอร์ตแล้ว")}</h4>
+        <p><strong>{result.summary}</strong></p>
+        {!!result.applied?.length && <div className="table-wrap"><table className="tbl"><thead><tr><th>{tr(lang, "Actual", "รายการจริง")}</th><th>{tr(lang, "Ticker", "หุ้น")}</th><th className="num">{tr(lang, "Shares", "จำนวนหุ้น")}</th><th className="num">{tr(lang, "Average price", "ราคาเฉลี่ย")}</th><th>{tr(lang, "Result", "ผล")}</th></tr></thead><tbody>{result.applied.map((item: any, index: number) => <tr key={index}><td>{item.side}</td><td><strong>{item.ticker}</strong></td><td className="num">{item.shares}</td><td className="num">${Number(item.price).toFixed(2)}</td><td>{item.verdict}{item.reconciliationStatus === "DIFFERENT" ? " · AMENDED SIZE" : ""}</td></tr>)}</tbody></table></div>}
+        {!!result.failed?.length && <div className="err" style={{ marginTop: 12 }}><ul style={{ margin: 0, paddingLeft: 18 }}>{result.failed.map((item: any, index: number) => <li key={index}>{item.ticker} — {item.error}</li>)}</ul></div>}
+        <p className="muted" style={{ fontSize: 12 }}>{result.note}</p>
+      </div>}
     </section>
   );
 }
