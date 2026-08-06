@@ -9,33 +9,31 @@ export interface Member {
 }
 
 export const ROSTER: Record<string, Member> = {
-  james: { name: "James Hartwell", role: "CIO", desk: "Executive", owns: "Final verdict, deployment approval" },
-  miriam: { name: "Miriam Osei", role: "CRO", desk: "Executive", owns: "Gate compliance, data integrity, bias checks" },
-  nina: { name: "Nina Okonkwo", role: "Data & Source Engineer", desk: "Executive", owns: "News flow, source logging, feed quality, lineage" },
-  leo: { name: "Leo Tanaka", role: "Real-time Data Analyst", desk: "Executive", owns: "Live feed parsing, timestamps" },
-  sofia: { name: "Sofia Reyes", role: "Sr. Fundamental Analyst", desk: "Research", owns: "Business quality, moat, thesis" },
-  marcus: { name: "Marcus Webb", role: "Sr. Financial Analyst", desk: "Research", owns: "Earnings trend, margins, revision momentum" },
-  // The two research seats are split by what they answer, not by title: Maya
-  // finds what is moving, Aisha decides whether there is a reason for it.
-  aisha: { name: "Aisha Fontaine", role: "Catalyst & Thematic Analyst", desk: "Research", owns: "Theme, thesis, catalyst scoring, measured PEAD, event calendar" },
-  maya: { name: "Maya Chen", role: "Momentum Analyst", desk: "Research", owns: "Momentum scoring v3.0, hard blocks, entry layer" },
-  priya: { name: "Priya Nair", role: "Quantitative Strategist", desk: "Quant", owns: "Win-rate tracking, factor attribution" },
-  thomas: { name: "Thomas Eriksson", role: "Head of Valuation", desk: "Quant", owns: "DCF, comps, margin of safety" },
-  daniel: { name: "Daniel Cho", role: "Head of Macro Strategy", desk: "Macro", owns: "Regime score, cash buffer, rotation" },
-  kai: { name: "Kai Tanaka", role: "Portfolio Risk Analyst", desk: "Risk", owns: "Sizing, ATR stops, concentration zones" },
-  lena: { name: "Lena Müller", role: "Portfolio Manager", desk: "Portfolio", owns: "Sleeve balance, dual objectives, yield" },
-  ryan: { name: "Ryan Blackwood", role: "Execution Trader", desk: "Execution", owns: "Entry mechanics, slippage" },
+  james: { name: "James Hartwell", role: "CIO / Executive Chair", desk: "Executive Management", owns: "Final APPROVE / DEFER / REJECT resolution" },
+  miriam: { name: "Miriam Osei", role: "CRO / Executive Risk", desk: "Executive Management", owns: "Independent risk PASS / CONDITIONAL / VETO" },
+  sofia: { name: "Sofia Reyes", role: "Head of Investment Research", desk: "Investment Team", owns: "Investment-team mandate, thesis quality and signed investment proposal" },
+  daniel: { name: "Daniel Cho", role: "Macro & Market Strategist", desk: "Investment Team", owns: "Regime score, cash buffer, rotation" },
+  marcus: { name: "Marcus Webb", role: "Financial Modeling Analyst", desk: "Investment Team", owns: "Earnings trend, margins, forecasts and revision momentum" },
+  thomas: { name: "Thomas Eriksson", role: "Head of Valuation", desk: "Investment Team", owns: "DCF, comps, fair-value range and margin of safety" },
+  // Aisha owns dated catalysts; Maya owns the scanner, tape and entry structure.
+  aisha: { name: "Aisha Fontaine", role: "Catalyst & Event Analyst", desk: "Investment Team", owns: "Catalyst scoring, event calendar, PEAD and invalidation triggers" },
+  maya: { name: "Maya Chen", role: "Momentum & Market Structure Analyst", desk: "Investment Team", owns: "New-idea scanner, relative strength, structure and entry layer" },
+  priya: { name: "Priya Nair", role: "Quantitative Strategist", desk: "Investment Team", owns: "Expected return, robustness, win-rate tracking and factor attribution" },
+  leo: { name: "Leo Tanaka", role: "Live Market Intelligence Analyst", desk: "Investment Team", owns: "Live feed, news, price changes and decision-change alerts" },
+  lena: { name: "Lena Müller", role: "Head of Asset Management", desk: "Asset Management Team", owns: "Signed portfolio plan, funding map and rebalance sequencing" },
+  kai: { name: "Kai Tanaka", role: "Portfolio Risk & Construction Analyst", desk: "Asset Management Team", owns: "Sizing, concentration, correlation and stress limits" },
+  ryan: { name: "Ryan Blackwood", role: "Execution & Trading Operations", desk: "Asset Management Team", owns: "Order mechanics, liquidity, staging and slippage" },
+  nina: { name: "Nina Okonkwo", role: "Portfolio Data & Control Lead", desk: "Asset Management Team", owns: "Ledger, cash reconciliation, cost basis, source quality and lineage" },
 };
 
 /**
  * The standing job, before any desk's own remit.
  *
- * Running the book is the whole team's work: every seat may table a view at the
- * portfolio review and every seat may file a risk with its evidence. A fund
- * where only the CRO is allowed to see risk has one pair of eyes on it.
+ * Every specialist may table evidence and file a risk. Only the two team heads,
+ * CRO and CIO hold sequential decision authority.
  */
 export const STANDING_DUTY =
-  "Jointly manage the holdings portfolio. Every member may table a view at the investment meeting and file a risk to the register, with the measurement behind it.";
+  "Every member may table evidence and file a measured risk. Decision authority is limited to the Investment Head, Asset Management Head, CRO and CIO.";
 
 export const FUND = {
   name: "Sentinel Global Fund",

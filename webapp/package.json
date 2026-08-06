@@ -2,7 +2,7 @@
   "name": "sentinel-investment-web",
   "version": "1.0.3",
   "private": true,
-  "description": "Sentinel Investment OS v13 institutional research, portfolio, committee and performance feedback system",
+  "description": "Sentinel Investment OS v20 decision, execution, research, portfolio and performance feedback system",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -18,7 +18,12 @@
     "validate:cio": "node scripts/validate-cio-v12.mjs",
     "validate:v13": "node scripts/validate-v13.mjs",
     "audit:safety": "node scripts/audit-runtime-safety.mjs",
-    "quality": "npm run validate:institutional && npm run audit:safety && npm run typecheck && npm run build"
+    "quality": "npm run validate:institutional && npm run audit:safety && npm run typecheck && npm run build",
+    "test:committee": "tsc lib/team/committee.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-committee.mjs .test-build && rm -rf .test-build",
+    "test:swing": "tsc lib/team/swing.ts --outDir .test-build-swing --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-swing.mjs .test-build-swing && rm -rf .test-build-swing",
+    "test:conviction": "tsc lib/team/conviction.ts --outDir .test-build-conv --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-conviction.mjs .test-build-conv && rm -rf .test-build-conv",
+    "test:engines": "npm run test:constitution && npm run test:committee && npm run test:swing && npm run test:conviction",
+    "test:constitution": "tsc lib/team/constitution.ts --outDir .test-build-const --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-constitution.mjs .test-build-const && rm -rf .test-build-const"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

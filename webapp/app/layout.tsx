@@ -3,8 +3,8 @@ import "./globals.css";
 import "./sentinel-v9.css";
 
 export const metadata: Metadata = {
-  title: "Sentinel Investment OS v10.0 · Final AI CIO",
-  description: "Final AI CIO investment operating system for evidence-first research, macro intelligence, portfolio construction, risk governance, audit trails and mandatory human-supervised decisions.",
+  title: "Sentinel Investment OS v20 · CIO Command Center",
+  description: "Decision and execution operating system for automatic opportunity discovery, portfolio review, funded investment resolutions, risk governance and mandatory human approval.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

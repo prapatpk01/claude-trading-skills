@@ -20,7 +20,10 @@ requireTokens("app/api/analyze/actions/route.ts",["WATCHLIST","COMMITTEE","analy
 requireTokens("app/api/analyze/performance/route.ts",["analysis_performance","review_30d","review_90d","review_180d","review_365d","winRatePct"]);
 requireTokens("app/api/analyze/export/route.ts",["ExcelJS","workbook.addWorksheet","Content-Disposition","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
 requireTokens("supabase/analysis_phase22.sql",["analysis_actions","analysis_performance","review_30d","review_365d"]);
-requireTokens("app/page.tsx",["StockAnalysisDashboardV12","data-sentinel-version=\"12.2\""]);
+// The mounted component is the contract. The generation number is not: pinning
+// it here made this script fail on every upgrade rather than on a regression,
+// and validate-v13.mjs already asserts the current value.
+requireTokens("app/page.tsx",["StockAnalysisDashboardV12","data-sentinel-version="]);
 
 if(failures.length){console.error(`Analyze v12.2 validation FAILED (${failures.length})`);for(const failure of failures)console.error(`- ${failure}`);process.exit(1)}
 console.log("Sentinel Analyze v12.2 dashboard validation PASSED");

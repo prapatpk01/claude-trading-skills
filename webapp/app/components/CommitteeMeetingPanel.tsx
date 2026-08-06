@@ -2,9 +2,16 @@
 
 // The investment committee meeting, as a fund actually runs one.
 //
-// Everything on this page comes from /api/committee/meeting. The component
-// formats; it decides nothing. If a number is missing here it is because no
-// desk could measure it, and the page says so rather than filling the gap.
+// This is the decision half of the CIO command centre: the Analysis team's
+// valuation work sits above it in CIOCommandCenterV16, and this panel turns
+// that evidence into motions, a recorded vote, a funded capital plan and the
+// approval that writes to the ledger.
+//
+// Everything here comes from /api/committee/meeting, which runs
+// lib/team/committee.ts against the fund's own rulebook in
+// lib/team/constitution.ts. The component formats; it decides nothing. If a
+// number is missing it is because no desk could measure it, and the panel says
+// so rather than filling the gap.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AppLang } from "../page";
@@ -22,10 +29,24 @@ type Motion = {
   votes: Vote[]; tally: { for: number; against: number; abstain: number };
   outcome: Outcome; outcomeReason: string; veto: { member: string; reason: string } | null;
 };
+type Proposal = {
+  ticker: string; setupType: string; score: number; coveragePct: number;
+  price: number; entryLow: number; entryHigh: number; stop: number; target: number;
+  riskReward: number; expectedReturnPct: number; thesis: string; catalyst: string; unmeasured: string[];
+};
+type ScanSummary = {
+  regime: { defensiveOnly: boolean; note: string } | null;
+  universeSize: number; rejected: number; warnings: string[]; note: string;
+};
+type DeskRow = { label: string; value: string; tone?: "good" | "warn" | "bad" | "neutral"; note?: string };
+type DeskReport = { member: string; role: string; desk: string; headline: string | null; rows: DeskRow[]; finding: string; gaps: string[] };
 type Meeting = {
   meetingId: string; asOf: string; nav: number;
   agenda: { n: number; title: string; covered: boolean; summary: string }[];
   attendance: { member: string; role: string; desk: string; present: boolean; contribution: string }[];
+  deskReports: DeskReport[];
+  proposals?: Proposal[];
+  scan?: ScanSummary;
   quorum: { present: number; required: number; met: boolean; note: string };
   regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
   motions: Motion[];
@@ -49,20 +70,25 @@ type Meeting = {
 const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
 const money = (v: number) => `${v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
 const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v.toFixed(d)}%`);
+// A trade level is quoted to the cent. Rounding an entry band to the dollar
+// turns a $318.50 pivot into $319 and moves the stop with it.
+const level = (v: number) => `$${v.toFixed(2)}`;
 
 const KIND_TONE: Record<MotionKind, string> = { "RAISE CASH": "#facc15", EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
 const OUTCOME_TONE: Record<Outcome, string> = { CARRIED: "#34d399", DEFERRED: "#fbbf24", FAILED: "#94a3b8" };
 const BALLOT_TONE: Record<Ballot, string> = { FOR: "#34d399", AGAINST: "#f87171", ABSTAIN: "#64748b" };
+const ROW_TONE: Record<NonNullable<DeskRow["tone"]>, string> = { good: "#34d399", warn: "#fbbf24", bad: "#f87171", neutral: "var(--fg)" };
 
 type Filter = "all" | "reduce" | "deploy" | "hold";
 
-export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
+export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filter, setFilter] = useState<Filter>("all");
   const [openMotion, setOpenMotion] = useState<string | null>(null);
+  const [openDesks, setOpenDesks] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let active = true;
@@ -110,6 +136,23 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
     };
   }, [meeting?.motions]);
 
+  // Highest score first: the desk ranks its own shortlist rather than leaving
+  // the reader to work out which name it likes best.
+  const proposals = useMemo(
+    () => [...(meeting?.proposals ?? [])].sort((a, b) => b.score - a.score),
+    [meeting?.proposals]
+  );
+
+  const deskStats = useMemo(() => {
+    const desks = meeting?.deskReports ?? [];
+    return {
+      total: desks.length,
+      withRows: desks.filter((d) => d.rows.length > 0).length,
+      rows: desks.reduce((sum, d) => sum + d.rows.length, 0),
+      gaps: desks.reduce((sum, d) => sum + d.gaps.length, 0),
+    };
+  }, [meeting?.deskReports]);
+
   if (loading) return <section className="card"><p className="muted">{tr(lang, "Convening the committee — gathering each desk's measurements…", "กำลังเรียกประชุม — รวบรวมการวัดผลจากแต่ละฝ่าย…")}</p></section>;
   if (error || !meeting) {
     return (
@@ -126,7 +169,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
   const plan = meeting.capitalPlan;
 
   return (
-    <div className="workspace-stack" data-cio-version="14.0" data-workspace="investment-committee" data-source-of-truth="committee-meeting">
+    <div className="workspace-stack" data-committee-version="1.0" data-workspace="investment-committee" data-source-of-truth="committee-meeting">
 
       {/* ── Call to order ── */}
       <section className="card" style={{ borderTop: "2px solid var(--accent)" }}>
@@ -150,6 +193,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
         <div className="grid cols-4" style={{ marginTop: 16 }}>
           <Metric label={tr(lang, "NAV", "มูลค่าสุทธิ")} value={money(meeting.nav)} />
+          <Metric label={tr(lang, "New names proposed", "หุ้นใหม่ที่เสนอ")} value={String(proposals.length)} />
           <Metric label={tr(lang, "Motions carried", "ญัตติที่ผ่าน")} value={`${counts.carried} / ${counts.all}`} />
           <Metric label={tr(lang, "Deferred", "เลื่อนพิจารณา")} value={String(counts.deferred)} />
           <Metric label={tr(lang, "Capital committed", "เงินที่อนุมัติใช้")} value={money(plan.usesUsd)} />
@@ -161,6 +205,8 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
           {[
             ["agenda", tr(lang, "Agenda", "ระเบียบวาระ")],
             ["attendance", tr(lang, "Attendance", "ผู้เข้าประชุม")],
+            ["desks", tr(lang, "Desk reports", "รายงานแต่ละฝ่าย")],
+            ["proposals", tr(lang, "New proposals", "หุ้นใหม่ที่เสนอ")],
             ["motions", tr(lang, "Motions", "ญัตติ")],
             ["capital", tr(lang, "Capital plan", "แผนเงินทุน")],
             ["blotter", tr(lang, "Trade blotter", "รายการซื้อขาย")],
@@ -180,8 +226,8 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
         <div className="grid cols-2">
           {meeting.agenda.map((item) => (
             <article key={item.n} className="metric" style={{ alignItems: "flex-start", opacity: item.covered ? 1 : 0.65 }}>
-              <span>{item.covered ? "●" : "○"} {tr(lang, "Item", "วาระที่")} {item.n} · {item.title}</span>
-              <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{item.summary}</strong>
+              <div className="label">{item.covered ? "●" : "○"} {tr(lang, "Item", "วาระที่")} {item.n} · {item.title}</div>
+              <strong className="value" style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{item.summary}</strong>
             </article>
           ))}
         </div>
@@ -212,9 +258,71 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
         </div>
       </section>
 
-      {/* ── 3. Macro ── */}
+      {/* ── 3. Desk reports — the work itself, not the remit ── */}
+      <section className="card" id="ic-desks">
+        <Head n="3" title={tr(lang, "Desk reports — what each seat measured", "รายงานของแต่ละฝ่าย — ผลการวัดจริง")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang,
+            "The table above says what each desk is responsible for. This is what each desk actually found in this book: the readings, the conclusion drawn from them, and what it could not measure. Every motion below is built from these lines and nothing else.",
+            "ตารางด้านบนบอกว่าแต่ละฝ่ายรับผิดชอบอะไร ส่วนนี้คือสิ่งที่แต่ละฝ่ายวัดได้จริงจากพอร์ตนี้ — ตัวเลขที่อ่านได้ ข้อสรุปจากตัวเลขนั้น และสิ่งที่วัดไม่ได้ ทุกญัตติด้านล่างสร้างจากบรรทัดเหล่านี้เท่านั้น")}
+        </p>
+        <div className="grid cols-3" style={{ marginTop: 14 }}>
+          <Metric label={tr(lang, "Desks reporting", "ฝ่ายที่มีผลการวัด")} value={`${deskStats.withRows} / ${deskStats.total}`} />
+          <Metric label={tr(lang, "Measurements tabled", "จำนวนรายการที่วัดได้")} value={String(deskStats.rows)} />
+          <Metric label={tr(lang, "Gaps declared", "ช่องว่างที่ประกาศไว้")} value={String(deskStats.gaps)} />
+        </div>
+
+        <div className="grid cols-2" style={{ marginTop: 16 }}>
+          {(meeting.deskReports ?? []).map((desk) => {
+            const open = openDesks.has(desk.member);
+            const shown = open ? desk.rows : desk.rows.slice(0, 4);
+            return (
+              <article key={desk.member} className="card" style={{ margin: 0, opacity: desk.rows.length ? 1 : 0.75 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div>
+                    <strong style={{ fontSize: 15 }}>{desk.member}</strong>
+                    <small className="muted" style={{ display: "block" }}>{desk.role} · {desk.desk}</small>
+                  </div>
+                  {desk.headline && <span className="tag" style={{ whiteSpace: "nowrap" }}>{desk.headline}</span>}
+                </div>
+
+                {shown.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    {shown.map((row, i) => (
+                      <div key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 }}>
+                          <span className="muted">{row.label}</span>
+                          <strong style={{ color: ROW_TONE[row.tone ?? "neutral"], textAlign: "right" }}>{row.value}</strong>
+                        </div>
+                        {row.note && <small className="muted" style={{ display: "block", marginTop: 2, fontSize: 11.5, lineHeight: 1.45 }}>{row.note}</small>}
+                      </div>
+                    ))}
+                    {desk.rows.length > 4 && (
+                      <button className="btn ghost sm" type="button" style={{ marginTop: 10 }}
+                        onClick={() => setOpenDesks((prev) => { const next = new Set(prev); next.has(desk.member) ? next.delete(desk.member) : next.add(desk.member); return next; })}>
+                        {open ? tr(lang, "Show fewer", "แสดงน้อยลง") : `+ ${desk.rows.length - 4} ${tr(lang, "more measurements", "รายการเพิ่มเติม")}`}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <p style={{ margin: "12px 0 0", fontSize: 13, lineHeight: 1.6 }}>{desk.finding}</p>
+
+                {desk.gaps.length > 0 && (
+                  <div className="notice" style={{ marginTop: 12, fontSize: 12 }}>
+                    <b>{tr(lang, "Could not measure", "วัดไม่ได้")}</b>
+                    <p style={{ margin: "5px 0 0", lineHeight: 1.55 }}>{desk.gaps.join(" · ")}</p>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ── 4. Macro ── */}
       <section className="card">
-        <Head n="3" title={tr(lang, "Macro regime and cash policy", "สภาวะตลาดและนโยบายเงินสด")} />
+        <Head n="4" title={tr(lang, "Macro regime and cash policy", "สภาวะตลาดและนโยบายเงินสด")} />
         {meeting.regime ? (
           <>
             <div className="grid cols-4">
@@ -230,9 +338,87 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
         )}
       </section>
 
-      {/* ── 4. Motions ── */}
+      {/* ── 5. What research brought in ── */}
+      <section className="card" id="ic-proposals">
+        <Head n="5" title={tr(lang, "New investment proposals from the research desk", "หุ้นใหม่ที่ฝ่ายวิจัยเสนอเข้าที่ประชุม")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang,
+            "The desk runs its own scan before every meeting rather than waiting for someone to hand it a name. Each proposal below cleared all four hard filters and is tabled as a NEW BUY motion in the next section, where the committee votes on it.",
+            "ฝ่ายวิจัยรันสแกนของตัวเองก่อนการประชุมทุกครั้ง ไม่ต้องรอให้ใครส่งชื่อหุ้นมาให้ ทุกตัวด้านล่างผ่านตัวกรองบังคับครบทั้ง 4 ข้อ และถูกยื่นเป็นญัตติ NEW BUY ในหัวข้อถัดไปเพื่อให้ที่ประชุมลงมติ")}
+        </p>
+
+        {meeting.scan && (
+          <div className="grid cols-3" style={{ marginTop: 14 }}>
+            <Metric label={tr(lang, "Names swept", "จำนวนหุ้นที่สแกน")} value={String(meeting.scan.universeSize)} />
+            <Metric label={tr(lang, "Cleared every filter", "ผ่านตัวกรองทั้งหมด")} value={String(proposals.length)} />
+            <Metric label={tr(lang, "Rejected with a reason", "ถูกคัดออกพร้อมเหตุผล")} value={String(meeting.scan.rejected)} />
+          </div>
+        )}
+
+        {proposals.length === 0 ? (
+          <div className="notice" style={{ marginTop: 14 }}>
+            <b>{tr(lang, "The desk proposes nothing today", "วันนี้ฝ่ายวิจัยไม่เสนอหุ้นใดเลย")}</b>
+            <p style={{ margin: "6px 0 0" }}>{meeting.scan?.note ?? tr(lang, "The scan did not run.", "สแกนไม่ทำงาน")}</p>
+            {meeting.scan?.regime?.defensiveOnly && <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{meeting.scan.regime.note}</p>}
+            <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
+              {tr(lang,
+                "An empty shortlist is a finding. The alternative — tabling the least-bad candidate so the meeting has something to vote on — is how a fund buys its worst positions.",
+                "การไม่มีหุ้นเสนอคือผลการวิเคราะห์อย่างหนึ่ง ทางเลือกอีกทางคือเสนอตัวที่แย่น้อยที่สุดเพื่อให้มีอะไรให้โหวต ซึ่งเป็นวิธีที่กองทุนได้หุ้นที่แย่ที่สุดมาถือ")}
+            </p>
+          </div>
+        ) : (
+          <div className="grid cols-2" style={{ marginTop: 16 }}>
+            {proposals.map((p) => (
+              <article key={p.ticker} className="card" style={{ margin: 0, borderLeft: "3px solid #38bdf8" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div>
+                    <strong style={{ fontSize: 18 }}>{p.ticker}</strong>
+                    <small className="muted" style={{ display: "block" }}>{p.setupType}</small>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <strong style={{ fontSize: 18, color: p.score >= 70 ? "#34d399" : "#fbbf24" }}>{p.score}/100</strong>
+                    <small className="muted" style={{ display: "block" }}>{tr(lang, "alpha score", "คะแนน alpha")} · {p.coveragePct}% {tr(lang, "measured", "วัดได้")}</small>
+                  </div>
+                </div>
+
+                <div className="grid cols-2" style={{ marginTop: 12 }}>
+                  <Metric label={tr(lang, "Entry", "ราคาเข้า")} value={`${level(p.entryLow)}–${level(p.entryHigh)}`} />
+                  <Metric label={tr(lang, "Stop", "จุดตัดขาดทุน")} value={level(p.stop)} />
+                  <Metric label={tr(lang, "Target", "เป้าหมาย")} value={`${level(p.target)} · ${pct(p.expectedReturnPct)}`} />
+                  <Metric label={tr(lang, "Reward:risk", "ผลตอบแทนต่อความเสี่ยง")} value={`1:${p.riskReward}`} />
+                </div>
+
+                <p style={{ margin: "12px 0 0", fontSize: 13, lineHeight: 1.6 }}>{p.thesis}</p>
+                {p.catalyst && <p className="muted" style={{ margin: "8px 0 0", fontSize: 12.5, lineHeight: 1.55 }}>{tr(lang, "Catalyst", "ตัวเร่ง")}: {p.catalyst}</p>}
+
+                {p.unmeasured.length > 0 && (
+                  <div className="notice" style={{ marginTop: 12, fontSize: 12 }}>
+                    <b>{tr(lang, "Scored zero, kept in the denominator", "ให้ศูนย์และยังนับในตัวหาร")}</b>
+                    <p style={{ margin: "5px 0 0", lineHeight: 1.5 }}>{p.unmeasured.join(" · ")}</p>
+                  </div>
+                )}
+
+                <button className="btn ghost sm" type="button" style={{ marginTop: 12 }} onClick={() => jump("ic-motions")}>
+                  {tr(lang, "See the vote on this name", "ดูผลโหวตของหุ้นตัวนี้")}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {(meeting.scan?.warnings?.length ?? 0) > 0 && (
+          <div className="notice" style={{ marginTop: 14, fontSize: 12 }}>
+            <b>{tr(lang, "Limits on this sweep", "ข้อจำกัดของการสแกนรอบนี้")}</b>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, lineHeight: 1.6 }}>
+              {meeting.scan!.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {/* ── 6. Motions ── */}
       <section className="card" id="ic-motions">
-        <Head n="4" title={tr(lang, "Motions", "ญัตติ")} />
+        <Head n="6" title={tr(lang, "Motions", "ญัตติ")} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {([
             ["all", tr(lang, "All", "ทั้งหมด"), counts.all],
@@ -311,7 +497,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
       {/* ── 5. Capital plan ── */}
       <section className="card" id="ic-capital">
-        <Head n="5" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
+        <Head n="7" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Uses may not exceed sources. When the meeting approves more buying than it has funded, the lowest-conviction uses are cut and named — never dropped quietly.",
             "การใช้เงินต้องไม่เกินแหล่งเงิน หากที่ประชุมอนุมัติซื้อมากกว่าเงินที่มี ญัตติที่มีความเชื่อมั่นต่ำสุดจะถูกตัดออกและระบุชื่อไว้ ไม่ตัดทิ้งเงียบๆ")}
@@ -359,7 +545,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
       {/* ── 6. Blotter ── */}
       <section className="card" id="ic-blotter">
-        <Head n="6" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
+        <Head n="8" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
         {meeting.blotter.length ? (
           <>
             <div className="table-wrap">
@@ -392,7 +578,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
       {/* ── 7. Resolutions and dissent ── */}
       <section className="card" id="ic-resolutions">
-        <Head n="7" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
+        <Head n="9" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>{tr(lang, "Status", "สถานะ")}</th><th>{tr(lang, "Resolution", "มติ")}</th><th>{tr(lang, "Owner", "ผู้รับผิดชอบ")}</th><th>{tr(lang, "Review by", "ทบทวนภายใน")}</th></tr></thead>
@@ -425,7 +611,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
       {/* ── 8. Risk register and round table ── */}
       <section className="card" id="ic-risk">
-        <Head n="8" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
+        <Head n="10" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Any desk may file a risk, with the measurement behind it. Risk is not one person's column.",
             "ทุกฝ่ายสามารถแจ้งความเสี่ยงได้ พร้อมหลักฐานการวัด ความเสี่ยงไม่ใช่หน้าที่ของคนเดียว")}
@@ -455,8 +641,8 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
             <div className="grid cols-2" style={{ marginTop: 10 }}>
               {meeting.roundTable.map((entry) => (
                 <article key={entry.member} className="metric" style={{ alignItems: "flex-start", opacity: entry.tabled ? 1 : 0.65 }}>
-                  <span>{entry.member} · {entry.role}</span>
-                  <strong style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{entry.view}</strong>
+                  <div className="label">{entry.member} · {entry.role}</div>
+                  <strong className="value" style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>{entry.view}</strong>
                 </article>
               ))}
             </div>
@@ -483,7 +669,7 @@ export default function CIOCommandCenterV12({ lang, onNavigate }: { lang: AppLan
 
       {/* ── 9. Minutes ── */}
       <section className="card" id="ic-minutes">
-        <Head n="9" title={tr(lang, "Minutes", "รายงานการประชุม")} />
+        <Head n="11" title={tr(lang, "Minutes", "รายงานการประชุม")} />
         <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
           {meeting.minutes.map((line, i) => <li key={i}>{line}</li>)}
         </ol>
@@ -509,10 +695,10 @@ function Head({ n, title }: { n: string; title: string }) {
   return <h3 className="sub" style={{ marginTop: 0 }}><span className="tag" style={{ marginRight: 8 }}>{n}</span>{title}</h3>;
 }
 function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="metric"><span>{label}</span><strong style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
+  return <div className="metric"><div className="label">{label}</div><strong className="value" style={{ fontSize: 20, lineHeight: 1.25 }}>{value}</strong></div>;
 }
 function Guard({ title, text }: { title: string; text: string }) {
-  return <div className="metric"><span>{title}</span><strong style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 500 }}>{text}</strong></div>;
+  return <div className="metric"><div className="label">{title}</div><strong className="value" style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 500 }}>{text}</strong></div>;
 }
 function Coverage({ value }: { value: number }) {
   const tone = value >= 80 ? "#34d399" : value >= 50 ? "#fbbf24" : "#f87171";
@@ -525,4 +711,3 @@ function Coverage({ value }: { value: number }) {
     </div>
   );
 }
-

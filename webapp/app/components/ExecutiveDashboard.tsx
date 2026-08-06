@@ -29,7 +29,7 @@ export default function ExecutiveDashboard({ lang, onNavigate }: { lang: AppLang
     </section>
 
     <section className="workspace-launch-grid">
-      <WorkspaceCard index="1" title="CIO Command Center" description="Market regime, portfolio health, debate, voting and governed resolutions." action="Enter Command Center" tone="blue" onClick={()=>onNavigate("command")}/>
+      <WorkspaceCard index="1" title="CIO Command Center" description="Automatic idea sourcing, prioritized BUY/ADD/HOLD/TRIM/EXIT decisions, funding and human approval." action="Open Decision Center" tone="blue" onClick={()=>onNavigate("command")}/>
       <WorkspaceCard index="2" title="Portfolio Management" description="Holdings, reconciliation, Buy/Sell records, cash, dividends and ledger." action="Manage Portfolio" tone="purple" onClick={()=>onNavigate("portfolio")}/>
       <WorkspaceCard index="3" title="Stock Analysis" description="Valuation, quality, growth, thesis, catalysts, risks and monitoring." action="Analyze a Stock" tone="orange" onClick={()=>onNavigate("analyze")}/>
       <WorkspaceCard index="4" title="Research Lab" description="Scan, rank, watchlist and promote qualified investment ideas." action="Open Research Lab" tone="green" onClick={()=>onNavigate("research")}/>

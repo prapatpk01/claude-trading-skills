@@ -113,19 +113,26 @@ export async function buildWorkbook(a: AnalysisResult): Promise<ExcelJS.Buffer> 
   const price = a.data.quote?.price ?? 0;
   const ov = a.data.overview;
 
-  buildExecSummary(wb, a, price);
-  buildIndustry(wb, a);
-  buildFinancials(wb, a);
-  buildThesisSheet(wb, a);
-  const fcfRefs = buildModel(wb, a); // returns cell refs of projected FCF for valuation
-  buildValuation(wb, a, fcfRefs);
+  // The seven sheets the research brief asks for, plus the 3-statement model
+  // its section 7 requires. Order follows how the report is read, not how the
+  // builders happen to be written.
+  // Build order follows the data dependency — the valuation sheet's formulas
+  // point at the model's projected FCF cells, so the model has to exist first.
+  buildExecSummary(wb, a, price);           // Summary
+  buildFinancials(wb, a);                   // Financials
+  buildIndustry(wb, a);                     // Competitors
+  const fcfRefs = buildModel(wb, a);        // Model — section 7's 3-statement forecast
+  buildValuation(wb, a, fcfRefs);           // Valuation — scenarios and multiples
+  buildDcfSheet(wb, a, price);              // DCF
+  buildCatalystsSheet(wb, a);               // Catalysts
+  buildRisksSheet(wb, a);                   // Risks
 
   return wb.xlsx.writeBuffer();
 }
 
 // ── Sheet 1: Executive Summary ────────────────────────────────────────
 function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number) {
-  const ws = wb.addWorksheet("1. Executive Summary", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet("Summary", { views: [{ showGridLines: false }] });
   ws.columns = [{ width: 30 }, { width: 22 }, { width: 3 }, { width: 30 }, { width: 22 }];
   const ov = a.data.overview;
 
@@ -246,12 +253,87 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
   sd.font = { size: 10 };
   r += 3;
 
+  // ── The four pillar scores and the conviction they blend into ──
+  //
+  // Printed with the coverage each was measured over, because a 72 scored on
+  // every input and a 72 scored on half of them are not the same claim.
+  const c = a.conviction;
+  sectionHeader(ws, `A${r}:E${r}`, "Investment conclusion — scores 0-100");
+  r++;
+  headerRow(ws, r, ["Pillar", "Score", "", "Coverage", "Weight in the blend"]);
+  r++;
+  const scoreStart = r;
+  const pillars: [string, typeof c.quality, number][] = [
+    ["Quality", c.quality, c.weights.quality],
+    ["Growth", c.growth, c.weights.growth],
+    ["Valuation", c.valuation, c.weights.valuation],
+    ["Risk (higher is safer)", c.risk, c.weights.risk],
+  ];
+  for (const [label, pillar, weight] of pillars) {
+    ws.getCell(r, 1).value = label;
+    ws.getCell(r, 1).font = { bold: true, size: 10 };
+    const sc = ws.getCell(r, 2);
+    sc.value = pillar.score ?? "not scored";
+    sc.alignment = { horizontal: "right" };
+    sc.font = {
+      bold: true,
+      color: { argb: pillar.score == null ? GREY : pillar.score >= 65 ? GREEN : pillar.score >= 45 ? BLUE : RED },
+    };
+    const cov = ws.getCell(r, 4);
+    cov.value = pillar.coveragePct / 100;
+    cov.numFmt = "0%";
+    cov.alignment = { horizontal: "right" };
+    cov.font = { size: 10, color: { argb: pillar.coveragePct >= 80 ? GREY : RED } };
+    ws.getCell(r, 5).value = weight;
+    ws.getCell(r, 5).numFmt = "0%";
+    ws.getCell(r, 5).alignment = { horizontal: "right" };
+    ws.getCell(r, 5).font = { size: 10, color: { argb: GREY } };
+    r++;
+  }
+  bandRows(ws, scoreStart, r - 1, 5);
+
+  ws.getCell(r, 1).value = "OVERALL CONVICTION";
+  ws.getCell(r, 1).font = { bold: true, size: 11 };
+  const oc = ws.getCell(r, 2);
+  oc.value = c.overall ?? "not rated";
+  oc.alignment = { horizontal: "right" };
+  oc.font = { bold: true, size: 12, color: { argb: c.overall == null ? GREY : c.overall >= 65 ? GREEN : c.overall >= 45 ? BLUE : RED } };
+  ws.getCell(r, 4).value = c.overallCoveragePct / 100;
+  ws.getCell(r, 4).numFmt = "0%";
+  ws.getCell(r, 4).alignment = { horizontal: "right" };
+  ws.getCell(r, 5).value = c.rating;
+  ws.getCell(r, 5).font = { bold: true, size: 11, color: { argb: /Buy/.test(c.rating) ? GREEN : /Sell/.test(c.rating) ? RED : GREY } };
+  ws.getCell(r, 5).alignment = { horizontal: "right" };
+  r += 2;
+
+  ws.mergeCells(`A${r}:E${r + 1}`);
+  const rr = ws.getCell(`A${r}`);
+  rr.value = c.ratingReason;
+  rr.alignment = { wrapText: true, vertical: "top", indent: 1 };
+  rr.font = { size: 9, italic: true, color: { argb: GREY } };
+  ws.getRow(r).height = 26;
+  r += 3;
+
+  // The variant perception belongs on the first page: it is the only part of a
+  // thesis that says why the position exists rather than what the company does.
+  if (a.tracker?.variantPerception) {
+    sectionHeader(ws, `A${r}:E${r}`, "Variant perception");
+    r++;
+    ws.mergeCells(`A${r}:E${r + 2}`);
+    const vp = ws.getCell(`A${r}`);
+    vp.value = a.tracker.variantPerception;
+    vp.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    vp.font = { size: 10 };
+    ws.getRow(r).height = 30;
+    r += 4;
+  }
+
   footer(ws, `A${r + 1}`, a);
 }
 
 // ── Sheet 2: Industry & Competition ───────────────────────────────────
 function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
-  const ws = wb.addWorksheet("2. Industry & Competition", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet("Competitors", { views: [{ showGridLines: false }] });
   ws.columns = [
     { width: 30 }, { width: 15 }, { width: 19 }, { width: 16 },
     { width: 12 }, { width: 14 }, { width: 13 }, { width: 12 },
@@ -467,7 +549,7 @@ function buildIndustry(wb: ExcelJS.Workbook, a: AnalysisResult) {
 
 // ── Sheet 3: Financials & Earnings ────────────────────────────────────
 function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
-  const ws = wb.addWorksheet("3. Financials & Earnings", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet("Financials", { views: [{ showGridLines: false }] });
   ws.columns = [{ width: 30 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }];
   titleCell(ws, "A1:F1", "Financials & Earnings Analysis");
 
@@ -785,10 +867,10 @@ function buildFinancials(wb: ExcelJS.Workbook, a: AnalysisResult) {
 }
 
 // ── Sheet 4: Thesis, Catalysts & Risks ────────────────────────────────
-function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
-  const ws = wb.addWorksheet("4. Thesis, Catalysts & Risks", { views: [{ showGridLines: false }] });
+function buildCatalystsSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
+  const ws = wb.addWorksheet("Catalysts", { views: [{ showGridLines: false }] });
   ws.columns = [{ width: 22 }, { width: 14 }, { width: 30 }, { width: 62 }];
-  titleCell(ws, "A1:D1", "Thesis, Catalysts & Risks");
+  titleCell(ws, "A1:D1", "Scenarios & Catalyst Calendar");
 
   sectionHeader(ws, "A3:D3", "Scenario Analysis (probability-weighted)");
   headerRow(ws, 4, ["Scenario", "Probability", "Target Price", "Narrative"]);
@@ -911,18 +993,6 @@ function buildThesisSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
   }
   r += 1;
 
-  sectionHeader(ws, `A${r}:D${r}`, "Key Risk Factors");
-  r++;
-  a.risks.forEach((risk) => {
-    ws.getCell(r, 1).value = "⚠";
-    ws.getCell(r, 1).alignment = { horizontal: "center" };
-    ws.mergeCells(`B${r}:D${r}`);
-    ws.getCell(r, 2).value = risk;
-    ws.getCell(r, 2).alignment = { wrapText: true, vertical: "top" };
-    ws.getCell(r, 2).font = { size: 10 };
-    ws.getRow(r).height = 26;
-    r++;
-  });
   footer(ws, `A${r + 1}`, a);
 }
 
@@ -931,7 +1001,7 @@ function buildModel(
   wb: ExcelJS.Workbook,
   a: AnalysisResult
 ): { fcfRefs: string[]; fcf: number[]; sheet: string } {
-  const ws = wb.addWorksheet("5. 3-Statement Model", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet("Model", { views: [{ showGridLines: false }] });
   const sheetName = "5. 3-Statement Model";
   ws.columns = [{ width: 32 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
   titleCell(ws, "A1:G1", "5-Year 3-Statement Forecast ($M)");
@@ -1115,7 +1185,7 @@ function buildValuation(
   a: AnalysisResult,
   model: { fcfRefs: string[]; fcf: number[]; sheet: string }
 ) {
-  const ws = wb.addWorksheet("6. Valuation & Scenarios", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet("Valuation", { views: [{ showGridLines: false }] });
   ws.columns = [{ width: 30 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
   titleCell(ws, "A1:G1", "DCF Valuation & Scenarios");
 
@@ -1347,4 +1417,251 @@ function footer(ws: ExcelJS.Worksheet, anchor: string, a: AnalysisResult) {
   ws.mergeCells(`${anchor}:H${startRow}`);
   ws.getCell(anchor).alignment = { wrapText: true, vertical: "top" };
   ws.getRow(startRow).height = 66;
+}
+
+// ── Sheet: DCF ────────────────────────────────────────────────────────
+//
+// The discounted cash flow on its own page, with every assumption on the same
+// screen as the answer. A DCF whose WACC and terminal growth live somewhere
+// else is a number nobody can argue with, which is the opposite of useful.
+function buildDcfSheet(wb: ExcelJS.Workbook, a: AnalysisResult, price: number) {
+  const ws = wb.addWorksheet("DCF", { views: [{ showGridLines: false }] });
+  ws.columns = [{ width: 30 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 44 }];
+  titleCell(ws, "A1:G1", `Discounted Cash Flow — ${a.ticker}`);
+
+  const d = a.dcf;
+  if (!d) {
+    ws.mergeCells("A3:G4");
+    const cell = ws.getCell("A3");
+    cell.value =
+      "No discounted cash flow could be built. The model needs a free-cash-flow history and a share count from the filings; " +
+      "one or both were unavailable for this company. No fair value is shown here rather than one produced from assumed inputs — " +
+      "the valuation sheet's multiple-based anchors stand on their own.";
+    cell.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    cell.font = { size: 10, italic: true, color: { argb: RED } };
+    footer(ws, "A6", a);
+    return;
+  }
+
+  let r = 3;
+  sectionHeader(ws, `A${r}:G${r}`, "Assumptions");
+  r++;
+  labelValue(ws, r++, "WACC (discount rate)", d.wacc, { fmt: "0.00%", bold: true });
+  ws.getCell(r - 1, 7).value = "CAPM on a Blume-adjusted beta — a raw beta measured over one year is noisy and mean-reverts, and using it raw pushes WACC past 14% and collapses the value of any large-cap.";
+  ws.getCell(r - 1, 7).alignment = { wrapText: true, vertical: "top" };
+  ws.getCell(r - 1, 7).font = { size: 9, color: { argb: GREY } };
+  ws.getRow(r - 1).height = 40;
+
+  labelValue(ws, r++, "Terminal growth", d.terminalGrowth, { fmt: "0.00%" });
+  ws.getCell(r - 1, 7).value = "Held at or below long-run nominal GDP. A terminal growth rate above it says the company eventually becomes the economy.";
+  ws.getCell(r - 1, 7).alignment = { wrapText: true, vertical: "top" };
+  ws.getCell(r - 1, 7).font = { size: 9, color: { argb: GREY } };
+  ws.getRow(r - 1).height = 30;
+
+  labelValue(ws, r++, "FCF margin assumption", a.assumptions.fcfMargin, { fmt: "0.0%" });
+  labelValue(ws, r++, "Revenue growth path", a.assumptions.revenueGrowth.map((g) => `${(g * 100).toFixed(1)}%`).join(" → "));
+  r++;
+
+  sectionHeader(ws, `A${r}:G${r}`, "Projected free cash flow and its present value");
+  r++;
+  headerRow(ws, r, ["", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5"]);
+  r++;
+  const fcfRow = r;
+  ws.getCell(r, 1).value = "Projected FCF";
+  ws.getCell(r, 1).font = { bold: true };
+  d.projectedFcf.forEach((v, i) => {
+    const c = ws.getCell(r, i + 2);
+    c.value = v;
+    c.numFmt = "#,##0,,\"M\"";
+    c.alignment = { horizontal: "right" };
+  });
+  r++;
+  ws.getCell(r, 1).value = "Discount factor";
+  d.projectedFcf.forEach((_, i) => {
+    const c = ws.getCell(r, i + 2);
+    c.value = fx(`1/POWER(1+${d.wacc},${i + 1})`, 1 / Math.pow(1 + d.wacc, i + 1));
+    c.numFmt = "0.000";
+    c.alignment = { horizontal: "right" };
+  });
+  const dfRow = r;
+  r++;
+  ws.getCell(r, 1).value = "Present value of FCF";
+  ws.getCell(r, 1).font = { bold: true };
+  d.pvFcf.forEach((v, i) => {
+    const col = String.fromCharCode(66 + i);
+    const c = ws.getCell(r, i + 2);
+    c.value = fx(`${col}${fcfRow}*${col}${dfRow}`, v);
+    c.numFmt = "#,##0,,\"M\"";
+    c.alignment = { horizontal: "right" };
+    c.font = { bold: true };
+  });
+  bandRows(ws, fcfRow, r, 6);
+  r += 2;
+
+  sectionHeader(ws, `A${r}:G${r}`, "Bridge to fair value");
+  r++;
+  labelValue(ws, r++, "Sum of PV of explicit FCF", d.pvFcf.reduce((s, v) => s + v, 0), { fmt: "#,##0,,\"M\"" });
+  labelValue(ws, r++, "Terminal value", d.terminalValue, { fmt: "#,##0,,\"M\"" });
+  labelValue(ws, r++, "PV of terminal value", d.pvTerminal, { fmt: "#,##0,,\"M\"" });
+  labelValue(ws, r++, "Enterprise value", d.enterpriseValue, { fmt: "#,##0,,\"M\"", bold: true });
+  labelValue(ws, r++, "Equity value", d.equityValue, { fmt: "#,##0,,\"M\"", bold: true });
+  labelValue(ws, r++, "Fair value per share", d.fairValue, { fmt: "$#,##0.00", bold: true, color: BLUE });
+  labelValue(ws, r++, "Upside to spot", d.upsidePct / 100, { fmt: "0.0%", bold: true, color: d.upsidePct >= 0 ? GREEN : RED });
+
+  // The honesty line: how much of the answer is the terminal value.
+  labelValue(ws, r++, "Terminal value share of EV", d.terminalSharePct / 100, {
+    fmt: "0.0%",
+    color: d.terminalSharePct > 75 ? RED : d.terminalSharePct > 60 ? GREY : GREEN,
+  });
+  ws.mergeCells(`A${r}:G${r + 1}`);
+  const caveat = ws.getCell(`A${r}`);
+  caveat.value = d.reliable
+    ? `${d.terminalSharePct.toFixed(0)}% of enterprise value sits in the terminal value. That is inside the range where the explicit forecast still carries the answer.`
+    : `${d.terminalSharePct.toFixed(0)}% of enterprise value sits in the terminal value, which means this DCF is mostly a statement about the perpetuity assumption rather than about the next five years. Treat it as indicative and let the multiple-based anchors on the Valuation sheet carry more weight.`;
+  caveat.alignment = { wrapText: true, vertical: "top", indent: 1 };
+  caveat.font = { size: 9, italic: true, color: { argb: d.reliable ? GREY : RED } };
+  ws.getRow(r).height = 28;
+  r += 3;
+
+  // ── Sensitivity: the only honest way to present a DCF ──
+  sectionHeader(ws, `A${r}:G${r}`, "Sensitivity — fair value per share");
+  r++;
+  const waccs = [-0.01, -0.005, 0, 0.005, 0.01].map((delta) => d.wacc + delta);
+  const growths = [-0.005, -0.0025, 0, 0.0025, 0.005].map((delta) => d.terminalGrowth + delta);
+  ws.getCell(r, 1).value = "WACC ↓ / terminal growth →";
+  ws.getCell(r, 1).font = { bold: true, size: 9 };
+  ws.getCell(r, 1).alignment = { wrapText: true, vertical: "middle" };
+  growths.forEach((g, i) => {
+    const c = ws.getCell(r, i + 2);
+    c.value = g;
+    c.numFmt = "0.00%";
+    c.font = { bold: true };
+    c.alignment = { horizontal: "center" };
+  });
+  r++;
+  const gridStart = r;
+  const lastFcf = d.projectedFcf.at(-1) ?? 0;
+  const sumPv = d.pvFcf.reduce((s, v) => s + v, 0);
+  const netDebt = d.enterpriseValue - d.equityValue;
+  const shares = d.equityValue > 0 && d.fairValue > 0 ? d.equityValue / d.fairValue : null;
+  for (const w of waccs) {
+    ws.getCell(r, 1).value = w;
+    ws.getCell(r, 1).numFmt = "0.00%";
+    ws.getCell(r, 1).font = { bold: true };
+    growths.forEach((g, i) => {
+      const c = ws.getCell(r, i + 2);
+      // Recomputed from the same bridge, so the grid and the headline agree.
+      if (shares == null || w <= g) {
+        c.value = "n/m";
+        c.font = { size: 9, italic: true, color: { argb: GREY } };
+        c.alignment = { horizontal: "center" };
+        return;
+      }
+      const tv = (lastFcf * (1 + g)) / (w - g);
+      const pvTv = tv / Math.pow(1 + w, d.projectedFcf.length);
+      const value = (sumPv + pvTv - netDebt) / shares;
+      c.value = value;
+      c.numFmt = "$#,##0.00";
+      c.alignment = { horizontal: "right" };
+      const drift = price > 0 ? (value - price) / price : 0;
+      c.font = { size: 10, color: { argb: drift > 0.15 ? GREEN : drift < -0.15 ? RED : GREY } };
+    });
+    r++;
+  }
+  bandRows(ws, gridStart, r - 1, 6);
+  ws.getCell(r, 1).value = `Cells marked n/m are combinations where terminal growth meets or exceeds the discount rate — the perpetuity has no finite value there, and printing one would be arithmetic theatre. Spot price $${price.toFixed(2)}.`;
+  ws.mergeCells(`A${r}:G${r}`);
+  ws.getCell(r, 1).font = { size: 9, italic: true, color: { argb: GREY } };
+  ws.getCell(r, 1).alignment = { wrapText: true, vertical: "top" };
+  ws.getRow(r).height = 26;
+
+  footer(ws, `A${r + 2}`, a);
+}
+
+// ── Sheet: Risks ──────────────────────────────────────────────────────
+//
+// Risks on their own page with the thesis tracker beside them, because a risk
+// list with no monitoring metric attached is a disclaimer rather than a plan.
+function buildRisksSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
+  const ws = wb.addWorksheet("Risks", { views: [{ showGridLines: false }] });
+  ws.columns = [{ width: 4 }, { width: 30 }, { width: 24 }, { width: 60 }, { width: 22 }];
+  titleCell(ws, "A1:E1", `Risks & Thesis Tracker — ${a.ticker}`);
+
+  let r = 3;
+  sectionHeader(ws, `A${r}:E${r}`, "Key risk factors");
+  r++;
+  if (a.risks.length) {
+    const start = r;
+    for (const risk of a.risks) {
+      ws.getCell(r, 1).value = "⚠";
+      ws.getCell(r, 1).alignment = { horizontal: "center" };
+      ws.mergeCells(`B${r}:E${r}`);
+      ws.getCell(r, 2).value = risk;
+      ws.getCell(r, 2).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(r, 2).font = { size: 10 };
+      ws.getRow(r).height = 26;
+      r++;
+    }
+    bandRows(ws, start, r - 1, 5);
+  } else {
+    ws.mergeCells(`A${r}:E${r}`);
+    ws.getCell(r, 1).value = "No risk was identified from the measured evidence. That is an absence of measurement as much as an absence of risk.";
+    ws.getCell(r, 1).font = { size: 10, italic: true, color: { argb: GREY } };
+    r++;
+  }
+  r += 2;
+
+  const tracker = a.tracker;
+  if (tracker) {
+    sectionHeader(ws, `A${r}:E${r}`, "Variant perception");
+    r++;
+    ws.mergeCells(`A${r}:E${r + 2}`);
+    const vp = ws.getCell(`A${r}`);
+    vp.value = tracker.variantPerception;
+    vp.alignment = { wrapText: true, vertical: "top", indent: 1 };
+    vp.font = { size: 10 };
+    ws.getRow(r).height = 30;
+    r += 4;
+
+    for (const [title, items] of [["Bull case", tracker.bull], ["Bear case", tracker.bear]] as [string, string[]][]) {
+      sectionHeader(ws, `A${r}:E${r}`, title);
+      r++;
+      const start = r;
+      for (const item of items) {
+        ws.getCell(r, 1).value = title === "Bull case" ? "▲" : "▼";
+        ws.getCell(r, 1).font = { color: { argb: title === "Bull case" ? GREEN : RED } };
+        ws.getCell(r, 1).alignment = { horizontal: "center" };
+        ws.mergeCells(`B${r}:E${r}`);
+        ws.getCell(r, 2).value = item;
+        ws.getCell(r, 2).alignment = { wrapText: true, vertical: "top" };
+        ws.getCell(r, 2).font = { size: 10 };
+        ws.getRow(r).height = 28;
+        r++;
+      }
+      bandRows(ws, start, r - 1, 5);
+      r++;
+    }
+
+    sectionHeader(ws, `A${r}:E${r}`, "Monitoring metrics — what breaks the thesis");
+    r++;
+    headerRow(ws, r, ["", "Metric", "Current", "Trigger that breaks the thesis", "Owner"]);
+    r++;
+    const start = r;
+    for (const m of tracker.monitoring) {
+      ws.getCell(r, 2).value = m.metric;
+      ws.getCell(r, 2).font = { bold: true, size: 10 };
+      ws.getCell(r, 3).value = m.current;
+      ws.getCell(r, 3).alignment = { horizontal: "right" };
+      ws.getCell(r, 4).value = m.trigger;
+      ws.getCell(r, 4).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(r, 4).font = { size: 10 };
+      ws.getCell(r, 5).value = m.owner;
+      ws.getCell(r, 5).font = { size: 9, color: { argb: GREY } };
+      ws.getRow(r).height = 30;
+      r++;
+    }
+    bandRows(ws, start, r - 1, 5);
+  }
+
+  footer(ws, `A${r + 2}`, a);
 }
