@@ -58,6 +58,8 @@ export interface PositionEvidence {
   priceAsOf: string | null;
   /** Lena Müller — forward yield from the name's own distribution history. */
   yieldPct: number | null;
+  /** The last actual broker-side changes, used to prevent immediate reversals. */
+  recentTrade?: { latestBuyDate: string | null; latestSellDate: string | null; daysSinceBuy: number | null; daysSinceSell: number | null } | null;
 }
 
 /** A name research has referred to the committee. */
@@ -83,6 +85,10 @@ export interface IdeaEvidence {
   priceDriftPct: number | null;
   /** The scanner's own coverage read on the name, when it reported one. */
   dataQuality: string | null;
+  /** The same technical gate used for held positions. */
+  technical?: { total: number; signal: string; hardBlocks: string[]; dataQualityPct: number } | null;
+  /** The last actual broker-side changes, used to prevent repurchasing a recent sale. */
+  recentTrade?: { latestBuyDate: string | null; latestSellDate: string | null; daysSinceBuy: number | null; daysSinceSell: number | null } | null;
 }
 
 export interface CommitteeInput {
@@ -112,6 +118,8 @@ export interface CommitteeInput {
   replacements?: Record<string, { ticker: string; note: string }[]>;
   /** Sources that could not be reached, named so the minutes can say so. */
   unavailable: string[];
+  /** Stable portfolio-ledger revision; changes only after an actual trade changes the book. */
+  portfolioRevision?: string;
 }
 
 /* ────────────────────────────── outputs ───────────────────────────── */
@@ -319,6 +327,11 @@ const STALE_REFERRAL_DAYS = 21;
  * the stock running 20% — the work was done on a different security.
  */
 const MAX_REFERRAL_DRIFT_PCT = 15;
+/** Ordinary model changes cannot reverse a completed broker trade immediately. */
+const BUY_STABILIZATION_DAYS = 14;
+const SELL_COOLDOWN_DAYS = 30;
+/** New ideas must clear the same technical standard as an ADD to Holdings. */
+const MIN_TECHNICAL_BUY_SCORE = 65;
 
 function addDays(iso: string, days: number): string {
   const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
@@ -455,6 +468,19 @@ function motionForPosition(p: PositionEvidence, input: CommitteeInput): Omit<Mot
   const trendBroken = p.trend?.aboveSma50 === false && p.trend?.aboveSma200 === false;
   const deepLoss = p.trend?.return3m != null && p.trend.return3m < -15;
   const momentumNegative = p.momentum != null && /REJECT|AVOID|EXIT|SELL/i.test(p.momentum.signal);
+  const buyLocked = p.recentTrade?.daysSinceBuy != null && p.recentTrade.daysSinceBuy < BUY_STABILIZATION_DAYS;
+  const emergencyExit = trendBroken && deepLoss;
+  const concentrationOverride = p.zone?.zone === "EMERGENCY" || p.zone?.zone === "TRIM" || (weight != null && weight > HARD_CAP_PCT);
+
+  // A newly completed BUY gets time to settle. A normal SMA or momentum flip
+  // remains visible as an alert, but cannot manufacture a round trip. Severe
+  // structural damage and concentration-policy trims still override the lock.
+  if (buyLocked && !emergencyExit && !concentrationOverride && blocks.length > 0 && (trendBroken || momentumNegative)) {
+    const remaining = Math.max(1, BUY_STABILIZATION_DAYS - (p.recentTrade?.daysSinceBuy ?? 0));
+    reasons.push({ desk: "Portfolio", member: ROSTER.lena.name, finding: `${p.ticker} was bought ${p.recentTrade?.daysSinceBuy ?? 0} day(s) ago. The ${BUY_STABILIZATION_DAYS}-day stabilization lock has ${remaining} day(s) remaining, so an ordinary model flip is recorded but not reversed.` });
+    reasons.push({ desk: "Research", member: ROSTER.maya.name, finding: `Technical alert retained for review: ${blocks.join("; ")}${momentumNegative ? `; signal ${p.momentum?.signal}` : ""}. Only a hard risk limit or severe trend-and-loss stop may override the lock.` });
+    return { id: `POS-${p.ticker}`, ticker: p.ticker, kind: "HOLD", sizeUsd: 0, approxShares: null, proposedBy: ROSTER.lena.name, reasons, evidenceCoveragePct: coverage, missingEvidence: missing };
+  }
 
   // ── EXIT: the thesis, not the price, has failed ──
   if (blocks.length > 0 && (trendBroken || momentumNegative)) {
@@ -518,7 +544,8 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
   if (idea.target == null) missing.push("price target (Thomas Eriksson)");
   if (idea.price == null) missing.push("current price (Leo Tanaka)");
   if (idea.upsidePct == null) missing.push("upside to target");
-  const coverage = Math.round(((4 - missing.length) / 4) * 100);
+  if (idea.technical == null) missing.push("technical gate (Maya Chen)");
+  const coverage = Math.round(((5 - missing.length) / 5) * 100);
 
   // Conviction sets the size, inside a starter band. An unmeasured conviction
   // gets the floor, not the benefit of the doubt.
@@ -551,6 +578,7 @@ function motionForIdea(idea: IdeaEvidence, input: CommitteeInput): Omit<Motion, 
     });
   }
   if (idea.dataQuality) reasons.push({ desk: "Executive", member: ROSTER.nina.name, finding: `The scanner reported data quality ${idea.dataQuality} on this name.` });
+  if (idea.technical) reasons.push({ desk: "Research", member: ROSTER.maya.name, finding: `Shared technical gate ${idea.technical.total}/100, signal ${idea.technical.signal}, ${idea.technical.hardBlocks.length} hard block(s), data quality ${idea.technical.dataQualityPct}%.` });
   if (idea.note) reasons.push({ desk: "Research", member: ROSTER.sofia.name, finding: idea.note });
 
   const px = idea.price;
@@ -625,8 +653,11 @@ function castVotes(m: Omit<Motion, "votes" | "decisionGates" | "tally" | "outcom
     const strong = p.momentum.total >= 60 && p.momentum.hardBlocks.length === 0;
     seat("maya", reducesRisk ? (strong ? "AGAINST" : "FOR") : addsRisk ? (strong ? "FOR" : "AGAINST") : "FOR",
       `Momentum ${p.momentum.total}/100, ${p.momentum.hardBlocks.length} hard block(s), data quality ${p.momentum.dataQualityPct}%.`);
+  } else if (idea?.technical) {
+    const strong = idea.technical.total >= MIN_TECHNICAL_BUY_SCORE && idea.technical.hardBlocks.length === 0;
+    seat("maya", strong ? "FOR" : "AGAINST", `Shared technical gate ${idea.technical.total}/100, ${idea.technical.hardBlocks.length} hard block(s), signal ${idea.technical.signal}, data quality ${idea.technical.dataQualityPct}%.`);
   } else if (idea) {
-    seat("maya", "ABSTAIN", "The referral carries no momentum score; the name has not been run through the v3.0 model on this book.");
+    seat("maya", "ABSTAIN", "The referral has not cleared the shared Holdings technical gate; it may remain on Watchlist but cannot become a BUY.");
   } else {
     seat("maya", "ABSTAIN", "No candle history was available for this name, so no momentum score exists.");
   }
@@ -1107,7 +1138,7 @@ function buildDeskReports(input: CommitteeInput): DeskReport[] {
 
 export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const asOf = input.asOf;
-  const meetingId = `IC-${asOf.slice(0, 10).replace(/-/g, "")}`;
+  const meetingId = `IC-${asOf.slice(0, 10).replace(/-/g, "")}-${input.portfolioRevision ?? "UNVERSIONED"}`;
 
   /* 1. Attendance. A seat is present when it brought a measurement. */
   // A desk is present when it measured something on this agenda — and the
@@ -1211,6 +1242,29 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
         member: ROSTER.miriam.name,
         reason: `${idea.ticker} has moved ${pct1(idea.priceDriftPct)} since the referral was written at ${money(idea.referencePrice ?? 0)}. The target, the upside and the conviction were all computed at that price. Re-run the analysis before this is sized.`,
       };
+    }
+    // An actual SELL starts a cooling-off period. Research may keep the name
+    // on Watchlist, but it may not send it back to the blotter without a fresh
+    // explicit thesis after the cooldown.
+    if (!veto && idea?.recentTrade?.daysSinceSell != null && idea.recentTrade.daysSinceSell < SELL_COOLDOWN_DAYS && (draft.kind === "ADD" || draft.kind === "NEW BUY")) {
+      veto = {
+        member: ROSTER.sofia.name,
+        reason: `${idea.ticker} was sold ${idea.recentTrade.daysSinceSell} day(s) ago. The ${SELL_COOLDOWN_DAYS}-day re-entry cooldown prevents an automatic reversal; keep it on Watchlist and submit a fresh thesis after the cooldown or request a documented CIO exception.`,
+      };
+    }
+    // Research OS and Holdings now share one technical admission gate. A high
+    // factor score cannot open a line that the portfolio model would exit on
+    // the next refresh.
+    if (!veto && idea && (draft.kind === "ADD" || draft.kind === "NEW BUY")) {
+      const technical = idea.technical;
+      if (!technical || technical.total < MIN_TECHNICAL_BUY_SCORE || technical.hardBlocks.length > 0) {
+        veto = {
+          member: ROSTER.miriam.name,
+          reason: !technical
+            ? `${idea.ticker} has no shared technical score. Research may retain it on Watchlist, but no BUY can reach the blotter until Sentinel X/Momentum evidence is available.`
+            : `${idea.ticker} fails the shared technical BUY gate: ${technical.total}/100 (minimum ${MIN_TECHNICAL_BUY_SCORE}), ${technical.hardBlocks.length} hard block(s), signal ${technical.signal}. It remains a research candidate, not an executable purchase.`,
+        };
+      }
     }
     // While the fund is below its own cash floor, nothing new opens. This is
     // the rule the optimizer states and nothing used to enforce.
