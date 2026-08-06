@@ -290,7 +290,8 @@ section("Dissent");
 
 section("Liquidity buffer");
 
-// The shape the real book was in: broker cash negative, a reserve line held.
+// A combined-buffer breach: SGOV is already part of the buffer, so selling it
+// into USD cannot repair the shortfall. A risk reduction is the real source.
 const overdrawn = (over = {}) => input({
   cashBalance: -125.65,
   deployableCash: 0,
@@ -309,16 +310,16 @@ const overdrawn = (over = {}) => input({
   const liq = meeting.motions.find((m) => m.kind === "RAISE CASH");
   ok("a cash floor breach produces a liquidity motion", liq != null);
   ok("it is taken first", meeting.motions[0].kind === "RAISE CASH");
-  ok("it names the reserve to sell, not just 'raise the buffer'", liq.ticker === "SGOV", liq.ticker);
+  ok("it never treats SGOV-to-USD as raising the combined buffer", liq.ticker === "GPIQ", liq.ticker);
   ok("it is a sale", liq.sizeUsd < 0);
-  ok("it is sized to the shortfall, capped by the reserve",
-    Math.abs(liq.sizeUsd) <= 1500 + 0.01 && Math.abs(liq.sizeUsd) > 0, `${liq.sizeUsd}`);
+  ok("it is sized to the combined-buffer shortfall",
+    Math.abs(liq.sizeUsd) <= 18000 + 0.01 && Math.abs(liq.sizeUsd) > 0, `${liq.sizeUsd}`);
   ok("an overdraft is called an overdraft",
     liq.reasons.some((r) => /overdrawn/i.test(r.finding)));
   ok("the destination is stated explicitly",
-    liq.reasons.some((r) => /proceeds stay as settled cash/i.test(r.finding)));
+    liq.reasons.some((r) => /proceeds stay inside the Cash Buffer/i.test(r.finding)));
   ok("it says it is not a reallocation",
-    liq.reasons.some((r) => /not a reallocation/i.test(r.finding)));
+    liq.reasons.some((r) => /does not fund a purchase/i.test(r.finding)));
   ok("it carries", liq.outcome === "CARRIED", liq.outcomeReason);
 }
 {
@@ -338,11 +339,22 @@ const overdrawn = (over = {}) => input({
     plan.destinationLines.some((line) => line.category === "CASH_RESERVE" && line.amountUsd === plan.earmarkedForCashUsd));
   ok("the plan says the money stays as cash", /ring-fenced/i.test(plan.note));
   ok("the blotter line warns against reinvesting the proceeds",
-    meeting.blotter.some((l) => l.ticker === "SGOV" && /Do not reinvest/i.test(l.reason)));
+    meeting.blotter.some((l) => l.ticker === "GPIQ" && /Do not deploy/i.test(l.reason)));
   ok("the resolution says leave the proceeds in cash",
-    meeting.resolutions.some((r) => /leave the proceeds in settled cash/i.test(r.text)));
+    meeting.resolutions.some((r) => /retain the proceeds in the Cash Buffer/i.test(r.text)));
   ok("the minutes record the breach and the fix",
-    meeting.minutes.some((line) => /Liquidity:/.test(line) && /below the/.test(line)));
+    meeting.minutes.some((line) => /Liquidity:/.test(line) && /versus the/.test(line)));
+}
+{
+  const meeting = runCommitteeMeeting(overdrawn({
+    cashBalance: 13,
+    cashBufferPct: 12,
+    positions: [
+      position({ ticker: "NFLX", shares: 3, price: 70 }),
+      position({ ticker: "SGOV", shares: 11, price: 100, isReserve: true, sleeve: "cash", zone: null, momentum: null, valuation: { verdict: "CASH EQUIVALENT", deviationPct: 0, confidence: "high" }, trend: null }),
+    ],
+  }));
+  ok("USD plus SGOV above the floor creates no raise-buffer sale", !meeting.motions.some((m) => m.kind === "RAISE CASH"));
 }
 {
   // A book already inside policy raises nothing.
@@ -352,10 +364,11 @@ const overdrawn = (over = {}) => input({
     !meeting.motions.some((m) => m.veto && /floor/i.test(m.veto.reason)));
 }
 {
-  // No reserve to sell, and a $1,500 gap: GPIQ ($20,000) would cover it but
-  // SPMO ($2,000) is the smallest line that does, so SPMO is the one to name.
+  // For a $1,500 combined-buffer gap, GPIQ ($20,000) would cover it but SPMO
+  // ($2,000) is the smallest risk line that does, so SPMO is the one to name.
   const meeting = runCommitteeMeeting(overdrawn({
     cashBalance: 14_500,
+    cashBufferPct: 7.25,
     positions: [position({ ticker: "GPIQ", shares: 200, price: 100 }), position({ ticker: "SPMO", shares: 20, price: 100 })],
   }));
   const liq = meeting.motions.find((m) => m.kind === "RAISE CASH");
