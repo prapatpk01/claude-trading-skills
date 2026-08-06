@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
+import {
+  DEFAULT_RECONCILIATION_TOLERANCE_PCT,
+  reconcileCommitteeMotions,
+  type PortfolioTransaction,
+  type ReconciliationMotion,
+} from "@/lib/committeeReconciliation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,6 +45,26 @@ interface DecisionInput {
   note?: string | null;
 }
 
+async function readTransactionMatches(
+  sb: NonNullable<ReturnType<typeof getSupabase>>,
+  motions: ReconciliationMotion[],
+  sinceDate: string,
+  tolerancePct: number,
+) {
+  const tickers = Array.from(new Set(motions.map((motion) => String(motion.ticker).trim().toUpperCase()).filter(Boolean)));
+  if (!tickers.length) return [];
+  const { data, error } = await sb
+    .from("portfolio_transactions")
+    .select("id,ticker,side,shares,price,trade_date,created_at")
+    .in("ticker", tickers)
+    .gte("trade_date", sinceDate)
+    .order("trade_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(error.message);
+  return reconcileCommitteeMotions(motions, (data ?? []) as PortfolioTransaction[], sinceDate, tolerancePct);
+}
+
 const finite = (v: unknown): number | null => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
@@ -74,6 +100,24 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ minutes: data ?? [], persistence: "supabase" });
 }
 
+/** Preview how the committee motions map to transactions already recorded in Holdings. */
+export async function PUT(req: NextRequest) {
+  const body = await req.json().catch(() => ({} as any));
+  const motions: ReconciliationMotion[] = Array.isArray(body.motions) ? body.motions : [];
+  const sinceDate = String(body.tradeDate ?? body.asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const tolerancePct = Math.min(100, Math.max(0, finite(body.tolerancePct) ?? DEFAULT_RECONCILIATION_TOLERANCE_PCT));
+  if (!motions.length) return NextResponse.json({ error: "No motions were supplied for reconciliation." }, { status: 400 });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate)) return NextResponse.json({ error: "A valid reconciliation date is required." }, { status: 400 });
+  const sb = getSupabase();
+  if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  try {
+    const matches = await readTransactionMatches(sb, motions, sinceDate, tolerancePct);
+    return NextResponse.json({ mode: "RECONCILE_EXISTING", sinceDate, tolerancePct, matches }, { headers: { "Cache-Control": "no-store" } });
+  } catch (cause: unknown) {
+    return NextResponse.json({ error: cause instanceof Error ? cause.message : "Portfolio reconciliation failed." }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({} as any));
 
@@ -101,6 +145,30 @@ export async function POST(req: NextRequest) {
 
   const sb = getSupabaseAdmin() ?? getSupabase();
   if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+
+  const reconciliationMode = String(body.mode ?? "").toUpperCase() === "RECONCILE_EXISTING";
+  const tradeDate = String(body.tradeDate ?? body.asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const tolerancePct = Math.min(100, Math.max(0, finite(body.tolerancePct) ?? DEFAULT_RECONCILIATION_TOLERANCE_PCT));
+  let reconciledByResolution = new Map<string, ReturnType<typeof reconcileCommitteeMotions>[number]>();
+  if (reconciliationMode) {
+    try {
+      const matches = await readTransactionMatches(
+        sb,
+        decisions.map((decision) => ({
+          id: String(decision.resolutionId ?? `${decision.kind}-${decision.ticker}`),
+          ticker: decision.ticker,
+          kind: decision.kind,
+          proposedUsd: decision.proposedUsd,
+          proposedShares: decision.proposedShares,
+        })),
+        tradeDate,
+        tolerancePct,
+      );
+      reconciledByResolution = new Map(matches.map((match) => [match.resolutionId, match]));
+    } catch (cause: unknown) {
+      return NextResponse.json({ error: cause instanceof Error ? cause.message : "Portfolio reconciliation failed." }, { status: 500 });
+    }
+  }
 
   // ── Idempotency. A meeting applies once. ──
   let persistence: "supabase" | "unavailable" = "supabase";
@@ -141,6 +209,24 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    if (reconciliationMode) {
+      const resolutionId = String(decision.resolutionId ?? `${kind}-${ticker}`);
+      const match = reconciledByResolution.get(resolutionId);
+      if (!match || match.status === "NOT_FOUND") {
+        failed.push({ ticker, kind, error: `No matching ${match?.expectedSide ?? "portfolio"} transaction was found in Holdings on or after ${tradeDate}.` });
+        continue;
+      }
+      applied.push({
+        ticker, kind, side: match.expectedSide,
+        shares: match.actualShares, price: match.actualPrice,
+        valueUsd: match.actualValueUsd, variancePct: match.variancePct,
+        verdict, reconciliationStatus: match.status,
+        transactionIds: match.transactionIds,
+        mode: "RECONCILED_EXISTING",
+      });
+      continue;
+    }
+
     // HOLD carries no trade. Approving it is a decision, not an instruction.
     const shares = finite(decision.approvedShares) ?? finite(decision.proposedShares);
     if (kind === "HOLD" || !shares) {
@@ -168,7 +254,7 @@ export async function POST(req: NextRequest) {
       p_side: side,
       p_shares: roundShares(Math.abs(shares)),
       p_price: price,
-      p_trade_date: String(body.tradeDate ?? new Date().toISOString().slice(0, 10)),
+      p_trade_date: tradeDate,
       p_notes: notes,
       p_thesis: null,
       p_target_price: null,
@@ -206,7 +292,9 @@ export async function POST(req: NextRequest) {
   }
 
   const summary = [
-    `${applied.length} transaction(s) recorded in the ledger`,
+    reconciliationMode
+      ? `${applied.length} existing portfolio transaction(s) reconciled — no trade was created`
+      : `${applied.length} transaction(s) recorded in the ledger`,
     `${skipped.length} line(s) required none`,
     failed.length ? `${failed.length} failed and were NOT recorded` : null,
   ].filter(Boolean).join(", ") + ".";
@@ -224,13 +312,23 @@ export async function POST(req: NextRequest) {
       recordError,
       note:
         persistence === "unavailable"
-          ? `Trades were applied to the ledger, but the meeting record could not be stored: the ${MINUTES_TABLE} table does not exist on this database. Run ${MIGRATION_HINT} to keep minutes. The ledger entries carry the meeting id in their notes, so the audit trail survives either way.`
+          ? reconciliationMode
+            ? `The Holdings comparison completed and no trade was created, but the checklist could not be stored because the ${MINUTES_TABLE} table does not exist on this database. Run ${MIGRATION_HINT} to keep committee minutes.`
+            : `Trades were applied to the ledger, but the meeting record could not be stored: the ${MINUTES_TABLE} table does not exist on this database. Run ${MIGRATION_HINT} to keep minutes. The ledger entries carry the meeting id in their notes, so the audit trail survives either way.`
           : recorded
-          ? "The meeting is on the record. Every applied line carries the meeting id in its ledger note."
-          : `The meeting record failed to save${recordError ? `: ${recordError}` : ""}. The ledger entries are still there and carry the meeting id in their notes.`,
+          ? reconciliationMode
+            ? "The checklist is on the record. It references existing Holdings transactions and did not create another trade."
+            : "The meeting is on the record. Every applied line carries the meeting id in its ledger note."
+          : reconciliationMode
+            ? `The Holdings comparison completed and no trade was created, but the checklist failed to save${recordError ? `: ${recordError}` : ""}.`
+            : `The meeting record failed to save${recordError ? `: ${recordError}` : ""}. The ledger entries are still there and carry the meeting id in their notes.`,
       disclosures: [
-        "Only lines a person marked APPROVED or AMENDED were applied. A carried motion on its own does nothing.",
-        "Prices recorded are the ones supplied by the approver, not the committee's reference price.",
+        reconciliationMode
+          ? "The portfolio transaction ledger remained the source of truth. This approval only matched and recorded existing Holdings activity; it did not create another trade."
+          : "Only lines a person marked APPROVED or AMENDED were applied. A carried motion on its own does nothing.",
+        reconciliationMode
+          ? `Directional BUY/SELL matches within ${tolerancePct}% of the proposed size were marked as close matches; different sizes were retained as amendments for human review.`
+          : "Prices recorded are the ones supplied by the approver, not the committee's reference price.",
         failed.length ? "Failed lines were not recorded and were not retried. Re-submit them individually once the cause is understood." : null,
       ].filter(Boolean),
     },
