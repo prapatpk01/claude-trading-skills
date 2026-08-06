@@ -40,13 +40,15 @@ const SELLS = new Set(["EXIT", "TRIM", "RAISE CASH"]);
 const VERDICT_TONE: Record<Verdict, string> = { PENDING: "#64748b", APPROVED: "#34d399", AMENDED: "#38bdf8", REJECTED: "#f87171" };
 
 export default function MeetingApprovalPanel({
-  lang, meetingId, meeting, motions, onApplied,
+  lang, meetingId, meeting, motions, approvalReady = true, approvalBlockReason, onApplied,
 }: {
   lang: AppLang;
   meetingId: string;
   /** The meeting object, passed through to the minutes record verbatim. */
   meeting?: Record<string, unknown>;
   motions: ApprovalMotion[];
+  approvalReady?: boolean;
+  approvalBlockReason?: string;
   onApplied?: () => void;
 }) {
   const [approvedBy, setApprovedBy] = useState("");
@@ -74,12 +76,13 @@ export default function MeetingApprovalPanel({
 
   const blockers = useMemo(() => {
     const out: string[] = [];
+    if (!approvalReady) out.push(approvalBlockReason ?? tr(lang, "The capital plan is incomplete.", "แผนเงินทุนยังไม่ครบถ้วน"));
     if (!approvedBy.trim()) out.push(tr(lang, "An approver name is required.", "ต้องระบุชื่อผู้อนุมัติ"));
     if (!decided.length) out.push(tr(lang, "No line has been decided yet.", "ยังไม่ได้ตัดสินใจรายการใดเลย"));
     if (missingPrice.length) out.push(tr(lang, `An execution price is missing for ${missingPrice.map((l) => l.ticker).join(", ")}.`, `ยังไม่ได้กรอกราคาที่ซื้อขายจริงของ ${missingPrice.map((l) => l.ticker).join(", ")}`));
     if (missingShares.length) out.push(tr(lang, `A share count is missing for ${missingShares.map((l) => l.ticker).join(", ")}.`, `ยังไม่ได้กรอกจำนวนหุ้นของ ${missingShares.map((l) => l.ticker).join(", ")}`));
     return out;
-  }, [approvedBy, decided.length, missingPrice, missingShares, lang]);
+  }, [approvalReady, approvalBlockReason, approvedBy, decided.length, missingPrice, missingShares, lang]);
 
   async function submit() {
     if (blockers.length || submitting || result?.recorded) return;
@@ -128,6 +131,8 @@ export default function MeetingApprovalPanel({
         </div>
         <span className="tag">{meetingId}</span>
       </div>
+
+      {!approvalReady && <div className="err" style={{ marginTop: 16 }}>⚠ {tr(lang, "APPROVAL LOCKED", "ล็อกการอนุมัติ")} · {approvalBlockReason ?? tr(lang, "Complete the capital allocation plan first.", "ต้องจัดทำแผนจัดสรรเงินให้ครบก่อน")}</div>}
 
       {lines.length === 0 ? (
         <div className="notice" style={{ marginTop: 16 }}>

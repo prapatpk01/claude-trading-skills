@@ -207,6 +207,7 @@ export interface Attendee {
 
 export interface CapitalPlan {
   sourcesUsd: number;
+  deployableSourcesUsd: number;
   sourceLines: { label: string; amountUsd: number }[];
   usesUsd: number;
   useLines: { label: string; amountUsd: number }[];
@@ -220,6 +221,28 @@ export interface CapitalPlan {
    * is not available to fund a purchase, because it is the purchase.
    */
   earmarkedForCashUsd: number;
+  /** Capital deliberately held pending the next allocation decision. */
+  temporaryParkingUsd: number;
+  /** Capital with no owner, destination or review date. Must be zero to approve. */
+  unallocatedUsd: number;
+  allocationComplete: boolean;
+  approvalReady: boolean;
+  allocationStatus: "READY" | "INCOMPLETE";
+  reviewOwner: string;
+  reviewBy: string;
+  destinationLines: {
+    category: "CASH_RESERVE" | "NEW_INVESTMENT" | "ADD_HOLDING" | "TEMPORARY_PARKING";
+    label: string;
+    amountUsd: number;
+    owner: string;
+    reviewBy: string | null;
+  }[];
+  fallbackOptions: {
+    ticker: string;
+    action: "REVIEW ADD" | "KEEP RESERVE";
+    maxUsd: number;
+    rationale: string;
+  }[];
   note: string;
 }
 
@@ -1244,17 +1267,22 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
   const sells = carried.filter((m) => m.sizeUsd < 0 && m.kind !== "RAISE CASH");
   const buysAll = carried.filter((m) => m.sizeUsd > 0);
 
-  const sourceLines = [
+  const deployableSourceLines = [
     { label: "Deployable cash (above the regime floor)", amountUsd: round2(input.deployableCash) },
     ...sells.map((m) => ({ label: `${m.kind} ${m.ticker}`, amountUsd: round2(-m.sizeUsd) })),
   ].filter((line) => line.amountUsd > 0);
+  const deployableSourcesUsd = round2(deployableSourceLines.reduce((s, l) => s + l.amountUsd, 0));
+  const sourceLines = [
+    ...earmarked.map((m) => ({ label: `${m.kind} ${m.ticker} → broker-cash floor`, amountUsd: round2(-m.sizeUsd) })),
+    ...deployableSourceLines,
+  ];
   const sourcesUsd = round2(sourceLines.reduce((s, l) => s + l.amountUsd, 0));
 
   // Fund the highest-conviction uses first; cut the rest and say which.
   const ranked = [...buysAll].sort((a, b) => (b.tally.for - b.tally.against) - (a.tally.for - a.tally.against) || b.evidenceCoveragePct - a.evidenceCoveragePct);
   const funded: Motion[] = [];
   const cutForFunding: CapitalPlan["cutForFunding"] = [];
-  let remaining = sourcesUsd;
+  let remaining = deployableSourcesUsd;
   for (const m of ranked) {
     if (m.sizeUsd <= remaining) {
       funded.push(m);
@@ -1277,27 +1305,103 @@ export function runCommitteeMeeting(input: CommitteeInput): CommitteeMeeting {
 
   const useLines = funded.map((m) => ({ label: `${m.kind} ${m.ticker}`, amountUsd: round2(m.sizeUsd) }));
   const usesUsd = round2(useLines.reduce((s, l) => s + l.amountUsd, 0));
+  const newInvestmentsUsd = round2(funded.filter((m) => m.kind === "NEW BUY").reduce((s, m) => s + m.sizeUsd, 0));
+  const addExistingUsd = round2(funded.filter((m) => m.kind === "ADD").reduce((s, m) => s + m.sizeUsd, 0));
+  const reviewBy = addDays(asOf, 7);
+  // Sale proceeds with no approved risk use are not allowed to disappear into
+  // an ambiguous "balance". Asset Management owns them as a temporary reserve
+  // with a dated review. That is a destination, not permission to forget them.
+  const temporaryParkingUsd = round2(Math.max(0, deployableSourcesUsd - usesUsd));
+
+  const fallbackOptions: CapitalPlan["fallbackOptions"] = input.positions
+    .filter((p) => {
+      if (p.isReserve || (p.marketValue ?? 0) <= 0 || (p.weightPct ?? HARD_CAP_PCT) >= REVIEW_PCT) return false;
+      const motion = motions.find((m) => m.ticker === p.ticker);
+      const blocks = p.momentum?.hardBlocks ?? [];
+      const expensive = p.valuation && /PREMIUM|EXPENSIVE|OVERVALUED/i.test(p.valuation.verdict);
+      return motion?.kind === "HOLD" && (p.momentum?.total ?? 0) >= 55 && blocks.length === 0 && !expensive;
+    })
+    .sort((a, b) => (b.momentum?.total ?? 0) - (a.momentum?.total ?? 0))
+    .slice(0, 3)
+    .map((p) => ({
+      ticker: p.ticker,
+      action: "REVIEW ADD" as const,
+      maxUsd: round2(Math.max(0, ((REVIEW_PCT - (p.weightPct ?? 0)) / 100) * input.nav)),
+      rationale: `Existing holding at ${plain(p.weightPct)}% of NAV; momentum ${p.momentum?.total ?? 0}/100, no hard block and room below the ${REVIEW_PCT}% review threshold. Asset Management must re-underwrite it before any ADD is approved.`,
+    }));
+  if (!fallbackOptions.length && temporaryParkingUsd > 0) {
+    fallbackOptions.push({
+      ticker: "CASH / SGOV",
+      action: "KEEP RESERVE",
+      maxUsd: temporaryParkingUsd,
+      rationale: `No existing holding cleared the add-review screen. Keep the proceeds in the temporary reserve and return with a new Investment Team proposal by ${reviewBy}.`,
+    });
+  }
+
+  const destinationLines: CapitalPlan["destinationLines"] = [
+    ...(earmarkedForCashUsd > 0 ? [{
+      category: "CASH_RESERVE" as const,
+      label: `Restore broker-cash floor`,
+      amountUsd: earmarkedForCashUsd,
+      owner: ROSTER.lena.name,
+      reviewBy: null,
+    }] : []),
+    ...funded.map((m) => ({
+      category: (m.kind === "NEW BUY" ? "NEW_INVESTMENT" : "ADD_HOLDING") as "NEW_INVESTMENT" | "ADD_HOLDING",
+      label: `${m.kind} ${m.ticker}`,
+      amountUsd: round2(m.sizeUsd),
+      owner: ROSTER.sofia.name,
+      reviewBy: null,
+    })),
+    ...(temporaryParkingUsd > 0 ? [{
+      category: "TEMPORARY_PARKING" as const,
+      label: `Temporary reserve pending ranked allocation review`,
+      amountUsd: temporaryParkingUsd,
+      owner: ROSTER.lena.name,
+      reviewBy,
+    }] : []),
+  ];
+  const destinationTotalUsd = round2(destinationLines.reduce((sum, line) => sum + line.amountUsd, 0));
+  const unallocatedUsd = round2(Math.max(0, sourcesUsd - destinationTotalUsd));
+  const allocationComplete = unallocatedUsd <= 0.01 && destinationLines.every((line) =>
+    Boolean(line.owner) && (line.category !== "TEMPORARY_PARKING" || Boolean(line.reviewBy))
+  );
   const cashAfter = input.nav > 0
     ? ((input.cashBalance + earmarkedForCashUsd + sells.reduce((s, m) => s + -m.sizeUsd, 0) - usesUsd) / input.nav) * 100
     : null;
 
   const capitalPlan: CapitalPlan = {
     sourcesUsd,
+    deployableSourcesUsd,
     sourceLines,
     usesUsd,
     useLines,
-    balanceUsd: round2(sourcesUsd - usesUsd),
-    funded: usesUsd <= sourcesUsd,
+    balanceUsd: unallocatedUsd,
+    funded: usesUsd <= deployableSourcesUsd && allocationComplete,
     cutForFunding,
     cashAfterPct: cashAfter == null ? null : round2(cashAfter),
     earmarkedForCashUsd,
+    temporaryParkingUsd,
+    unallocatedUsd,
+    allocationComplete,
+    approvalReady: quorumMet && allocationComplete,
+    allocationStatus: allocationComplete ? "READY" : "INCOMPLETE",
+    reviewOwner: ROSTER.lena.name,
+    reviewBy,
+    destinationLines,
+    fallbackOptions,
     note: [
       earmarkedForCashUsd > 0
         ? `${money(earmarkedForCashUsd)} is being raised to restore the liquidity buffer. That money stays as settled cash — it is ring-fenced and does not fund anything on this agenda.`
         : "",
-      usesUsd === 0
-        ? "No approved use of capital this meeting. Cash stays where it is."
-        : `${money(usesUsd)} of approved buying is funded from ${money(sourcesUsd)} of sources, leaving ${money(Math.max(0, sourcesUsd - usesUsd))} uncommitted.${cutForFunding.length ? ` ${cutForFunding.length} motion(s) were cut or reduced to make the plan balance.` : ""}`,
+      usesUsd === 0 && temporaryParkingUsd > 0
+        ? `Investment approved no new risk use. Asset Management assigns ${money(temporaryParkingUsd)} to the temporary reserve and must return by ${reviewBy} with either a ranked ADD to an existing holding or a qualified new investment.`
+        : usesUsd === 0
+        ? `No deployable proceeds remain after the cash-floor decision. Investment and Asset Management must return by ${reviewBy} with a qualified new idea or a ranked ADD plan before any excess capital is released.`
+        : `${money(usesUsd)} is approved for investment (${money(newInvestmentsUsd)} new names; ${money(addExistingUsd)} existing holdings) from ${money(deployableSourcesUsd)} of deployable sources. Asset Management assigns the remaining ${money(temporaryParkingUsd)} to the temporary reserve until the ${reviewBy} allocation review.${cutForFunding.length ? ` ${cutForFunding.length} motion(s) were cut or reduced to make the plan balance.` : ""}`,
+      allocationComplete
+        ? "Every dollar has a named destination, owner and review date."
+        : `${money(unallocatedUsd)} remains unallocated. Human approval is blocked.`,
     ].filter(Boolean).join(" "),
   };
 
