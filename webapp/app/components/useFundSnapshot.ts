@@ -115,8 +115,8 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
     const holdings: FundHolding[] = preliminary.map((row) => ({ ...row, weightPct: totalNav > 0 ? row.marketValue / totalNav * 100 : 0 }));
     const reserveMarketValue = finite(raw?.buffer?.reserveMarketValue) ?? 0;
 
-    // Cash means broker cash only. Reserve ETFs stay invested until a SELL is recorded.
-    const cashAndEquivalents = cashBalance;
+    // Policy liquidity combines USD cash and approved reserve instruments.
+    const cashAndEquivalents = finite(raw?.buffer?.liquidityBuffer) ?? cashBalance + (finite(raw?.buffer?.reserveLiquidityValue) ?? 0);
     const targetCashPct = finite(raw?.buffer?.targetPct) ?? 15;
     const cashBufferPct = finite(raw?.buffer?.bufferPct) ?? (totalNav > 0 ? cashBalance / totalNav * 100 : 0);
     const deployableCash = Math.max(0, finite(raw?.buffer?.deployableCash) ?? finite(raw?.buffer?.gapValue) ?? 0);
