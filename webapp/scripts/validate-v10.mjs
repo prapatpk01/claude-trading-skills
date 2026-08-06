@@ -104,10 +104,12 @@ requireAll("app/components/InstitutionalShell.tsx", [
 requireAll("app/components/ExecutiveDashboard.tsx", [
   "Total Portfolio Value",
   "Unrealized P/L",
-  // Wording moved from "Cash & Equivalents" to a broker-cash / reserve split
-  // when the two were separated. The guarantee is that both are shown.
-  "Broker Cash",
-  "Deployable Cash",
+  // Cash Buffer is one policy sleeve; its USD and reserve components remain
+  // visible so an internal SGOV conversion is never mistaken for new capital.
+  "Total Cash Buffer",
+  "Broker USD Cash",
+  "Reserve Holdings",
+  "Deployable Buffer",
   "Liquidity",
   "Portfolio Health",
   "CIO Executive Brief",
