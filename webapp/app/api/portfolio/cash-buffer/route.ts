@@ -109,10 +109,12 @@ export async function GET() {
     const verified = missingPrices.length === 0;
     const totalNav = verified ? securitiesValue + cashBalance : null;
 
-    // Policy liquidity is broker cash only. Reserve ETFs remain invested assets until sold.
-    const liquidityBuffer = cashBalance;
+    // The policy buffer is a sleeve, not a bank-account balance. USD cash and
+    // approved short-duration reserve instruments belong to the same buffer.
+    // Haircuts keep credit/duration risk from being counted as one-for-one cash.
     const totalReserveAssets = cashBalance + reserveMarketValue;
     const haircutAdjustedReserveAssets = cashBalance + reserveLiquidityValue;
+    const liquidityBuffer = haircutAdjustedReserveAssets;
     const bufferPct = totalNav != null && totalNav > 0 ? (liquidityBuffer / totalNav) * 100 : null;
     const targetValue = totalNav != null ? totalNav * regime.targetPct / 100 : null;
     const gapValue = targetValue != null ? liquidityBuffer - targetValue : null;
@@ -150,9 +152,10 @@ export async function GET() {
       action,
       reserveHoldings,
       policy: {
-        cashOnlyPolicy: true,
+        cashOnlyPolicy: false,
+        combinedBufferPolicy: true,
         reserveTickers: Object.keys(RESERVE_RULES),
-        principle: "Liquidity buffer and deployable cash use broker cash only. Reserve ETFs are reported separately and are not available cash until sold.",
+        principle: "Cash Buffer equals USD broker cash plus haircut-adjusted approved reserve instruments. Selling SGOV into USD is an internal liquidity transfer and does not increase the total buffer.",
       },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
