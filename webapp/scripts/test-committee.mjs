@@ -357,6 +357,15 @@ const overdrawn = (over = {}) => input({
   ok("USD plus SGOV above the floor creates no raise-buffer sale", !meeting.motions.some((m) => m.kind === "RAISE CASH"));
 }
 {
+  const meeting = runCommitteeMeeting(overdrawn({
+    cashBalance: 13,
+    cashBufferPct: 8.34,
+    targetCashPct: 8,
+    regime: { ...regime, cashMinPct: 10 },
+  }));
+  ok("the meeting uses the Cash Buffer policy target instead of a conflicting secondary regime floor", !meeting.motions.some((m) => m.kind === "RAISE CASH"));
+}
+{
   // A book already inside policy raises nothing.
   const meeting = runCommitteeMeeting(input({ cashBalance: 40_000, cashBufferPct: 20 }));
   ok("a funded book has no liquidity motion", !meeting.motions.some((m) => m.kind === "RAISE CASH"));
