@@ -29,6 +29,15 @@ type Motion = {
   votes: Vote[]; tally: { for: number; against: number; abstain: number };
   outcome: Outcome; outcomeReason: string; veto: { member: string; reason: string } | null;
 };
+type Proposal = {
+  ticker: string; setupType: string; score: number; coveragePct: number;
+  price: number; entryLow: number; entryHigh: number; stop: number; target: number;
+  riskReward: number; expectedReturnPct: number; thesis: string; catalyst: string; unmeasured: string[];
+};
+type ScanSummary = {
+  regime: { defensiveOnly: boolean; note: string } | null;
+  universeSize: number; rejected: number; warnings: string[]; note: string;
+};
 type DeskRow = { label: string; value: string; tone?: "good" | "warn" | "bad" | "neutral"; note?: string };
 type DeskReport = { member: string; role: string; desk: string; headline: string | null; rows: DeskRow[]; finding: string; gaps: string[] };
 type Meeting = {
@@ -36,6 +45,8 @@ type Meeting = {
   agenda: { n: number; title: string; covered: boolean; summary: string }[];
   attendance: { member: string; role: string; desk: string; present: boolean; contribution: string }[];
   deskReports: DeskReport[];
+  proposals?: Proposal[];
+  scan?: ScanSummary;
   quorum: { present: number; required: number; met: boolean; note: string };
   regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
   motions: Motion[];
@@ -59,6 +70,9 @@ type Meeting = {
 const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
 const money = (v: number) => `${v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
 const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v.toFixed(d)}%`);
+// A trade level is quoted to the cent. Rounding an entry band to the dollar
+// turns a $318.50 pivot into $319 and moves the stop with it.
+const level = (v: number) => `$${v.toFixed(2)}`;
 
 const KIND_TONE: Record<MotionKind, string> = { "RAISE CASH": "#facc15", EXIT: "#f87171", TRIM: "#fb923c", ADD: "#34d399", "NEW BUY": "#38bdf8", HOLD: "#94a3b8" };
 const OUTCOME_TONE: Record<Outcome, string> = { CARRIED: "#34d399", DEFERRED: "#fbbf24", FAILED: "#94a3b8" };
@@ -122,6 +136,13 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
     };
   }, [meeting?.motions]);
 
+  // Highest score first: the desk ranks its own shortlist rather than leaving
+  // the reader to work out which name it likes best.
+  const proposals = useMemo(
+    () => [...(meeting?.proposals ?? [])].sort((a, b) => b.score - a.score),
+    [meeting?.proposals]
+  );
+
   const deskStats = useMemo(() => {
     const desks = meeting?.deskReports ?? [];
     return {
@@ -172,6 +193,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
         <div className="grid cols-4" style={{ marginTop: 16 }}>
           <Metric label={tr(lang, "NAV", "มูลค่าสุทธิ")} value={money(meeting.nav)} />
+          <Metric label={tr(lang, "New names proposed", "หุ้นใหม่ที่เสนอ")} value={String(proposals.length)} />
           <Metric label={tr(lang, "Motions carried", "ญัตติที่ผ่าน")} value={`${counts.carried} / ${counts.all}`} />
           <Metric label={tr(lang, "Deferred", "เลื่อนพิจารณา")} value={String(counts.deferred)} />
           <Metric label={tr(lang, "Capital committed", "เงินที่อนุมัติใช้")} value={money(plan.usesUsd)} />
@@ -184,6 +206,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
             ["agenda", tr(lang, "Agenda", "ระเบียบวาระ")],
             ["attendance", tr(lang, "Attendance", "ผู้เข้าประชุม")],
             ["desks", tr(lang, "Desk reports", "รายงานแต่ละฝ่าย")],
+            ["proposals", tr(lang, "New proposals", "หุ้นใหม่ที่เสนอ")],
             ["motions", tr(lang, "Motions", "ญัตติ")],
             ["capital", tr(lang, "Capital plan", "แผนเงินทุน")],
             ["blotter", tr(lang, "Trade blotter", "รายการซื้อขาย")],
@@ -315,9 +338,87 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
         )}
       </section>
 
-      {/* ── 4. Motions ── */}
+      {/* ── 5. What research brought in ── */}
+      <section className="card" id="ic-proposals">
+        <Head n="5" title={tr(lang, "New investment proposals from the research desk", "หุ้นใหม่ที่ฝ่ายวิจัยเสนอเข้าที่ประชุม")} />
+        <p className="muted" style={{ marginTop: 0 }}>
+          {tr(lang,
+            "The desk runs its own scan before every meeting rather than waiting for someone to hand it a name. Each proposal below cleared all four hard filters and is tabled as a NEW BUY motion in the next section, where the committee votes on it.",
+            "ฝ่ายวิจัยรันสแกนของตัวเองก่อนการประชุมทุกครั้ง ไม่ต้องรอให้ใครส่งชื่อหุ้นมาให้ ทุกตัวด้านล่างผ่านตัวกรองบังคับครบทั้ง 4 ข้อ และถูกยื่นเป็นญัตติ NEW BUY ในหัวข้อถัดไปเพื่อให้ที่ประชุมลงมติ")}
+        </p>
+
+        {meeting.scan && (
+          <div className="grid cols-3" style={{ marginTop: 14 }}>
+            <Metric label={tr(lang, "Names swept", "จำนวนหุ้นที่สแกน")} value={String(meeting.scan.universeSize)} />
+            <Metric label={tr(lang, "Cleared every filter", "ผ่านตัวกรองทั้งหมด")} value={String(proposals.length)} />
+            <Metric label={tr(lang, "Rejected with a reason", "ถูกคัดออกพร้อมเหตุผล")} value={String(meeting.scan.rejected)} />
+          </div>
+        )}
+
+        {proposals.length === 0 ? (
+          <div className="notice" style={{ marginTop: 14 }}>
+            <b>{tr(lang, "The desk proposes nothing today", "วันนี้ฝ่ายวิจัยไม่เสนอหุ้นใดเลย")}</b>
+            <p style={{ margin: "6px 0 0" }}>{meeting.scan?.note ?? tr(lang, "The scan did not run.", "สแกนไม่ทำงาน")}</p>
+            {meeting.scan?.regime?.defensiveOnly && <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{meeting.scan.regime.note}</p>}
+            <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
+              {tr(lang,
+                "An empty shortlist is a finding. The alternative — tabling the least-bad candidate so the meeting has something to vote on — is how a fund buys its worst positions.",
+                "การไม่มีหุ้นเสนอคือผลการวิเคราะห์อย่างหนึ่ง ทางเลือกอีกทางคือเสนอตัวที่แย่น้อยที่สุดเพื่อให้มีอะไรให้โหวต ซึ่งเป็นวิธีที่กองทุนได้หุ้นที่แย่ที่สุดมาถือ")}
+            </p>
+          </div>
+        ) : (
+          <div className="grid cols-2" style={{ marginTop: 16 }}>
+            {proposals.map((p) => (
+              <article key={p.ticker} className="card" style={{ margin: 0, borderLeft: "3px solid #38bdf8" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div>
+                    <strong style={{ fontSize: 18 }}>{p.ticker}</strong>
+                    <small className="muted" style={{ display: "block" }}>{p.setupType}</small>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <strong style={{ fontSize: 18, color: p.score >= 70 ? "#34d399" : "#fbbf24" }}>{p.score}/100</strong>
+                    <small className="muted" style={{ display: "block" }}>{tr(lang, "alpha score", "คะแนน alpha")} · {p.coveragePct}% {tr(lang, "measured", "วัดได้")}</small>
+                  </div>
+                </div>
+
+                <div className="grid cols-2" style={{ marginTop: 12 }}>
+                  <Metric label={tr(lang, "Entry", "ราคาเข้า")} value={`${level(p.entryLow)}–${level(p.entryHigh)}`} />
+                  <Metric label={tr(lang, "Stop", "จุดตัดขาดทุน")} value={level(p.stop)} />
+                  <Metric label={tr(lang, "Target", "เป้าหมาย")} value={`${level(p.target)} · ${pct(p.expectedReturnPct)}`} />
+                  <Metric label={tr(lang, "Reward:risk", "ผลตอบแทนต่อความเสี่ยง")} value={`1:${p.riskReward}`} />
+                </div>
+
+                <p style={{ margin: "12px 0 0", fontSize: 13, lineHeight: 1.6 }}>{p.thesis}</p>
+                {p.catalyst && <p className="muted" style={{ margin: "8px 0 0", fontSize: 12.5, lineHeight: 1.55 }}>{tr(lang, "Catalyst", "ตัวเร่ง")}: {p.catalyst}</p>}
+
+                {p.unmeasured.length > 0 && (
+                  <div className="notice" style={{ marginTop: 12, fontSize: 12 }}>
+                    <b>{tr(lang, "Scored zero, kept in the denominator", "ให้ศูนย์และยังนับในตัวหาร")}</b>
+                    <p style={{ margin: "5px 0 0", lineHeight: 1.5 }}>{p.unmeasured.join(" · ")}</p>
+                  </div>
+                )}
+
+                <button className="btn ghost sm" type="button" style={{ marginTop: 12 }} onClick={() => jump("ic-motions")}>
+                  {tr(lang, "See the vote on this name", "ดูผลโหวตของหุ้นตัวนี้")}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {(meeting.scan?.warnings?.length ?? 0) > 0 && (
+          <div className="notice" style={{ marginTop: 14, fontSize: 12 }}>
+            <b>{tr(lang, "Limits on this sweep", "ข้อจำกัดของการสแกนรอบนี้")}</b>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, lineHeight: 1.6 }}>
+              {meeting.scan!.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {/* ── 6. Motions ── */}
       <section className="card" id="ic-motions">
-        <Head n="5" title={tr(lang, "Motions", "ญัตติ")} />
+        <Head n="6" title={tr(lang, "Motions", "ญัตติ")} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {([
             ["all", tr(lang, "All", "ทั้งหมด"), counts.all],
@@ -396,7 +497,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 5. Capital plan ── */}
       <section className="card" id="ic-capital">
-        <Head n="6" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
+        <Head n="7" title={tr(lang, "Capital plan", "แผนการใช้เงินทุน")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Uses may not exceed sources. When the meeting approves more buying than it has funded, the lowest-conviction uses are cut and named — never dropped quietly.",
             "การใช้เงินต้องไม่เกินแหล่งเงิน หากที่ประชุมอนุมัติซื้อมากกว่าเงินที่มี ญัตติที่มีความเชื่อมั่นต่ำสุดจะถูกตัดออกและระบุชื่อไว้ ไม่ตัดทิ้งเงียบๆ")}
@@ -444,7 +545,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 6. Blotter ── */}
       <section className="card" id="ic-blotter">
-        <Head n="7" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
+        <Head n="8" title={tr(lang, "Trade blotter — for human entry", "รายการซื้อขาย — ให้คนบันทึกเอง")} />
         {meeting.blotter.length ? (
           <>
             <div className="table-wrap">
@@ -477,7 +578,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 7. Resolutions and dissent ── */}
       <section className="card" id="ic-resolutions">
-        <Head n="8" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
+        <Head n="9" title={tr(lang, "Resolutions", "มติที่ประชุม")} />
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>{tr(lang, "Status", "สถานะ")}</th><th>{tr(lang, "Resolution", "มติ")}</th><th>{tr(lang, "Owner", "ผู้รับผิดชอบ")}</th><th>{tr(lang, "Review by", "ทบทวนภายใน")}</th></tr></thead>
@@ -510,7 +611,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 8. Risk register and round table ── */}
       <section className="card" id="ic-risk">
-        <Head n="9" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
+        <Head n="10" title={tr(lang, "Risk register and round table", "ทะเบียนความเสี่ยงและความเห็นรอบโต๊ะ")} />
         <p className="muted" style={{ marginTop: 0 }}>
           {tr(lang, "Any desk may file a risk, with the measurement behind it. Risk is not one person's column.",
             "ทุกฝ่ายสามารถแจ้งความเสี่ยงได้ พร้อมหลักฐานการวัด ความเสี่ยงไม่ใช่หน้าที่ของคนเดียว")}
@@ -568,7 +669,7 @@ export default function CommitteeMeetingPanel({ lang, onNavigate }: { lang: AppL
 
       {/* ── 9. Minutes ── */}
       <section className="card" id="ic-minutes">
-        <Head n="10" title={tr(lang, "Minutes", "รายงานการประชุม")} />
+        <Head n="11" title={tr(lang, "Minutes", "รายงานการประชุม")} />
         <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
           {meeting.minutes.map((line, i) => <li key={i}>{line}</li>)}
         </ol>

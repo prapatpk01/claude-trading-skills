@@ -17,12 +17,31 @@ import { assessPositionZone } from "@/lib/team/risk";
 import { classifySleeve } from "@/lib/team/portfolio";
 import { buildBookReview } from "@/lib/team/book";
 import { runCommitteeMeeting, type PositionEvidence, type IdeaEvidence } from "@/lib/team/committee";
+import { runDeskScan } from "@/lib/research/deskScan";
 import { FUND, STANDING_DUTY } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+/** A name the research desk sourced itself, with the trade it implies. */
+interface DeskProposal {
+  ticker: string;
+  setupType: string;
+  score: number;
+  coveragePct: number;
+  price: number;
+  entryLow: number;
+  entryHigh: number;
+  stop: number;
+  target: number;
+  riskReward: number;
+  expectedReturnPct: number;
+  thesis: string;
+  catalyst: string;
+  unmeasured: string[];
+}
 
 /** Instruments held as liquidity, not as a view. They fund decisions. */
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
@@ -303,6 +322,91 @@ export async function GET(req: NextRequest) {
       unavailable.push(`research referrals (${e?.message ?? "unavailable"})`);
     }
 
+    // ── the research desk sources its own names ──
+    //
+    // A committee that only debates what a person happened to refer will, on
+    // most days, debate nothing. The desk runs its scan before every meeting
+    // and tables what survives the four hard filters, so the agenda always has
+    // new work on it. A human referral still wins on a name both produce: the
+    // person did the deeper research.
+    let proposals: DeskProposal[] = [];
+    let scanRegime: any = null;
+    let scanUniverseSize = 0;
+    let scanRejected = 0;
+    const scanWarnings: string[] = [];
+    try {
+      const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
+      const referred = new Set(ideas.map((i) => i.ticker));
+      // The route has a 60-second ceiling and the scan is the last thing to
+      // run. Give it a deadline of its own so a slow price host costs the
+      // meeting its proposals and not the whole meeting.
+      const scan = await Promise.race([
+        runDeskScan({
+          topN: 4,
+          // A narrower sweep with fewer catalyst calls than the standalone
+          // scanner, so the whole meeting still assembles inside the limit.
+          universeLimit: 24,
+          catalystLimit: 10,
+          exclude: held,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("the sweep did not finish inside the meeting's time budget")), 25_000)
+        ),
+      ]);
+      scanRegime = scan.result.regime;
+      scanUniverseSize = scan.result.universeSize;
+      scanRejected = scan.result.rejected.length;
+      scanWarnings.push(...scan.warnings);
+
+      const sourced = scan.result.setups.filter((s) => !referred.has(s.ticker.toUpperCase()));
+      proposals = sourced.map((s) => ({
+        ticker: s.ticker,
+        setupType: s.setupType,
+        score: s.momentumScore,
+        coveragePct: s.coveragePct,
+        price: s.price,
+        entryLow: s.entryLow,
+        entryHigh: s.entryHigh,
+        stop: s.stop,
+        target: s.target,
+        riskReward: s.riskReward,
+        expectedReturnPct: s.expectedReturnPct,
+        thesis: s.notes.thesis,
+        catalyst: s.catalyst.note,
+        unmeasured: s.unmeasured,
+      }));
+
+      const sourcedIdeas: IdeaEvidence[] = await mapLimit(sourced, 4, async (s) => {
+        const [candles, yieldPct] = await Promise.all([
+          dailyCandles(s.ticker, 320).catch(() => [] as Candle[]),
+          forwardYield(s.ticker, s.price),
+        ]);
+        const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
+        return {
+          ticker: s.ticker,
+          rating: "BUY",
+          conviction: s.momentumScore,
+          source: `Research desk swing scan — ${s.setupType}`,
+          price: s.price,
+          target: s.target,
+          upsidePct: s.expectedReturnPct,
+          submittedAt: new Date().toISOString().slice(0, 10),
+          note: s.notes.thesis.slice(0, 240),
+          alreadyHeld: false,
+          sleeve: yieldPct != null || beta != null ? classifySleeve(s.ticker, yieldPct, beta) : null,
+          // The desk scanned it moments ago, so there is no shelf life to run
+          // down and no drift away from the price the thesis was written at.
+          ageDays: 0,
+          referencePrice: s.price,
+          priceDriftPct: 0,
+          dataQuality: `${s.coveragePct}% of the alpha score measured`,
+        };
+      });
+      ideas = [...ideas, ...sourcedIdeas].slice(0, 12);
+    } catch (e: any) {
+      unavailable.push(`research desk scan (${e?.message ?? "unavailable"})`);
+    }
+
     // ── Priya's record: the fund's own closed decisions ──
     let track: { completed: number; winRatePct: number | null; averageReturnPct: number | null } | null = null;
     try {
@@ -334,11 +438,22 @@ export async function GET(req: NextRequest) {
         // Stage 1 evidence, kept beside the regime rather than folded into it.
         sentiment,
         newsPulse,
+        // Stage 2: what the research desk sourced on its own this morning.
+        proposals,
+        scan: {
+          regime: scanRegime,
+          universeSize: scanUniverseSize,
+          rejected: scanRejected,
+          warnings: scanWarnings,
+          note: proposals.length
+            ? `${proposals.length} name(s) cleared every hard filter out of ${scanUniverseSize} scanned. Each is tabled below as a NEW BUY motion.`
+            : `No name in the ${scanUniverseSize}-name sweep cleared all four hard filters. ${scanRejected} were rejected with a reason; the desk proposes nothing rather than the least-bad candidate.`,
+        },
         // The five stages of the fund's meeting, and whether each has its
         // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
           { n: 1, name: "Market regime and sentiment", owner: "Daniel Cho · Nina Okonkwo", ready: regime != null, detail: regime ? `${regime.regime} ${regime.score}/100${sentiment ? `, sentiment ${sentiment.value}/100 (${sentiment.band})` : ", sentiment unavailable"}${newsPulse ? "" : ", news feeds unreachable"}` : "No regime read — benchmark history unavailable." },
-          { n: 2, name: "Research: swing scan and referrals", owner: "Maya Chen · Aisha Fontaine", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} referral(s) carried into the meeting.` : "No name was referred since the last meeting. Run /api/committee/swing-scan and refer from the research workspace." },
+          { n: 2, name: "Research: swing scan and referrals", owner: "Maya Chen · Aisha Fontaine", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) on the agenda — ${proposals.length} sourced by the desk's own scan of ${scanUniverseSize} name(s), ${ideas.length - proposals.length} referred from the research workspace.` : `The desk swept ${scanUniverseSize} name(s) and none cleared all four hard filters; nothing was referred either. An empty agenda here is a finding, not a gap.` },
           { n: 3, name: "Holdings review and rebalance plan", owner: "Lena Müller · Kai Tanaka", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced.` },
           { n: 4, name: "Vote and execution plan", owner: "James Hartwell", ready: meeting.quorum.met, detail: meeting.quorum.note },
           { n: 5, name: "Human approval and minutes", owner: "Fund owner", ready: false, detail: "Submit the approved lines to POST /api/committee/minutes. Nothing is applied to the ledger until a person marks each line APPROVED." },

@@ -36,6 +36,12 @@ requireTokens("app/components/CommitteeMeetingPanel.tsx", [
   "Desk reports — what each seat measured",
   "deskReports",
   "Could not measure",
+  // The committee must table new names on its own. A meeting that only reviews
+  // what is already owned proposes nothing, which is what "why have it at all"
+  // looks like from the outside.
+  "New investment proposals from the research desk",
+  "proposals",
+  "The desk proposes nothing today",
   "Macro regime and cash policy",
   "Motions",
   "Capital plan",
@@ -116,6 +122,18 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "/api/analyze/performance",
   "/api/portfolio/cash-buffer",
   "unavailable",
+  // The meeting sources its own candidates rather than waiting for a referral.
+  "runDeskScan",
+  "proposals",
+  "Research desk swing scan",
+]);
+
+// One scan in the fund. The scanner page and the meeting must run the same
+// module, or the names debated in the meeting are not the names research found.
+requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
+requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
+forbidTokens("app/api/committee/swing-scan/route.ts", [
+  ["runSwingScan(", "the scan must go through lib/research/deskScan.ts so the meeting and the page agree"],
 ]);
 
 // ── research must be able to hand a name to the committee ──
