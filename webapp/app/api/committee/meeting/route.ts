@@ -97,6 +97,61 @@ async function loadHoldings(): Promise<{ rows: { ticker: string; shares: number;
   return { rows: openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost })), note: "" };
 }
 
+type RecentTrade = { ticker: string; side: "BUY" | "SELL"; trade_date: string; created_at?: string | null; id?: string | number | null };
+type TradeContext = { latestBuyDate: string | null; latestSellDate: string | null; daysSinceBuy: number | null; daysSinceSell: number | null };
+
+async function loadRecentTrades(): Promise<RecentTrade[]> {
+  const sb = getSupabase();
+  if (!sb) return [];
+  const cutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+  const { data, error } = await sb
+    .from("portfolio_transactions")
+    .select("id,ticker,side,trade_date,created_at")
+    .gte("trade_date", cutoff)
+    .order("trade_date", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    ticker: String(row.ticker ?? "").toUpperCase(),
+    side: String(row.side ?? "").toUpperCase() as "BUY" | "SELL",
+    trade_date: String(row.trade_date ?? ""),
+    created_at: row.created_at ? String(row.created_at) : null,
+  })).filter((row) => /^[A-Z.\-]{1,10}$/.test(row.ticker) && (row.side === "BUY" || row.side === "SELL") && /^\d{4}-\d{2}-\d{2}/.test(row.trade_date));
+}
+
+function buildTradeContext(rows: RecentTrade[], asOf: string): Map<string, TradeContext> {
+  const out = new Map<string, TradeContext>();
+  const asOfMs = new Date(`${asOf.slice(0, 10)}T00:00:00Z`).getTime();
+  for (const row of rows) {
+    const current = out.get(row.ticker) ?? { latestBuyDate: null, latestSellDate: null, daysSinceBuy: null, daysSinceSell: null };
+    const key = row.side === "BUY" ? "latestBuyDate" : "latestSellDate";
+    if (!current[key] || row.trade_date > current[key]!) current[key] = row.trade_date.slice(0, 10);
+    out.set(row.ticker, current);
+  }
+  for (const value of out.values()) {
+    if (value.latestBuyDate) value.daysSinceBuy = Math.max(0, Math.floor((asOfMs - new Date(`${value.latestBuyDate}T00:00:00Z`).getTime()) / 86400000));
+    if (value.latestSellDate) value.daysSinceSell = Math.max(0, Math.floor((asOfMs - new Date(`${value.latestSellDate}T00:00:00Z`).getTime()) / 86400000));
+  }
+  return out;
+}
+
+function portfolioRevision(holdings: { ticker: string; shares: number; avg_cost: number }[], trades: RecentTrade[]): string {
+  const source = [
+    ...holdings.map((row) => `${row.ticker}:${Number(row.shares).toFixed(6)}:${Number(row.avg_cost).toFixed(4)}`).sort(),
+    ...trades.slice(0, 8).map((row) => `${row.id ?? ""}:${row.ticker}:${row.side}:${row.trade_date}`),
+  ].join("|");
+  let hash = 2166136261;
+  for (let i = 0; i < source.length; i += 1) hash = Math.imul(hash ^ source.charCodeAt(i), 16777619);
+  return (hash >>> 0).toString(36).toUpperCase();
+}
+
+function technicalEvidence(candles: Candle[], benchmark: Candle[]) {
+  if (candles.length < 60 || benchmark.length < 60) return null;
+  const beta = computeBeta(candles, benchmark);
+  const score = scoreMomentumV3({ candles, benchmark, beta });
+  return { total: score.total, signal: score.signal, hardBlocks: score.hardBlocks.map((block: any) => block.reason ?? String(block)), dataQualityPct: Math.round(score.dataQualityScore) };
+}
+
 /** Forward yield from the name's own distribution history, or null. */
 async function forwardYield(ticker: string, price: number | null): Promise<number | null> {
   try {
@@ -127,9 +182,18 @@ function sessionsToExit(candles: Candle[], positionValue: number): number | null
 export async function GET(req: NextRequest) {
   const unavailable: string[] = [];
   try {
-    const { rows: holdings, note: reconciliationNote } = await loadHoldings();
+    const [{ rows: holdings, note: reconciliationNote }, recentTrades] = await Promise.all([
+      loadHoldings(),
+      loadRecentTrades().catch((error: any) => {
+        unavailable.push(`recent transaction history (${error?.message ?? "unavailable"})`);
+        return [] as RecentTrade[];
+      }),
+    ]);
     if (reconciliationNote) unavailable.push(reconciliationNote);
-    const discoveryHeld = new Set(holdings.map(row => String(row.ticker).toUpperCase()));
+    const asOf = new Date().toISOString();
+    const tradeContext = buildTradeContext(recentTrades, asOf);
+    const recentSales = new Set([...tradeContext.entries()].filter(([, value]) => value.daysSinceSell != null && value.daysSinceSell < 30).map(([ticker]) => ticker));
+    const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...recentSales]);
     // Phase 1 is the Investment Team's broad sourcing engine. Start it early so
     // all factor lenses run while the rest of the meeting evidence is gathered.
     const phase1ResearchPromise = Promise.race([
@@ -197,8 +261,7 @@ export async function GET(req: NextRequest) {
       const momentum =
         g.candles.length >= 60 && benchmark.length >= 60
           ? (() => {
-              const s = scoreMomentumV3({ candles: g.candles, benchmark, beta });
-              return { total: s.total, signal: s.signal, hardBlocks: s.hardBlocks.map((b: any) => b.reason ?? String(b)), dataQualityPct: Math.round(s.dataQualityScore) };
+              return technicalEvidence(g.candles, benchmark)!;
             })()
           : null;
 
@@ -241,6 +304,7 @@ export async function GET(req: NextRequest) {
         liquidity: marketValue != null ? { sessionsToExit: sessionsToExit(g.candles, marketValue) } : null,
         priceAsOf: g.quote?.asOf ?? g.candles.at(-1)?.date ?? null,
         yieldPct: g.yieldPct,
+        recentTrade: tradeContext.get(g.ticker) ?? null,
       };
     });
 
@@ -324,6 +388,8 @@ export async function GET(req: NextRequest) {
               ? Math.round((price / idea.referencePrice - 1) * 1000) / 10
               : null,
           sleeve: yieldPct != null || beta != null ? classifySleeve(idea.ticker, yieldPct, beta) : null,
+          technical: technicalEvidence(candles, benchmark),
+          recentTrade: tradeContext.get(idea.ticker) ?? null,
         };
       });
     } catch (e: any) {
@@ -409,6 +475,8 @@ export async function GET(req: NextRequest) {
           referencePrice: s.price,
           priceDriftPct: 0,
           dataQuality: `${s.coveragePct}% of the alpha score measured`,
+          technical: technicalEvidence(candles, benchmark),
+          recentTrade: tradeContext.get(s.ticker) ?? null,
         };
       });
       ideas = [...ideas, ...sourcedIdeas].slice(0, 12);
@@ -453,6 +521,8 @@ export async function GET(req: NextRequest) {
           referencePrice: proposal.price,
           priceDriftPct: 0,
           dataQuality: `${proposal.sourceModels.length}/7 factor models qualified`,
+          technical: technicalEvidence(candles, benchmark),
+          recentTrade: tradeContext.get(proposal.ticker) ?? null,
         };
       });
       ideas = [...ideas, ...phase1Ideas].slice(0, 12);
@@ -473,7 +543,7 @@ export async function GET(req: NextRequest) {
     }
 
     const meeting = runCommitteeMeeting({
-      asOf: new Date().toISOString(),
+      asOf,
       nav,
       cashBalance,
       deployableCash,
@@ -485,6 +555,7 @@ export async function GET(req: NextRequest) {
       book,
       track,
       unavailable,
+      portfolioRevision: portfolioRevision(holdings, recentTrades),
     });
 
     return NextResponse.json(
