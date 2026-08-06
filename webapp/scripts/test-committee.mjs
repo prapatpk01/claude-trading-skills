@@ -204,9 +204,12 @@ section("Capital plan");
     deployableCash: 20_000,
   }));
   const plan = meeting.capitalPlan;
-  ok("uses never exceed sources", plan.usesUsd <= plan.sourcesUsd, `${plan.usesUsd} vs ${plan.sourcesUsd}`);
+  ok("uses never exceed deployable sources", plan.usesUsd <= plan.deployableSourcesUsd, `${plan.usesUsd} vs ${plan.deployableSourcesUsd}`);
   ok("the plan reports itself funded", plan.funded);
-  ok("the balance is sources less uses", Math.abs(plan.balanceUsd - (plan.sourcesUsd - plan.usesUsd)) < 0.01);
+  ok("every dollar has a named destination", plan.unallocatedUsd === 0 && plan.allocationComplete);
+  ok("unused deployable capital is explicitly parked", Math.abs(plan.temporaryParkingUsd - (plan.deployableSourcesUsd - plan.usesUsd)) < 0.01);
+  ok("the source and destination totals balance", Math.abs(plan.sourcesUsd - plan.destinationLines.reduce((sum, line) => sum + line.amountUsd, 0)) < 0.01);
+  ok("the temporary reserve has an owner and review date", plan.destinationLines.filter((line) => line.category === "TEMPORARY_PARKING").every((line) => line.owner && line.reviewBy));
 }
 {
   // Four referrals, each wanting 8% of NAV, against $5,000 of cash.
@@ -218,7 +221,7 @@ section("Capital plan");
   // the constraint under test is funding, not the liquidity buffer.
   const meeting = runCommitteeMeeting(input({ ideas, deployableCash: 5_000, cashBalance: 35_000 }));
   const plan = meeting.capitalPlan;
-  ok("an overcommitted meeting still balances", plan.usesUsd <= plan.sourcesUsd + 0.01, `${plan.usesUsd} vs ${plan.sourcesUsd}`);
+  ok("an overcommitted meeting still balances", plan.usesUsd <= plan.deployableSourcesUsd + 0.01, `${plan.usesUsd} vs ${plan.deployableSourcesUsd}`);
   ok("every unfunded motion is named", plan.cutForFunding.length > 0);
   ok("unfunded motions are deferred, not silently dropped",
     meeting.motions.filter((m) => /IDEA/.test(m.id) && m.outcome === "DEFERRED").length > 0);
@@ -329,8 +332,10 @@ const overdrawn = (over = {}) => input({
 {
   const meeting = runCommitteeMeeting(overdrawn());
   const plan = meeting.capitalPlan;
-  ok("the raised cash is ring-fenced, not counted as a funding source",
-    plan.earmarkedForCashUsd > 0 && !plan.sourceLines.some((l) => /SGOV/.test(l.label)), JSON.stringify(plan.sourceLines));
+  ok("the raised cash is visible but ring-fenced from deployable funding",
+    plan.earmarkedForCashUsd > 0 && plan.deployableSourcesUsd === plan.sourcesUsd - plan.earmarkedForCashUsd, JSON.stringify(plan.sourceLines));
+  ok("the broker-cash floor is a named destination",
+    plan.destinationLines.some((line) => line.category === "CASH_RESERVE" && line.amountUsd === plan.earmarkedForCashUsd));
   ok("the plan says the money stays as cash", /ring-fenced/i.test(plan.note));
   ok("the blotter line warns against reinvesting the proceeds",
     meeting.blotter.some((l) => l.ticker === "SGOV" && /Do not reinvest/i.test(l.reason)));
