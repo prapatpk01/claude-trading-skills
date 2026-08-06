@@ -512,7 +512,7 @@ export async function GET(req: NextRequest) {
           { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Phase 1 uses every factor lens; the Swing model supplies tactical timing only. ${proposals.length} combined model proposal(s) are shown in the opportunity list.` : `Phase 1 and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
           { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
           { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
-          { n: 5, name: "Human approval and minutes", owner: "Fund owner", ready: false, detail: "Submit the approved lines to POST /api/committee/minutes. Nothing is applied to the ledger until a person marks each line APPROVED." },
+          { n: 5, name: "Broker reconciliation and minutes", owner: "Fund owner", ready: false, detail: "Record actual broker activity in Holdings first. The checklist then matches ticker, side and approximate size; the owner confirms or rejects each line without creating a duplicate trade." },
         ],
         fund: FUND,
         standingDuty: STANDING_DUTY,
