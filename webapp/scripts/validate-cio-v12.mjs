@@ -64,12 +64,12 @@ requireTokens("lib/team/committee.ts", [
   "buildDecisionGates",
   "Head of Investment Research",
   "Head of Asset Management",
-  // The liquidity motion must state both ends: what to sell, and that the
-  // proceeds stay put. Either one missing turns it back into "raise the buffer".
+  // The liquidity motion must state both ends and never count an SGOV-to-USD
+  // conversion as an increase in the combined Cash Buffer.
   "RAISE CASH",
   "motionForLiquidity",
   "earmarkedForCashUsd",
-  "proceeds stay as settled cash",
+  "SGOV and other approved reserves are already inside the Cash Buffer",
   "overdrawn",
 ]);
 
@@ -87,7 +87,7 @@ for (const file of [
 }
 
 // The optimizer must name a funding source and a destination for the cash.
-requireTokens("app/api/portfolio/optimizer/route.ts", ["fundingSource", "proceedsDestination", "restoring the buffer is the destination"]);
+requireTokens("app/api/portfolio/optimizer/route.ts", ["fundingSource", "proceedsDestination", "converting them to USD cannot close this gap"]);
 forbidTokens("lib/team/committee.ts", [
   ["fetch(", "the meeting engine must not touch the network"],
   ["Date.now()", "the engine must use the asOf it is given, not the clock"],
