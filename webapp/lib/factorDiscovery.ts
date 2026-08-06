@@ -29,6 +29,12 @@ const growthPct=(rows:any[],field:string)=>{const a=n(rows?.[0]?.[field]),b=n(ro
 const ratio=(a:number|null,b:number|null)=>a!=null&&b!=null&&b!==0?a/b:null;
 const positive=(v:number|null,threshold=0)=>v!=null&&v>threshold;
 
+async function mapLimit<T,R>(items:T[],limit:number,fn:(item:T)=>Promise<R>):Promise<R[]>{
+ const output=new Array<R>(items.length);let next=0;
+ await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const index=next++;if(index>=items.length)break;output[index]=await fn(items[index])}}));
+ return output;
+}
+
 function scoreOne(a:any):Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">{
  const ov=a.data?.overview??{};const inc=a.data?.financials?.income??[];const cf=a.data?.financials?.cashflow??[];const bal=a.data?.financials?.balance??[];const tech=a.technicals??{};
  const revG=growthPct(inc,"totalRevenue");const epsG=growthPct(inc,"netIncome");const opG=growthPct(inc,"operatingIncome");const qGrowth=n(a.data?.quarters?.[0]?.revenueYoY);
@@ -76,13 +82,11 @@ function gateReview(mode:FactorMode,row:Omit<ResearchCandidate,"status"|"passed"
 
 export async function runFactorDiscovery(mode:FactorMode,universe?:string[],topN=10){
  const sourceUniverse=(universe?.length?universe:ENGINE_UNIVERSES[mode]).slice(0,40);const analyzed:ResearchCandidate[]=[];const warnings:string[]=[];
- for(const ticker of sourceUniverse){
-  try{
-   const scored=scoreOne(await buildAnalysis(ticker));
-   const review=gateReview(mode,scored);
-   analyzed.push({...scored,...review,status:review.passed?"QUALIFIED":"REJECTED"});
-  }catch(e:any){warnings.push(`${ticker}: ${e?.message??"analysis failed"}`)}
- }
+ const outcomes=await mapLimit(sourceUniverse,5,async ticker=>{
+  try{const scored=scoreOne(await buildAnalysis(ticker));const review=gateReview(mode,scored);return{candidate:{...scored,...review,status:review.passed?"QUALIFIED":"REJECTED"} as ResearchCandidate,error:null}}
+  catch(e:any){return{candidate:null,error:`${ticker}: ${e?.message??"analysis failed"}`}}
+ });
+ for(const outcome of outcomes){if(outcome.candidate)analyzed.push(outcome.candidate);if(outcome.error)warnings.push(outcome.error)}
  const key=mode==="multifactor"?"composite":mode;
  const qualified=analyzed.filter(row=>row.passed).sort((a,b)=>(Number((b as any)[key])||0)-(Number((a as any)[key])||0));
  const engineTags:Record<string,string[]>={};
