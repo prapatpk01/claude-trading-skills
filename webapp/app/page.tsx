@@ -11,6 +11,7 @@ import ExecutiveDashboard from "./components/ExecutiveDashboard";
 import { InstitutionalPageHeader, InstitutionalSidebar, InstitutionalWorkspaceTabs, ResearchWorkflow, type InstitutionalSection } from "./components/InstitutionalShell";
 import "./institutional-shell.css";
 import "./portfolio-reconcile.css";
+import "./watchlist-controls.css";
 import "./sentinel-v8-ui.css";
 
 export type AppLang = "en" | "th";
