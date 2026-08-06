@@ -29,7 +29,7 @@ requireTokens("app/components/CIOCommandCenterV20.tsx", [
   "/api/committee/meeting",
   "Decision & Execution Command Center",
   "One prioritized decision list",
-  "New names proposed before every meeting",
+  "Every research model sources new investments",
   "Every use names its source",
   "What a human must enter",
   "10 SPECIALISTS · ADVISORY EVIDENCE",
@@ -107,13 +107,16 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "unavailable",
   // The meeting sources its own candidates rather than waiting for a referral.
   "runDeskScan",
+  "runInvestmentResearchOS",
+  "Sentinel Research OS Phase 1",
   "proposals",
-  "Research desk swing scan",
+  "Swing model supplies tactical timing only",
 ]);
 
 // One scan in the fund. The scanner page and the meeting must run the same
 // module, or the names debated in the meeting are not the names research found.
 requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
+requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "balancedUniverse", "sourceModels", "Phase 1 factor consensus", "ENGINE_UNIVERSES"]);
 requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
 forbidTokens("app/api/committee/swing-scan/route.ts", [
   ["runSwingScan(", "the scan must go through lib/research/deskScan.ts so the meeting and the page agree"],
@@ -131,6 +134,8 @@ requireTokens("app/components/ResearchWorkspaceV12.tsx", [
   // cannot tell that the thesis has drifted off it.
   "price:candidate.price",
   "source:engine",
+  "body?.error",
+  "watchError",
 ]);
 
 // ── The fund's own rulebook must be the single source of its thresholds ──

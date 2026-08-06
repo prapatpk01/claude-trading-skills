@@ -72,22 +72,23 @@ export async function GET(req:NextRequest){
   const candidates=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate));
   const factorQualified=candidates.filter((candidate:Candidate)=>candidate.passed);
   const valuationEligible=factorQualified.filter((candidate:Candidate)=>candidate.valuationValid);
+  const valuationRequired=mode==="thematic"||mode==="multifactor"||mode==="value";
   const key=scoreKey(mode);
-  const ranked=factorQualified.sort((left:Candidate,right:Candidate)=>(finiteNumber(right[key])??-Infinity)-(finiteNumber(left[key])??-Infinity));
+  const ranked=(valuationRequired?valuationEligible:factorQualified).sort((left:Candidate,right:Candidate)=>(finiteNumber(right[key])??-Infinity)-(finiteNumber(left[key])??-Infinity));
   const picks=mode==="thematic"?thematicAllocation(candidates):ranked.slice(0,top).map((candidate:Candidate,index:number)=>({...candidate,allocationRank:index+1,status:"COMMITTEE_READY"}));
   const selectedTickers=new Set(picks.map((candidate:Candidate)=>candidate.ticker));
-  const rejectedCandidates=(mode==="thematic"?candidates.filter((candidate:Candidate)=>!candidate.passed||!candidate.valuationValid):candidates.filter((candidate:Candidate)=>!candidate.passed)).map((candidate:Candidate)=>({...candidate,status:"REJECTED",rejectionReasons:[...(candidate.failedGates??[]),...(mode==="thematic"?candidate.valuationFailures??[]:[])]}));
+  const rejectedCandidates=(valuationRequired?candidates.filter((candidate:Candidate)=>!candidate.passed||!candidate.valuationValid):candidates.filter((candidate:Candidate)=>!candidate.passed)).map((candidate:Candidate)=>({...candidate,status:"REJECTED",rejectionReasons:[...(candidate.failedGates??[]),...(valuationRequired?candidate.valuationFailures??[]:[])]}));
   const rankedCandidates=candidates.map((candidate:Candidate)=>{
    if(selectedTickers.has(candidate.ticker))return{...candidate,...picks.find((pick:Candidate)=>pick.ticker===candidate.ticker)};
    if(!candidate.passed)return{...candidate,status:"REJECTED"};
-   if(mode==="thematic"&&!candidate.valuationValid)return{...candidate,status:"VALUATION_REJECTED"};
+   if(valuationRequired&&!candidate.valuationValid)return{...candidate,status:"VALUATION_REJECTED"};
    if(mode==="thematic")return{...candidate,status:"ELIGIBLE_NOT_SELECTED"};
    return{...candidate,status:"QUALIFIED_NOT_SELECTED"};
   });
-  const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,valuation:mode==="thematic"?valuationEligible:factorQualified,selected:picks,rejected:rejectedCandidates};
+  const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,valuation:valuationRequired?valuationEligible:factorQualified,selected:picks,rejected:rejectedCandidates};
   const source=explicit.length?"explicit":sectorUniverse.length?`sector:${sector}`:mode==="thematic"?`theme:${themeConfig.label} · benchmark ${themeConfig.benchmark}`:`engine:${mode}`;
   const totalWeight=picks.reduce((sum:number,candidate:Candidate)=>sum+(finiteNumber(candidate.portfolioWeightPct)??0),0);
-  const pipeline=mode==="thematic"?{universe:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length}:{universe:universe.length,analyzed:candidates.length,qualified:factorQualified.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
+  const pipeline=valuationRequired?{universe:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length}:{universe:universe.length,analyzed:candidates.length,qualified:factorQualified.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
   const performanceContracts=picks.map((candidate:Candidate)=>createPerformanceContract(mode as ResearchEngineMode,candidate,asOf));
   return NextResponse.json({
    ...result,version:"12.2-independent-research-engines",asOf,mode,rankingMode:engineMode,sector,

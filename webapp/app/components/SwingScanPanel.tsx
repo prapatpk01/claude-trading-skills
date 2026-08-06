@@ -1,6 +1,6 @@
 "use client";
 
-// Stage 2 of the meeting, on screen: the research desk's swing scan.
+// Tactical timing lens used after the broad Phase 1 research pipeline.
 //
 // The component formats. Every score, filter and rejection comes from
 // /api/committee/swing-scan, which runs lib/team/swing.ts.
@@ -80,7 +80,7 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
     <section className="card" data-swing-version="1.0" style={{ borderTop: "2px solid var(--accent)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div>
-          <span className="tag">{tr(lang, "STAGE 2 · RESEARCH", "ขั้นที่ 2 · ฝ่ายวิจัย")}</span>
+          <span className="tag">{tr(lang, "TACTICAL LENS · SWING TIMING", "มุมมอง Tactical · จังหวะสวิง")}</span>
           <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Momentum-Centric Alpha Score — 7 to 15 day swing", "คะแนน Alpha เน้นโมเมนตัม — สวิง 7 ถึง 15 วัน")}</h3>
           <p className="muted" style={{ margin: 0, maxWidth: 780, fontSize: 13 }}>
             {tr(lang,

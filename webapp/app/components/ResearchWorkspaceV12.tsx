@@ -106,11 +106,11 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
    {id:"universe" as StageId,label:tr(lang,"Universe","Universe"),value:pipeline.universe??0,note:tr(lang,"Starting coverage","จำนวนหุ้นตั้งต้น")},
    {id:"analyzed" as StageId,label:tr(lang,"Analyzed","วิเคราะห์แล้ว"),value:pipeline.analyzed??0,note:tr(lang,"Evidence collected","มีข้อมูลวิเคราะห์")},
   ];
-  if(result.mode==="thematic")return[
+  if(result.mode==="thematic"||result.mode==="multifactor"||result.mode==="value")return[
    ...common,
    {id:"qualified" as StageId,label:tr(lang,"Factor Qualified","ผ่าน Factor"),value:pipeline.factorQualified??0,note:tr(lang,"Multi-factor gate","ผ่านเกณฑ์หลายปัจจัย")},
    {id:"valuation" as StageId,label:tr(lang,"Valuation Eligible","ผ่าน Valuation"),value:pipeline.valuationEligible??0,note:tr(lang,"Target above spot + ≥8% upside","เป้าหมายสูงกว่าราคาและ Upside ≥8%")},
-   {id:"selected" as StageId,label:tr(lang,"Portfolio Selected","เลือกเข้าพอร์ต"),value:pipeline.selected??0,note:tr(lang,"Weighted to 100%","จัดน้ำหนักรวม 100%")},
+   {id:"selected" as StageId,label:tr(lang,result.mode==="thematic"?"Portfolio Selected":"Committee Ready",result.mode==="thematic"?"เลือกเข้าพอร์ต":"พร้อมเข้าประชุม"),value:pipeline.selected??0,note:tr(lang,result.mode==="thematic"?"Weighted to 100%":"Positive valuation shortlist",result.mode==="thematic"?"จัดน้ำหนักรวม 100%":"Shortlist ที่ Valuation เป็นบวก")},
    {id:"rejected" as StageId,label:tr(lang,"Rejected","ไม่ผ่าน"),value:pipeline.rejected??0,note:tr(lang,"Reasons documented","มีเหตุผลครบ")},
   ];
   return[
@@ -154,12 +154,11 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   });
  }
 
- return <div className="research-v12" data-research-version="12.2">
-  <SwingScanPanel lang={lang}/>
+ return <div className="research-v12" data-research-version="12.3">
   <section className="card research-hero" style={{borderTop:"2px solid var(--accent)"}}>
    <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
     <div><span className="tag">SENTINEL RESEARCH OS · PHASE 1</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Institutional Research Pipeline","ระบบวิจัยการลงทุนระดับสถาบัน")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"One auditable evidence chain from universe to Stock Analysis. Each stage has its own candidates and every rejection keeps an explicit reason.","กระบวนการเดียวตั้งแต่ Universe จนส่งต่อ Stock Analysis แต่ละขั้นมีรายชื่อหุ้นของตัวเองและทุกหุ้นที่ไม่ผ่านมีเหตุผลตรวจสอบได้")}</p></div>
-    <div className="notice" style={{maxWidth:350}}>{tr(lang,"Research can discover, rank and add to Watchlist. It cannot execute trades or change Holdings.","Research มีหน้าที่ค้นหา จัดอันดับ และเพิ่ม Watchlist เท่านั้น ไม่สามารถซื้อขายหรือแก้ Holdings")}</div>
+    <div className="notice" style={{maxWidth:390}}>{tr(lang,"Phase 1 is the Investment Team's primary discovery system. Every factor model contributes evidence; the Swing model below is a separate tactical timing lens. Research can rank and add to Watchlist, but cannot trade or change Holdings.","Phase 1 คือระบบค้นหาหลักของทีม Investment โดยทุกโมเดล Factor ส่งหลักฐานร่วมกัน ส่วน Swing ด้านล่างเป็นมุมมองจับจังหวะ Tactical เท่านั้น Research จัดอันดับและเพิ่ม Watchlist ได้ แต่ซื้อขายหรือแก้ Holdings ไม่ได้")}</div>
    </div>
    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:9,marginTop:16}}>
     {MODES.map(item=><button type="button" key={item.id} className={`btn ${mode===item.id?"":"ghost"}`} style={{textAlign:"left",minHeight:78}} onClick={()=>{setMode(item.id);setResult(null);setError(null)}}><strong>{item.icon} {lang==="th"?item.th:item.en}</strong><small style={{display:"block",opacity:.7,marginTop:6}}>{lang==="th"?item.noteTh:item.noteEn}</small></button>)}
@@ -172,6 +171,8 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
    {tickers.trim()&&<p className="muted" style={{fontSize:11,marginTop:8}}>{tr(lang,"Manual tickers replace the engine universe for this run.","รายการหุ้นที่กรอกจะใช้แทน Universe ของ Engine ในรอบนี้")}</p>}
    {error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}
   </section>
+
+  <SwingScanPanel lang={lang}/>
 
   {result&&<>
    <section className="card">
@@ -232,6 +233,7 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
 
 function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,onAnalyze}:{candidate:Candidate;rank:number;rejected:boolean;lang:AppLang;engine:string;referred:boolean;onReferred:()=>void;onAnalyze:()=>void}){
  const[state,setState]=useState<"idle"|"saving"|"saved"|"error">("idle");
+ const[watchError,setWatchError]=useState("");
  const[refer,setRefer]=useState<"idle"|"sending"|"error">("idle");
  const[referError,setReferError]=useState("");
  const rejectionReasons=[...(candidate.rejectionReasons??[]),...(candidate.failedGates??[]),...(candidate.valuationFailures??[])].filter((value,index,array)=>array.indexOf(value)===index);
@@ -240,12 +242,13 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
   ["Dividend",candidate.dividend],["Institutional",candidate.institutional],["AI",candidate.ai],["Composite",candidate.composite],
  ];
  async function addWatchlist(){
-  setState("saving");
+  setState("saving");setWatchError("");
   try{
    const response=await fetch("/api/watchlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker:candidate.ticker,source:"Research OS v12 Phase 1",reason:candidate.thesis??candidate.reasons?.join(" · "),target_price:candidate.targetPrice})});
-   if(!response.ok)throw new Error("Watchlist save failed");
+   const body=await response.json().catch(()=>({}));
+   if(!response.ok)throw new Error(body?.error??`Watchlist save failed (${response.status})`);
    setState("saved");
-  }catch{setState("error")}
+  }catch(reason:unknown){setState("error");setWatchError(reason instanceof Error?reason.message:"Watchlist save failed")}
  }
  async function refer2committee(){
   setRefer("sending");setReferError("");
@@ -267,7 +270,7 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
     {referred?tr(lang,"✓ Referred to committee","✓ ส่งเข้าที่ประชุมแล้ว"):refer==="sending"?tr(lang,"Referring…","กำลังส่ง…"):tr(lang,"Refer to committee","ส่งเข้าที่ประชุม")}
    </button>
    <button type="button" className="btn ghost" onClick={addWatchlist} disabled={state==="saving"||state==="saved"}>{state==="saved"?tr(lang,"Added to Watchlist","เพิ่ม Watchlist แล้ว"):state==="saving"?tr(lang,"Saving…","กำลังบันทึก…"):tr(lang,"Add to Watchlist","เพิ่ม Watchlist")}</button>
-   {state==="error"&&<span className="neg">{tr(lang,"Save failed","บันทึกไม่สำเร็จ")}</span>}
+   {state==="error"&&<span className="neg" style={{maxWidth:520}}>{watchError}</span>}
    {refer==="error"&&<span className="neg">{referError}</span>}
   </div>}
   {!rejected&&candidate.price==null&&<p className="muted" style={{marginTop:8,fontSize:12}}>{tr(lang,"No price was measured for this name, so a referral carries no reference price and the committee cannot check how far it has drifted.","ไม่มีราคาที่วัดได้สำหรับหุ้นตัวนี้ การส่งเข้าที่ประชุมจะไม่มีราคาอ้างอิง และที่ประชุมจะตรวจการเคลื่อนของราคาไม่ได้")}</p>}
