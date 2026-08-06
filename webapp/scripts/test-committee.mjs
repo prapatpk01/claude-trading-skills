@@ -37,6 +37,7 @@ const zone = (weightPct, marketValue, nav) => {
 };
 
 const NAV = 200_000;
+const TECHNICAL_PASS = { total: 78, signal: "BUY", hardBlocks: [], dataQualityPct: 95 };
 
 function position(over = {}) {
   const shares = over.shares ?? 100;
@@ -111,6 +112,17 @@ section("Motion selection");
     trend: { aboveSma50: false, aboveSma200: false, return1m: -2, return3m: -4 },
   });
   ok("a shallow drawdown does not force an exit", runCommitteeMeeting(input({ positions: [p] })).motions[0].kind !== "EXIT");
+}
+{
+  const p = position({
+    ticker: "MELI",
+    recentTrade: { latestBuyDate: "2026-08-03", latestSellDate: null, daysSinceBuy: 1, daysSinceSell: null },
+    momentum: { total: 22, signal: "REJECT", hardBlocks: ["Below 200-day average"], dataQualityPct: 92 },
+    trend: { aboveSma50: true, aboveSma200: false, return1m: -3, return3m: -7 },
+  });
+  const m = runCommitteeMeeting(input({ positions: [p] })).motions[0];
+  ok("a recent buy is not immediately reversed by an ordinary technical flip", m.kind === "HOLD", `got ${m.kind}`);
+  ok("the stabilization lock is explicit in the decision", m.reasons.some((reason) => /stabilization lock/i.test(reason.finding)));
 }
 {
   const p = position({ shares: 100, price: 100, momentum: { total: 78, signal: "BUY", hardBlocks: [], dataQualityPct: 95 } });
@@ -216,6 +228,7 @@ section("Capital plan");
   const ideas = ["BBB", "CCC", "DDD", "EEE"].map((ticker, i) => ({
     ticker, rating: "BUY", conviction: 85 - i * 10, source: "Stock Analyze",
     price: 50, target: 70, upsidePct: 40, submittedAt: "2026-08-01", note: null, alreadyHeld: false,
+    technical: TECHNICAL_PASS,
   }));
   // Cash sits above the 10% floor (20,000 on 200,000 NAV) with 5,000 spare, so
   // the constraint under test is funding, not the liquidity buffer.
@@ -324,7 +337,7 @@ const overdrawn = (over = {}) => input({
 }
 {
   const meeting = runCommitteeMeeting(overdrawn({
-    ideas: [{ ticker: "BBB", rating: "BUY", conviction: 90, source: "Scan", price: 50, target: 80, upsidePct: 60, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "growth", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" }],
+    ideas: [{ ticker: "BBB", rating: "BUY", conviction: 90, source: "Scan", price: 50, target: 80, upsidePct: 60, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "growth", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH", technical: TECHNICAL_PASS }],
   }));
   const buy = meeting.motions.find((m) => m.ticker === "BBB");
   ok("no new position opens while the fund is below its cash floor", buy.outcome === "DEFERRED", buy.outcomeReason);
@@ -423,7 +436,7 @@ section("Rule #3 — a trim needs a replacement first");
 
 section("Rule #2 — staggered deploy before a Tier-1 event");
 {
-  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH", technical: TECHNICAL_PASS };
   const full = runCommitteeMeeting(input({ ideas: [idea], positions: [] })).motions[0];
   const near = runCommitteeMeeting(input({ ideas: [idea], positions: [], daysToTierOneEvent: 3 })).motions[0];
   ok("a Tier-1 event within five days cuts the size", near.sizeUsd < full.sizeUsd, `${near.sizeUsd} vs ${full.sizeUsd}`);
@@ -433,19 +446,19 @@ section("Rule #2 — staggered deploy before a Tier-1 event");
   ok("and why", near.reasons.some((r) => /Tier-1 event/.test(r.finding)));
 }
 {
-  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH", technical: TECHNICAL_PASS };
   const m = runCommitteeMeeting(input({ ideas: [idea], positions: [], daysToTierOneEvent: 20 })).motions[0];
   // The regime still applies: 62/100 is Neutral, which permits 75% of plan.
   ok("an event outside the window leaves only the regime cap", Math.abs(m.sizeUsd - 0.08 * NAV * 0.75) < 1, `${m.sizeUsd}`);
 }
 {
-  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH", technical: TECHNICAL_PASS };
   const riskOn = { ...regime, score: 78, regime: "RISK-ON", icon: "🟢", cashMinPct: 10 };
   const m = runCommitteeMeeting(input({ ideas: [idea], positions: [], regime: riskOn })).motions[0];
   ok("a Risk-On regime deploys the full plan", Math.abs(m.sizeUsd - 0.08 * NAV) < 1, `${m.sizeUsd}`);
 }
 {
-  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH" };
+  const idea = { ticker: "AVDV", rating: "BUY", conviction: 82, source: "Scan", price: 50, target: 65, upsidePct: 30, submittedAt: "2026-08-03", note: null, alreadyHeld: false, sleeve: "income", ageDays: 1, referencePrice: 50, priceDriftPct: 0, dataQuality: "HIGH", technical: TECHNICAL_PASS };
   const crisis = { ...regime, score: 12, regime: "CRISIS", icon: "⚫", cashMinPct: 40 };
   const meeting = runCommitteeMeeting(input({ ideas: [idea], positions: [], regime: crisis, cashBalance: 90_000, cashBufferPct: 45 }));
   const m = meeting.motions.find((x) => x.ticker === "AVDV");
@@ -477,7 +490,7 @@ const idea = (over = {}) => ({
   ticker: "BBB", rating: "BUY", conviction: 78, source: "Momentum scan · Technology",
   price: 100, target: 130, upsidePct: 30, submittedAt: "2026-08-01", note: null,
   alreadyHeld: false, sleeve: "growth", ageDays: 2, referencePrice: 100, priceDriftPct: 0,
-  dataQuality: "HIGH", ...over,
+  dataQuality: "HIGH", technical: TECHNICAL_PASS, ...over,
 });
 
 {
@@ -499,6 +512,20 @@ const idea = (over = {}) => ({
     m.reasons.some((r) => /Momentum scan · Technology/.test(r.finding)));
   ok("the scanner's data-quality read is on the record",
     m.reasons.some((r) => /data quality HIGH/i.test(r.finding)));
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({
+    ticker: "QCOM",
+    recentTrade: { latestBuyDate: null, latestSellDate: "2026-08-04", daysSinceBuy: null, daysSinceSell: 0 },
+  })], positions: [] })).motions[0];
+  ok("a recently sold name cannot be repurchased automatically", m.outcome === "DEFERRED" && /30-day re-entry cooldown/i.test(m.veto?.reason ?? ""), m.outcomeReason);
+}
+{
+  const m = runCommitteeMeeting(input({ ideas: [idea({
+    ticker: "MELI",
+    technical: { total: 58, signal: "REJECT", hardBlocks: ["Below 200-day average"], dataQualityPct: 94 },
+  })], positions: [] })).motions[0];
+  ok("a factor-qualified idea still needs the shared Holdings technical gate", m.outcome === "DEFERRED" && /shared technical BUY gate/i.test(m.veto?.reason ?? ""), m.outcomeReason);
 }
 {
   // Price ran 22% since the paper was written.
