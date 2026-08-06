@@ -17,15 +17,15 @@ export default function ExecutiveDashboard({ lang, onNavigate }: { lang: AppLang
     <section className="dashboard-kpis">
       <Kpi label="Total Portfolio Value" value={money(fund.totalNav)} note={`${fund.openPositions} open holdings · ${fund.verified ? "VERIFIED" : "PARTIAL"}`} tone="blue" />
       <Kpi label="Unrealized P/L" value={money(fund.unrealizedPnl)} note={pct(fund.unrealizedPnlPct)} tone={fund.unrealizedPnl >= 0 ? "green" : "red"} />
-      <Kpi label="Broker Cash" value={money(fund.cashBalance)} note={`${fund.cashBufferPct.toFixed(1)}% of NAV · cash only`} tone="gold" />
-      <Kpi label="Deployable Cash" value={money(fund.deployableCash)} note={`Cash excess above ${fund.targetCashPct.toFixed(0)}% target`} tone="cyan" />
+      <Kpi label="Total Cash Buffer" value={money(fund.cashAndEquivalents)} note={`${fund.cashBufferPct.toFixed(1)}% of NAV · USD + approved reserves`} tone="gold" />
+      <Kpi label="Deployable Buffer" value={money(fund.deployableCash)} note={`Excess above ${fund.targetCashPct.toFixed(0)}% target`} tone="cyan" />
       <Kpi label="Macro Score" value={`${fund.macroScore.toFixed(0)}/100`} note={`${fund.macroLabel} · ${fund.macroConfidence} confidence`} tone="purple" />
     </section>
 
     <section className="dashboard-grid-primary">
       <div className="dashboard-panel"><PanelTitle title="Portfolio Health" subtitle="Single-source institutional composite" /><div className="gauge-row"><Gauge label="Health" value={fund.portfolioHealth}/><Gauge label="Quality" value={fund.qualityScore}/><Gauge label="Liquidity" value={fund.liquidityScore}/><Gauge label="Risk Control" value={fund.riskScore}/></div></div>
       <div className="dashboard-panel"><PanelTitle title="Top Holdings" subtitle="Largest verified positions" /><div className="mini-table">{allocation.map((row)=><div className="mini-table-row" key={row.ticker}><strong>{row.ticker}</strong><span>{money(row.marketValue)} · {row.weightPct.toFixed(1)}%</span></div>)}</div></div>
-      <div className="dashboard-panel"><PanelTitle title="Liquidity Structure" subtitle="Cash and invested reserves are reported separately" /><div className="status-stack"><StatusRow label="Broker Cash" value={money(fund.cashBalance)}/><StatusRow label="Reserve Holdings" value={money(fund.reserveMarketValue)}/><StatusRow label="Deployable Cash" value={money(fund.deployableCash)}/><StatusRow label="Portfolio Snapshot" value={fund.verified?"VERIFIED":"PARTIAL"}/></div></div>
+      <div className="dashboard-panel"><PanelTitle title="Liquidity Structure" subtitle="USD cash and approved reserves form one policy buffer" /><div className="status-stack"><StatusRow label="Total Cash Buffer" value={money(fund.cashAndEquivalents)}/><StatusRow label="Broker USD Cash" value={money(fund.cashBalance)}/><StatusRow label="Reserve Holdings" value={money(fund.reserveMarketValue)}/><StatusRow label="Deployable Buffer" value={money(fund.deployableCash)}/><StatusRow label="Portfolio Snapshot" value={fund.verified?"VERIFIED":"PARTIAL"}/></div></div>
     </section>
 
     <section className="workspace-launch-grid">
@@ -37,7 +37,7 @@ export default function ExecutiveDashboard({ lang, onNavigate }: { lang: AppLang
 
     <section className="dashboard-grid-secondary">
       <div className="dashboard-panel"><PanelTitle title="Recent Activity" subtitle="Latest ledger events" /><div className="activity-list">{fund.ledger.slice(0,5).map((row:any,index:number)=><div className="activity-row" key={`${row?.ticker??"activity"}-${index}`}><span className={`activity-badge ${String(row?.side??row?.action??"").toLowerCase()}`}>{String(row?.side??row?.action??"EVENT")}</span><strong>{String(row?.ticker??"PORTFOLIO")}</strong><span>{row?.date??row?.trade_date??"—"}</span></div>)}{!fund.ledger.length&&<div className="empty-state">No ledger activity recorded</div>}</div></div>
-      <div className="dashboard-panel executive-brief"><PanelTitle title="CIO Executive Brief" subtitle="What requires attention now" /><p>{lang==="th"?`พอร์ตมี ${fund.openPositions} สถานะ มูลค่ารวม ${money(fund.totalNav)} เงินสดโบรกเกอร์ ${money(fund.cashBalance)} ตราสารสำรอง ${money(fund.reserveMarketValue)} และเงินสดพร้อมลงทุน ${money(fund.deployableCash)}`:`The fund holds ${fund.openPositions} positions with ${money(fund.totalNav)} NAV, ${money(fund.cashBalance)} broker cash, ${money(fund.reserveMarketValue)} invested reserves and ${money(fund.deployableCash)} deployable cash.`}</p><button className="btn" type="button" onClick={()=>onNavigate("command")}>Open Investment Committee</button></div>
+      <div className="dashboard-panel executive-brief"><PanelTitle title="CIO Executive Brief" subtitle="What requires attention now" /><p>{lang==="th"?`พอร์ตมี ${fund.openPositions} สถานะ มูลค่ารวม ${money(fund.totalNav)} Cash Buffer รวม ${money(fund.cashAndEquivalents)} แบ่งเป็นเงินสด USD ${money(fund.cashBalance)} และตราสารสำรอง ${money(fund.reserveMarketValue)} โดยมี Buffer ส่วนเกินพร้อมจัดสรร ${money(fund.deployableCash)}`:`The fund holds ${fund.openPositions} positions with ${money(fund.totalNav)} NAV and a ${money(fund.cashAndEquivalents)} total Cash Buffer: ${money(fund.cashBalance)} broker USD plus ${money(fund.reserveMarketValue)} reserve instruments, with ${money(fund.deployableCash)} excess available for allocation.`}</p><button className="btn" type="button" onClick={()=>onNavigate("command")}>Open Investment Committee</button></div>
     </section>
   </div>;
 }
