@@ -67,7 +67,7 @@ type Meeting = {
   regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
   stages?: { n: number; name: string; owner: string; ready: boolean; detail: string }[];
   proposals?: Proposal[];
-  scan?: { universeSize: number; rejected: number; warnings: string[]; note: string };
+  scan?: { universeSize: number; rejected: number; warnings: string[]; note: string; researchOS?: { universeSize: number; analyzed: number; rejected: number; models: string[]; methodology: string | null } };
   motions: Motion[];
   capitalPlan: {
     sourcesUsd: number;
@@ -202,7 +202,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
     <section className={styles.kpis}>
       <Kpi label={tr(lang, "Fund NAV", "มูลค่าพอร์ต")} value={money(meeting.nav)} note={meeting.sources?.navFrom ?? "portfolio ledger"} />
       <Kpi label={tr(lang, "Market regime", "สภาวะตลาด")} value={meeting.regime ? `${meeting.regime.icon} ${meeting.regime.regime}` : "UNAVAILABLE"} note={meeting.regime ? `${meeting.regime.score}/100 · cash floor ${meeting.regime.cashMinPct}%` : "No benchmark evidence"} />
-      <Kpi label={tr(lang, "New ideas", "หุ้นใหม่ที่เสนอ")} value={String(proposals.length)} note={meeting.scan ? `${meeting.scan.universeSize} scanned · ${meeting.scan.rejected} rejected` : "Research scan unavailable"} />
+      <Kpi label={tr(lang, "New ideas", "หุ้นใหม่ที่เสนอ")} value={String(proposals.length)} note={meeting.scan ? `Phase 1 ${meeting.scan.researchOS?.analyzed ?? 0} analyzed · Swing ${meeting.scan.universeSize} scanned` : "Research process unavailable"} />
       <Kpi label={tr(lang, "Actions awaiting approval", "รายการรออนุมัติ")} value={String(actionLines.length)} note={`${carried.length} carried · ${blockers.length} blocked/deferred`} />
       <Kpi label={tr(lang, "Capital allocation", "แผนจัดสรรเงิน")} value={meeting.capitalPlan.allocationStatus} note={meeting.capitalPlan.allocationComplete ? `${money(meeting.capitalPlan.temporaryParkingUsd)} temporary reserve` : `${money(meeting.capitalPlan.unallocatedUsd)} has no destination`} />
     </section>
@@ -278,7 +278,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
     </>}
 
     {view === "opportunities" && <section className="card">
-      <SectionTitle eyebrow="AUTOMATIC RESEARCH DESK" title={tr(lang, "New names proposed before every meeting", "หุ้นใหม่ที่ฝ่ายวิจัยเสนออัตโนมัติก่อนประชุม")} />
+      <SectionTitle eyebrow="FULL INVESTMENT DISCOVERY · PHASE 1 + TACTICAL LENS" title={tr(lang, "Every research model sources new investments", "ใช้ทุกโมเดลวิจัยเพื่อค้นหาการลงทุนใหม่")} />
       <p className="notice">{meeting.scan?.note ?? tr(lang, "The research scan did not return a summary.", "ไม่มีผลสรุปจากฝ่ายวิจัย")}</p>
       {!proposals.length ? <div className={styles.empty}><strong>{tr(lang, "No candidate cleared every hard filter", "ไม่มีหุ้นผ่านตัวกรองบังคับทั้งหมด")}</strong><p>{tr(lang, "This is a valid NO BUY result—not permission to force the weakest candidate into the portfolio.", "นี่คือผลลัพธ์ NO BUY ที่ถูกต้อง ไม่ใช่เหตุผลให้บังคับเลือกหุ้นที่อ่อนที่สุดเข้าพอร์ต")}</p></div> : <div className={styles.proposalGrid}>{proposals.map((proposal, index) => <article className={`metric ${styles.proposal}`} key={proposal.ticker}>
         <div className={styles.proposalHead}><span className="tag">#{index + 1} · {proposal.setupType}</span><strong>{proposal.ticker}</strong><span>{proposal.score}/100</span></div>
