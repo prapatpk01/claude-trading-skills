@@ -19,11 +19,30 @@ if(missing.length){console.error("V9 validation failed. Missing:",missing.join("
 const health=fs.readFileSync(path.join(root,"app/api/v9/health/route.ts"),"utf8");
 const page=fs.readFileSync(path.join(root,"app/page.tsx"),"utf8");
 const committee=fs.readFileSync(path.join(root,"app/api/committee/audit/route.ts"),"utf8");
+const read=(f)=>{try{return fs.readFileSync(path.join(root,f),"utf8")}catch{return ""}};
+const shell=read("app/components/CIOCommandCenterV20.tsx")+read("app/components/HoldingsDashboardV12.tsx");
+const approval=read("app/components/MeetingApprovalPanel.tsx");
+const minutes=read("app/api/committee/minutes/route.ts");
+
+// The two contracts below used to assert that the v9 page layout was mounted —
+// the V9InstitutionalStatus panel and a "HUMAN OVERSIGHT" header. Three UI
+// generations replaced that layout, so those assertions were failing on a
+// design decision rather than on a broken guarantee, and they had been keeping
+// CI red before it ever reached typecheck or build.
+//
+// What v9 was actually protecting is that the app never executes on its own and
+// says so where a person can see it. That guarantee is intact and now stronger,
+// so the contracts point at where it lives rather than at where it used to be
+// rendered. This deliberately does NOT decide whether V9InstitutionalStatus is
+// reconnected or retired — the file check above still requires it to exist.
 const contracts=[
   [health.includes('automaticExecution:false'),"automatic execution must remain disabled"],
   [health.includes('version:"9.0.0"')||health.includes('version: "9.0.0"'),"v9 health version missing"],
-  [page.includes("V9InstitutionalStatus"),"v9 status panel not mounted"],
-  [page.includes("HUMAN OVERSIGHT"),"human oversight header missing"],
+  [page.includes("Human approval remains mandatory"),"the page must state that human approval is mandatory"],
+  [shell.includes("NO AUTO EXECUTION"),"the live workspaces must carry the no-auto-execution guarantee"],
+  [approval.includes("humanApproved: true")&&minutes.includes("humanApproved !== true"),
+    "the ledger write path must require an explicit human approval flag"],
+  [minutes.includes("approvedBy is required"),"an approval must carry the approver's name"],
   [committee.includes("human_authorized"),"committee human authorization audit missing"],
 ];
 const failed=contracts.filter(([ok])=>!ok).map(([,msg])=>msg);

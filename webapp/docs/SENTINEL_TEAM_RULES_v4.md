@@ -396,6 +396,194 @@ desk in the path.
 
 ---
 
+## 10d. The investment committee meeting
+
+`lib/team/committee.ts`, served by `/api/committee/meeting`, mounted at the CIO
+workspace. The meeting is where the desks' separate measurements become one
+decision, and it produces the artefacts a real fund meeting produces.
+
+### The liquidity motion comes first
+
+When broker cash is below the regime's floor, the meeting opens with a **RAISE
+CASH** motion and **no new position may be opened until the floor is met** —
+the CRO defers every ADD and NEW BUY, naming the breach.
+
+"Raise the buffer" is not an instruction. The motion therefore states both ends:
+
+- **What to sell.** Reserves first, largest line first — that is what reserves
+  are for. If reserves cannot cover the shortfall it names the smallest risk
+  position that closes the rest in one ticket, rather than leaving the choice to
+  whoever places the order.
+- **Where the money goes.** Nowhere. **The proceeds stay as settled cash.**
+  Restoring the buffer is the destination, not the funding for a purchase. The
+  amount is ring-fenced in the capital plan and never appears as a source, the
+  blotter line says *do not reinvest*, and the resolution repeats it.
+
+A negative cash balance is called an overdraft in plain words: until it is
+positive the fund is carrying its own positions on credit.
+
+### One motion per position, one per referred idea
+
+Motions are ordered by severity and the first rule that fires wins, so a
+concentration emergency is never quietly downgraded because the trend also
+looked fine.
+
+| Order | Motion | Fires when |
+|---|---|---|
+| 1 | **EXIT** | a hard block plus a broken trend or a negative signal; or price below both the 50- and 200-day averages with a 3-month return under −15% |
+| 2 | **TRIM** | zone is TRIM or EMERGENCY; or weight above the 20% hard cap; or a premium valuation above the 15% review threshold |
+| 3 | **ADD** | momentum ≥ 65 with no hard block, weight under 15%, valuation not premium, regime ≥ 45, and deployable cash exists |
+| 4 | **HOLD** | everything else — and it still has to state a reason |
+
+**Reserve assets are exempt from the trend rules.** A T-bill ETF has no thesis
+to break. It is a funding source, and the motion says so.
+
+Referred ideas are sized by conviction band — 80+ takes 8% of NAV, 65+ takes 6%,
+50+ takes 4%, everything else 3% — capped by deployable cash. A referral with
+**no** conviction score gets the floor, not the benefit of the doubt.
+
+### The swing scan — Momentum-Centric Alpha Score
+
+`lib/team/swing.ts`, served by `/api/committee/swing-scan` and shown in the
+research workspace. One hundred points, fixed by the brief and not tuned per
+scan: **momentum and relative strength 40, volume accumulation 25, structural
+base and trend 20, catalyst drift 15.**
+
+| Factor | What is measured |
+|---|---|
+| Momentum 40 | 30-day RS against SPY; RSI(14) inside the 60–75 Power Zone, with bearish divergence against price checked; MACD separation from zero normalised by price, and whether the histogram is expanding |
+| Volume 25 | 5-day average volume against the 20-day (accumulation, not a spike); up/down volume ratio over ten sessions |
+| Structure 20 | The consolidation classified as VCP, flat base or high-tight flag by measuring successive contraction depths, base depth and the preceding advance; price above the 10 and 20 EMA with the averages fanning |
+| Catalyst 15 | Aisha's 0–25 scale, converted in one place |
+
+**Four filters reject; they do not down-weight.** A scanner that ranks a setup
+it would not take is one nobody can act on.
+
+1. **Market regime** — an index below its 20-day EMA, or VIX above 18, leaves
+   only relative-strength outliers (RS ≥ 1.15). A regime that could not be
+   measured is treated as hostile, not as healthy.
+2. **Entry precision** — more than 3% above the structural pivot is extended.
+   The pivot excludes the breakout bars themselves, or every chart sits exactly
+   at its own pivot and this filter can never fire.
+3. **Swing target** — outside 10–25% is not this desk's trade. Targets are the
+   1.618 Fibonacci extension of the base or its measured move; they are
+   structural, never forecasts.
+4. **Reward:risk** — below 1:3 is refused with the geometry quoted. The stop
+   goes under the *current* contraction, not the whole base: stopping at the
+   base's own low makes risk equal reward, and a 1.618 extension can never pay
+   1:3 against it.
+
+**Win probability is not quoted.** The fund has no closed-trade sample per score
+band, and a percentage printed beside measured numbers reads as measured.
+
+### How a name reaches the meeting
+
+The research workspace refers directly: every candidate at the **Committee
+Ready** stage carries a *Refer to committee* button, and the shortlist can be
+sent in one action. The referral is written to the analysis action queue with
+`action: "COMMITTEE"`, and it carries four things the meeting needs — the
+engine that found it, the conviction score, the target, and **the price the
+thesis was written at**. A referral from the ticker analysis works the same way.
+
+A referral is not evidence forever:
+
+| Rule | Threshold | Who acts |
+|---|---|---|
+| **Price drift** | ±15% from the referral price | **Miriam Osei vetoes.** The target, the upside and the conviction were all computed at a price that no longer exists — this is arithmetic about a different security, not a stale opinion. |
+| **Shelf life** | 21 days | **Aisha Fontaine votes against her own desk's paper.** She owns the thesis, so she is the seat that withdraws it. |
+
+Both defer rather than reject: re-run the scan and refer again. A referral for a
+name the fund already holds becomes an **ADD** to the existing line, never a new
+position, so the concentration cap still binds.
+
+### Voting
+
+All fourteen seats are polled on every motion. **A seat that cannot measure its
+own input abstains and names what was missing.** This is the rule that makes the
+tally mean something: six desks agreeing because they all read the same
+composite score is one opinion wearing six hats.
+
+The chair votes last and cannot be the reason a motion passes without the desks
+behind it: he follows the desk tally, and on a genuine tie the casting vote goes
+to the side that reduces exposure.
+
+Two vetoes exist, and **a veto defers rather than rejects** — "not on this
+evidence" is a different statement from "no":
+
+- **Miriam Osei** vetoes any sized motion whose evidence coverage is below 50%.
+- **Kai Tanaka** vetoes any addition that would take a name past the 20% cap.
+
+A motion also defers when the meeting is inquorate (fewer than 8 of 14 seats
+brought a measurement) or when fewer than 4 seats could vote at all.
+
+### Sources must fund uses
+
+The capital plan sums deployable cash and the proceeds of every carried sale,
+then funds carried purchases highest-conviction first. **When the meeting
+approves more buying than it has funded, the remainder is cut or reduced and
+every cut is named** in the plan and in the disclosures. An approval the fund
+cannot pay for is not a decision.
+
+### What leaves the room
+
+A trade blotter of BUY/SELL lines with approximate sizes and a reference price,
+one resolution per motion with a named owner and a review date (7 days for
+deferrals, 14 for actions, 30 for holds), every dissenting vote on a carried
+motion kept on the record, and minutes. **Nothing executes.** The engine has no
+path to a broker, and a human records the actual fills in the ledger.
+
+---
+
+## 10e. The four scores and the conviction
+
+`lib/team/conviction.ts`. Four pillars, each 0–100 and each normalised over what
+could be measured, blended on **fixed, published weights: quality 30, growth 25,
+valuation 25, risk 20.** A conviction score whose weights move with the answer
+is a rationalisation with a number attached.
+
+Risk scores *higher* when the position is safer — beta, drawdown, realised
+volatility, exit liquidity and hard blocks.
+
+Two refusals. A pillar with nothing measurable scores **null**, not zero — an
+unmeasured pillar is not a low one. And below 50% of the model's weight the
+**rating is withheld** entirely: under half, a rating says more about the gaps
+than about the company.
+
+The **thesis tracker** carries the bull and bear cases assembled from pillars
+that actually scored, the key risks, and six monitoring metrics — each with the
+reading that would break the thesis and the desk that owns it.
+
+**Variant perception is a measurement, not a story:** the gap between the anchor
+stack and the price, with its direction. Agreement with the market inside 8% is
+reported as having no edge rather than dressed up as a view.
+
+## 10f. Rule #5 — one data-integrity rule across every engine
+
+The fund's rule is stricter than excluding a gap from an average, and it now
+applies everywhere rather than in `scoring.ts` alone:
+
+> **An unavailable input scores zero and stays in the denominator.**
+
+Dropping an unmeasured component out of the average lets a case built on two
+measurements rank beside one built on six. Gate 7's 70% data-quality floor then
+catches the thin case a second time — the two work together and neither is a
+substitute for the other.
+
+Applied to `scoring.ts` (already correct), `swing.ts`, `conviction.ts` and the
+committee's evidence floor, which now reads Gate 7's 70% rather than a house
+50%.
+
+**Coverage is still published beside every score.** That is what keeps the rule
+honest in the other direction: a low score caused by missing evidence and one
+caused by weakness are different findings, and the reader must be able to tell
+them apart.
+
+The one exception, and it is deliberate: a pillar or factor where **nothing at
+all** could be measured scores `null`, not zero. Zero reads as a finding; an
+absence of evidence is not one.
+
+---
+
 ## 11. Precedence
 
 Applied top-down; the first level that fires decides, and every recommendation

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
 import { yahooCandles } from "@/lib/yahoo";
-import { openOnly } from "@/lib/openPositions";
+import { loadOpenHoldings } from "@/lib/portfolioSource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,16 +66,18 @@ export async function GET() {
   try {
     const sb = getSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-    const [{ data: holdingRows, error: holdingError }, { data: cashRows, error: cashError }, regime] = await Promise.all([
-      sb.from("holdings").select("ticker,shares,avg_cost,closed_at"),
+    // Positions come from the transaction ledger, the same source /api/portfolio
+    // serves the holdings screen. Reading the raw table here is what made this
+    // panel and the performance panel print two different NAVs.
+    const [ledgerRead, { data: cashRows, error: cashError }, regime] = await Promise.all([
+      loadOpenHoldings(sb),
       sb.from("cash_ledger").select("amount"),
       marketRegime(),
     ]);
-    if (holdingError) throw new Error(holdingError.message);
     if (cashError) throw new Error(cashError.message);
 
-    const holdings: Holding[] = openOnly((holdingRows ?? []) as Holding[])
-      .map((row) => ({ ticker: String(row.ticker).toUpperCase(), shares: Number(row.shares), avg_cost: Number(row.avg_cost), closed_at: row.closed_at ?? null }))
+    const holdings: Holding[] = ledgerRead.rows
+      .map((row) => ({ ticker: row.ticker, shares: Number(row.shares), avg_cost: Number(row.avg_cost), closed_at: null }))
       .filter((row) => Number.isFinite(row.shares) && row.shares > 0);
     const cashBalance = (cashRows ?? []).reduce((sum, row) => sum + (finite(row.amount) ?? 0), 0);
     const tickers = Array.from(new Set(holdings.map((row) => row.ticker)));
@@ -121,9 +123,14 @@ export async function GET() {
     const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
     return NextResponse.json({
-      version: "v8.4",
+      version: "v8.5",
       verified,
       missingPrices,
+      // Which source these positions came from, and anything it disagreed with.
+      holdingsSource: ledgerRead.origin,
+      unbackedPositions: ledgerRead.unbacked,
+      shareMismatches: ledgerRead.shareMismatches,
+      reconciliationNote: ledgerRead.note,
       regime,
       cashBalance,
       securitiesValue: verified ? securitiesValue : null,
