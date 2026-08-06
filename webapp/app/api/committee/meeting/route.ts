@@ -18,6 +18,7 @@ import { classifySleeve } from "@/lib/team/portfolio";
 import { buildBookReview } from "@/lib/team/book";
 import { runCommitteeMeeting, type PositionEvidence, type IdeaEvidence } from "@/lib/team/committee";
 import { runDeskScan } from "@/lib/research/deskScan";
+import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";
 import { FUND, STANDING_DUTY } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
 
@@ -128,6 +129,13 @@ export async function GET(req: NextRequest) {
   try {
     const { rows: holdings, note: reconciliationNote } = await loadHoldings();
     if (reconciliationNote) unavailable.push(reconciliationNote);
+    const discoveryHeld = new Set(holdings.map(row => String(row.ticker).toUpperCase()));
+    // Phase 1 is the Investment Team's broad sourcing engine. Start it early so
+    // all factor lenses run while the rest of the meeting evidence is gathered.
+    const phase1ResearchPromise = Promise.race([
+      runInvestmentResearchOS({ exclude: discoveryHeld, topN: 6, universeLimit: 32 }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Phase 1 exceeded its meeting time budget")), 42_000)),
+    ]);
 
     // ── benchmark first: the regime, beta and momentum all lean on it ──
     const benchmark = await dailyCandles("SPY", 320).catch(() => [] as Candle[]);
@@ -334,6 +342,7 @@ export async function GET(req: NextRequest) {
     let scanUniverseSize = 0;
     let scanRejected = 0;
     const scanWarnings: string[] = [];
+    let researchOS: any = { universeSize: 0, analyzed: 0, rejected: 0, warnings: [], models: [], methodology: null };
     try {
       const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
       const referred = new Set(ideas.map((i) => i.ticker));
@@ -407,6 +416,52 @@ export async function GET(req: NextRequest) {
       unavailable.push(`research desk scan (${e?.message ?? "unavailable"})`);
     }
 
+    // Phase 1 is independent of the tactical swing filter. A durable growth,
+    // quality, value or dividend idea must not disappear because it is not a
+    // 7–15 day momentum setup today.
+    try {
+      const phase1 = await phase1ResearchPromise;
+      researchOS = {
+        universeSize: phase1.universeSize,
+        analyzed: phase1.analyzed,
+        rejected: phase1.rejected,
+        warnings: phase1.warnings,
+        models: phase1.models,
+        methodology: phase1.methodology,
+      };
+      const existingIdeas = new Set(ideas.map(idea => idea.ticker));
+      const phase1Proposals = phase1.proposals.filter(proposal => !existingIdeas.has(proposal.ticker));
+      const phase1Ideas: IdeaEvidence[] = await mapLimit(phase1Proposals, 4, async proposal => {
+        const [candles, yieldPct] = await Promise.all([
+          dailyCandles(proposal.ticker, 320).catch(() => [] as Candle[]),
+          forwardYield(proposal.ticker, proposal.price),
+        ]);
+        const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
+        return {
+          ticker: proposal.ticker,
+          rating: "BUY",
+          conviction: proposal.score,
+          source: proposal.setupType,
+          price: proposal.price,
+          target: proposal.target,
+          upsidePct: proposal.expectedReturnPct,
+          submittedAt: new Date().toISOString().slice(0, 10),
+          note: proposal.thesis.slice(0, 240),
+          alreadyHeld: false,
+          sleeve: yieldPct != null || beta != null ? classifySleeve(proposal.ticker, yieldPct, beta) : null,
+          ageDays: 0,
+          referencePrice: proposal.price,
+          priceDriftPct: 0,
+          dataQuality: `${proposal.sourceModels.length}/7 factor models qualified`,
+        };
+      });
+      ideas = [...ideas, ...phase1Ideas].slice(0, 12);
+      const phase1Tickers = new Set(phase1Proposals.map(proposal => proposal.ticker));
+      proposals = [...phase1Proposals, ...proposals.filter(proposal => !phase1Tickers.has(proposal.ticker))].slice(0, 10);
+    } catch (e: any) {
+      unavailable.push(`Sentinel Research OS Phase 1 (${e?.message ?? "unavailable"})`);
+    }
+
     // ── Priya's record: the fund's own closed decisions ──
     let track: { completed: number; winRatePct: number | null; averageReturnPct: number | null } | null = null;
     try {
@@ -438,22 +493,23 @@ export async function GET(req: NextRequest) {
         // Stage 1 evidence, kept beside the regime rather than folded into it.
         sentiment,
         newsPulse,
-        // Stage 2: what the research desk sourced on its own this morning.
+        // Phase 1 factor discovery plus the tactical swing timing lens.
         proposals,
         scan: {
           regime: scanRegime,
           universeSize: scanUniverseSize,
           rejected: scanRejected,
           warnings: scanWarnings,
+          researchOS,
           note: proposals.length
-            ? `${proposals.length} name(s) cleared every hard filter out of ${scanUniverseSize} scanned. Each is tabled below as a NEW BUY motion.`
-            : `No name in the ${scanUniverseSize}-name sweep cleared all four hard filters. ${scanRejected} were rejected with a reason; the desk proposes nothing rather than the least-bad candidate.`,
+            ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Phase 1 analyzed ${researchOS.analyzed}/${researchOS.universeSize} names across ${researchOS.models.length || 0} factor lenses; the tactical swing lens scanned ${scanUniverseSize}.`
+            : `No name cleared the combined Investment process. Phase 1 and the tactical swing lens retain every rejection reason rather than force a weak idea.`,
         },
         // The five stages of the fund's meeting, and whether each has its
         // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
           { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.regime} ${regime.score}/100; macro, fundamentals, valuation, catalysts, momentum and quant evidence assembled.` : "Investment Team cannot present without a market-regime read." },
-          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented — ${proposals.length} sourced by the automatic ${scanUniverseSize}-name scan and ${ideas.length - proposals.length} referred from Research Lab.` : `The team scanned ${scanUniverseSize} names; none cleared every hard filter. Sofia presents NO NEW BUY rather than forcing a candidate.` },
+          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Phase 1 uses every factor lens; the Swing model supplies tactical timing only. ${proposals.length} combined model proposal(s) are shown in the opportunity list.` : `Phase 1 and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
           { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
           { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
           { n: 5, name: "Human approval and minutes", owner: "Fund owner", ready: false, detail: "Submit the approved lines to POST /api/committee/minutes. Nothing is applied to the ledger until a person marks each line APPROVED." },
