@@ -1,0 +1,68 @@
+.watchlist-manage-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(63, 157, 255, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(9, 28, 54, 0.84), rgba(4, 15, 31, 0.9));
+}
+
+.watchlist-manage-panel > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.watchlist-manage-panel > div:first-child strong {
+  color: #69adff;
+  font-size: 9px;
+  letter-spacing: 1.2px;
+}
+
+.watchlist-manage-panel > div:first-child small {
+  color: #8ca0bd;
+  font-size: 9px;
+}
+
+.watchlist-manage-grid {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(240px, 1.4fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.watchlist-manage-grid input {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid rgba(109, 145, 204, 0.25);
+  border-radius: 10px;
+  background: #061225;
+  color: #f4f8ff;
+  outline: 0;
+}
+
+.watchlist-manage-grid input:focus {
+  border-color: #2c87ff;
+  box-shadow: 0 0 0 3px rgba(44, 135, 255, 0.12);
+}
+
+.watchlist-manage-grid .btn {
+  min-height: 42px;
+}
+
+.watchlist-remove-actions {
+  display: flex;
+  gap: 6px;
+  min-width: max-content;
+}
+
+@media (max-width: 720px) {
+  .watchlist-manage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .watchlist-manage-grid .btn {
+    width: 100%;
+  }
+}
