@@ -111,6 +111,7 @@ const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
 const money = (value: number) => `${value < 0 ? "−" : ""}$${Math.abs(Math.round(value)).toLocaleString("en-US")}`;
 const pct = (value: number | null | undefined) => value == null ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 const priority: Record<MotionKind, number> = { "RAISE CASH": 0, EXIT: 1, TRIM: 2, "NEW BUY": 3, ADD: 4, HOLD: 5 };
+const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";
 
 const INVESTMENT_TEAM = [
   ["Sofia Reyes", "Head of Investment Research", "Signs the investment proposal and presents BUY / WATCH / REJECT"],
@@ -151,9 +152,26 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [frozen, setFrozen] = useState(false);
 
   useEffect(() => {
     let active = true;
+    if (refreshKey === 0) {
+      try {
+        const saved = window.localStorage.getItem(FROZEN_MEETING_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as Meeting;
+          if (parsed?.meetingId && parsed?.motions?.length) {
+            setMeeting(parsed);
+            setFrozen(true);
+            setLoading(false);
+            return () => { active = false; };
+          }
+        }
+      } catch {
+        window.localStorage.removeItem(FROZEN_MEETING_KEY);
+      }
+    }
     setLoading(true);
     setError(null);
     loadMeeting()
@@ -162,6 +180,18 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [refreshKey]);
+
+  const startNextMeeting = () => {
+    window.localStorage.removeItem(FROZEN_MEETING_KEY);
+    setFrozen(false);
+    setRefreshKey((value) => value + 1);
+  };
+
+  const freezeRecordedMeeting = () => {
+    if (!meeting) return;
+    window.localStorage.setItem(FROZEN_MEETING_KEY, JSON.stringify(meeting));
+    setFrozen(true);
+  };
 
   const motions = useMemo(() => [...(meeting?.motions ?? [])].sort((a, b) => priority[a.kind] - priority[b.kind] || Math.abs(b.sizeUsd) - Math.abs(a.sizeUsd)), [meeting]);
   const proposals = useMemo(() => [...(meeting?.proposals ?? [])].sort((a, b) => b.score - a.score), [meeting]);
@@ -194,8 +224,8 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
         <p className="muted">{tr(lang, "The desks work in the background. This screen shows what changed, what the fund should do, how it is funded and what still needs human approval.", "ทีมวิเคราะห์ทำงานอยู่เบื้องหลัง หน้านี้แสดงเฉพาะสิ่งที่เปลี่ยน สิ่งที่กองทุนควรทำ แหล่งเงินทุน และรายการที่รออนุมัติ")}</p>
       </div>
       <div className={styles.heroActions}>
-        <span className={`tag ${meeting.quorum.met ? styles.good : styles.bad}`}>{meeting.quorum.met ? "QUORUM READY" : "QUORUM BLOCKED"}</span>
-        <button className="btn ghost" type="button" disabled={loading} onClick={() => setRefreshKey((value) => value + 1)}>↻ {loading ? tr(lang, "Running…", "กำลังประมวลผล…") : tr(lang, "Run new meeting", "ประชุมใหม่")}</button>
+        <span className={`tag ${frozen || meeting.quorum.met ? styles.good : styles.bad}`}>{frozen ? "MEETING RECORDED · FROZEN" : meeting.quorum.met ? "QUORUM READY" : "QUORUM BLOCKED"}</span>
+        <button className="btn ghost" type="button" disabled={loading} onClick={startNextMeeting}>↻ {loading ? tr(lang, "Running…", "กำลังประมวลผล…") : frozen ? tr(lang, "Start next meeting", "เริ่มประชุมรอบถัดไป") : tr(lang, "Run new meeting", "ประชุมใหม่")}</button>
       </div>
     </section>
 
@@ -319,7 +349,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       </section>
     </>}
 
-    {view === "approval" && <MeetingApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={meeting.capitalPlan.approvalReady} approvalBlockReason={meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApplied={() => setRefreshKey((value) => value + 1)} />}
+    {view === "approval" && <MeetingApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={meeting.capitalPlan.approvalReady} approvalBlockReason={meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApplied={freezeRecordedMeeting} />}
 
     <section className={`card ${styles.guardrail}`}><strong>HUMAN APPROVAL REQUIRED · NO AUTO EXECUTION</strong><span>{tr(lang, "Portfolio and cash come from the production ledger. Recommendations cannot alter holdings until an approved fill is recorded.", "ข้อมูลพอร์ตและเงินสดมาจาก ledger จริง คำแนะนำไม่สามารถเปลี่ยน holdings ได้จนกว่าจะบันทึกรายการที่อนุมัติและซื้อขายจริง")}</span></section>
   </div>;
