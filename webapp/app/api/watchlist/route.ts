@@ -7,6 +7,26 @@ export const dynamic = "force-dynamic";
 
 /** Added by the trade-idea migration — the app must work either way. */
 const OPTIONAL_COLUMNS = ["target_price", "stop_price", "entry_price", "source"];
+const ADMIN_ENV_NAMES = [
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_SECRET_KEY",
+  "SUPABASE_SERVICE_KEY",
+] as const;
+
+function missingAdminKeyResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "SUPABASE_ADMIN_KEY_MISSING",
+      error:
+        "Secure database writes are unavailable because no privileged Supabase server key is configured in this Vercel Production deployment.",
+      acceptedEnv: ADMIN_ENV_NAMES,
+      action:
+        "Add one accepted server-only key to Vercel Production, then create a new production deployment.",
+    },
+    { status: 503, headers: { "Cache-Control": "no-store, max-age=0" } },
+  );
+}
 
 function isMissingColumn(msg: string): boolean {
   const m = msg.toLowerCase();
@@ -54,12 +74,7 @@ export async function POST(req: NextRequest) {
   };
 
   const sb = getSupabaseAdmin();
-  if (!sb) {
-    return NextResponse.json(
-      { error: "Secure database writes are unavailable because SUPABASE_SERVICE_ROLE_KEY is not configured." },
-      { status: 503 },
-    );
-  }
+  if (!sb) return missingAdminKeyResponse();
 
   let { data, error } = await sb.from("watchlist").upsert(row, { onConflict: "ticker" }).select().single();
   if (error && isMissingColumn(error.message)) {
@@ -80,12 +95,7 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   const sb = getSupabaseAdmin();
-  if (!sb) {
-    return NextResponse.json(
-      { error: "Secure database writes are unavailable because SUPABASE_SERVICE_ROLE_KEY is not configured." },
-      { status: 503 },
-    );
-  }
+  if (!sb) return missingAdminKeyResponse();
   const { error } = await sb.from("watchlist").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
