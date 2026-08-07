@@ -1,28 +1,40 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   getSupabase,
   supabaseAdminConfigured,
   supabaseAdminKeySource,
   supabaseConfigured,
 } from "@/lib/supabase";
+import { callSupabaseWriteGateway } from "@/lib/supabaseWriteGateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const serviceRoleConfigured = supabaseAdminConfigured();
   const adminKeySource = supabaseAdminKeySource();
   const publicUrlConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL);
   const anonKeyConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   const sb = getSupabase();
 
+  let oidcGatewayReady = false;
+  let oidcGatewayError: string | null = null;
+  if (!serviceRoleConfigured && publicUrlConfigured) {
+    const gateway = await callSupabaseWriteGateway(req, { resource: "system", action: "health" });
+    oidcGatewayReady = gateway.ok;
+    if (!gateway.ok) oidcGatewayError = String(gateway.body?.error ?? `HTTP ${gateway.status}`);
+  }
+
+  const protectedWriteReady = serviceRoleConfigured || oidcGatewayReady;
   const checks: Record<string, unknown> = {
     supabaseConfigured: supabaseConfigured(),
     publicUrlConfigured,
     serviceRoleConfigured,
     adminKeySource,
     anonKeyConfigured,
-    serverWritesProtected: serviceRoleConfigured,
+    oidcGatewayReady,
+    writeAuth: serviceRoleConfigured ? "supabase-secret" : oidcGatewayReady ? "vercel-oidc" : null,
+    serverWritesProtected: protectedWriteReady,
   };
 
   let databaseReachable = false;
@@ -46,38 +58,21 @@ export async function GET() {
     }
   }
 
-  const ready = Boolean(
-    publicUrlConfigured &&
-      serviceRoleConfigured &&
-      databaseReachable &&
-      databaseError === null,
-  );
+  const ready = Boolean(publicUrlConfigured && protectedWriteReady && databaseReachable && databaseError === null);
 
   return NextResponse.json(
     {
       ok: ready,
-      release: "Sentinel-Investment-OS-v10.0",
+      release: "Sentinel-Investment-OS-v14.2",
       checkedAt: new Date().toISOString(),
-      checks: {
-        ...checks,
-        databaseReachable,
-        holdingsCount,
-        watchlistCount,
-      },
+      checks: { ...checks, databaseReachable, holdingsCount, watchlistCount },
       failures: [
         ...(!publicUrlConfigured ? ["NEXT_PUBLIC_SUPABASE_URL is missing"] : []),
-        ...(!serviceRoleConfigured
-          ? [
-              "No privileged Supabase server key is configured. Set SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY in Vercel Production.",
-            ]
-          : []),
+        ...(!protectedWriteReady ? [`No secure write identity is available. ${oidcGatewayError ?? "Configure SUPABASE_SECRET_KEY or enable Vercel OIDC Secure Backend Access."}`] : []),
         ...(!databaseReachable ? [databaseError ?? "Supabase database is unreachable"] : []),
       ],
       productionReady: ready,
     },
-    {
-      status: ready ? 200 : 503,
-      headers: { "Cache-Control": "no-store, max-age=0" },
-    },
+    { status: ready ? 200 : 503, headers: { "Cache-Control": "no-store, max-age=0" } },
   );
 }
