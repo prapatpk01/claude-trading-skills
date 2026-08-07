@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { getSupabase, supabaseConfigured } from "@/lib/supabase";
+import {
+  getSupabase,
+  supabaseAdminConfigured,
+  supabaseAdminKeySource,
+  supabaseConfigured,
+} from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const serviceRoleConfigured = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const serviceRoleConfigured = supabaseAdminConfigured();
+  const adminKeySource = supabaseAdminKeySource();
   const publicUrlConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL);
   const anonKeyConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   const sb = getSupabase();
@@ -14,6 +20,7 @@ export async function GET() {
     supabaseConfigured: supabaseConfigured(),
     publicUrlConfigured,
     serviceRoleConfigured,
+    adminKeySource,
     anonKeyConfigured,
     serverWritesProtected: serviceRoleConfigured,
   };
@@ -41,9 +48,9 @@ export async function GET() {
 
   const ready = Boolean(
     publicUrlConfigured &&
-    serviceRoleConfigured &&
-    databaseReachable &&
-    databaseError === null,
+      serviceRoleConfigured &&
+      databaseReachable &&
+      databaseError === null,
   );
 
   return NextResponse.json(
@@ -59,7 +66,11 @@ export async function GET() {
       },
       failures: [
         ...(!publicUrlConfigured ? ["NEXT_PUBLIC_SUPABASE_URL is missing"] : []),
-        ...(!serviceRoleConfigured ? ["SUPABASE_SERVICE_ROLE_KEY is missing; secure server-side writes cannot be guaranteed"] : []),
+        ...(!serviceRoleConfigured
+          ? [
+              "No privileged Supabase server key is configured. Set SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY in Vercel Production.",
+            ]
+          : []),
         ...(!databaseReachable ? [databaseError ?? "Supabase database is unreachable"] : []),
       ],
       productionReady: ready,
