@@ -1,0 +1,2 @@
+Sentinel secure write path v14.2
+Vercel OIDC -> Supabase Edge Function -> privileged database operations.
