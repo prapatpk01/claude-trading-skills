@@ -51,10 +51,24 @@
   min-height: 42px;
 }
 
+/* Reserve enough room for the two-step destructive action. Without this,
+   the table sizes the Manage column from the initial Remove button and the
+   wider Confirm remove + Cancel state can be clipped on narrow screens. */
+.watchlist-market-table th:last-child,
+.watchlist-market-table td:last-child {
+  min-width: 220px;
+}
+
 .watchlist-remove-actions {
   display: flex;
   gap: 6px;
-  min-width: max-content;
+  width: 100%;
+  min-width: 0;
+}
+
+.watchlist-remove-actions .btn {
+  min-width: 0;
+  white-space: nowrap;
 }
 
 @media (max-width: 720px) {
@@ -64,5 +78,22 @@
 
   .watchlist-manage-grid .btn {
     width: 100%;
+  }
+
+  .watchlist-market-table th:last-child,
+  .watchlist-market-table td:last-child {
+    min-width: 230px;
+  }
+
+  .watchlist-remove-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
+    align-items: stretch;
+  }
+
+  .watchlist-remove-actions .btn {
+    width: 100%;
+    white-space: normal;
+    line-height: 1.15;
   }
 }
