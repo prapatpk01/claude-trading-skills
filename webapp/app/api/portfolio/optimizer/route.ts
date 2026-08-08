@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
 import { openOnly } from "@/lib/openPositions";
+import { GET as getCashBufferResponse } from "@/app/api/portfolio/cash-buffer/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,40 +12,24 @@ const RESERVES = new Set(["SGOV","BIL","SHV","USFR","TFLO","ICSH","JPST","JAAA"]
 const MAX_SINGLE_NAME_PCT = 20;
 const REVIEW_SINGLE_NAME_PCT = 15;
 
-async function internalJson(req: NextRequest, path: string) {
-  const cookie = req.headers.get("cookie") ?? "";
-  const authorization = req.headers.get("authorization") ?? "";
-  const response = await fetch(new URL(path, req.nextUrl.origin), {
-    cache: "no-store",
-    headers: {
-      ...(cookie ? { cookie } : {}),
-      ...(authorization ? { authorization } : {}),
-      accept: "application/json",
-    },
-  });
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = await response.text();
-  if (!contentType.includes("application/json")) {
-    throw new Error(`${path} returned ${response.status} ${contentType || "non-JSON"}; preview authentication may not have been forwarded.`);
-  }
-  let json: any;
-  try { json = body ? JSON.parse(body) : {}; }
-  catch { throw new Error(`${path} returned malformed JSON.`); }
-  if (!response.ok) throw new Error(json?.error ?? `${path} returned ${response.status}`);
+async function loadCashBuffer() {
+  const response = await getCashBufferResponse();
+  const json = await response.json();
+  if (!response.ok) throw new Error(json?.error ?? `Cash buffer returned ${response.status}`);
   return json;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const sb = getSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
     const [{ data, error }, buffer] = await Promise.all([
       sb.from("holdings").select("ticker,shares,avg_cost,closed_at"),
-      internalJson(req, "/api/portfolio/cash-buffer"),
+      loadCashBuffer(),
     ]);
     if (error) throw new Error(error.message);
     if (!buffer.verified || buffer.totalNav == null) {
-      return NextResponse.json({ version:"v8.3", status:"BLOCKED", reason:"Portfolio prices are incomplete.", missingPrices:buffer.missingPrices ?? [], proposals:[] });
+      return NextResponse.json({ version:"v8.4", status:"BLOCKED", reason:"Portfolio prices are incomplete.", missingPrices:buffer.missingPrices ?? [], proposals:[] });
     }
 
     const holdings = openOnly((data ?? []) as any[])
@@ -72,9 +57,6 @@ export async function GET(req: NextRequest) {
     }
 
     if(buffer.posture==="UNDERFUNDED"){
-      // Selling SGOV into USD only changes the form of the Cash Buffer; it does
-      // not increase the combined sleeve. A genuine shortfall must therefore
-      // be filled by retaining new cash or reducing a risk asset.
       const shortfall=Math.abs(buffer.gapValue ?? 0);
       const smallestRisk=positions.filter(p=>!p.isReserve&&p.marketValue>=shortfall).sort((a,b)=>a.marketValue-b.marketValue)[0]??null;
       const fundingPlan=smallestRisk
@@ -89,7 +71,7 @@ export async function GET(req: NextRequest) {
         capitalUsd:shortfall,
         fundingSource:smallestRisk?.ticker??null,
         proceedsDestination:"CASH BUFFER — USD or approved reserve instrument",
-        reason:`Total Cash Buffer (USD plus haircut-adjusted reserves) is ${Number(buffer.bufferPct ?? 0).toFixed(1)}% against a ${buffer.targetPct}% target (${Number(buffer.targetValue ?? 0).toFixed(2)} USD), a shortfall of ${shortfall.toFixed(2)} USD. ${fundingPlan} SGOV and other approved reserves are already inside the buffer, so converting them to USD cannot close this gap. New risk deployment stays blocked until the combined floor is met.`,
+        reason:`Total Cash Buffer (USD plus approved reserves) is ${Number(buffer.bufferPct ?? 0).toFixed(1)}% against a ${buffer.targetPct}% target (${Number(buffer.targetValue ?? 0).toFixed(2)} USD), a shortfall of ${shortfall.toFixed(2)} USD. ${fundingPlan} SGOV and other approved reserves are already inside the buffer, so converting them to USD cannot close this gap. New risk deployment stays blocked until the combined floor is met.`,
       });
     }else if(buffer.posture==="OVERFUNDED"){
       proposals.unshift({
@@ -112,7 +94,7 @@ export async function GET(req: NextRequest) {
     if(positions.some(p=>p.weightPct>MAX_SINGLE_NAME_PCT)) blockers.push("At least one risk position exceeds the hard single-name cap.");
 
     return NextResponse.json({
-      version:"v8.3",
+      version:"v8.4",
       status:blockers.length?"REVIEW_REQUIRED":"READY",
       asOf:new Date().toISOString(),
       policy:{maxSingleNamePct:MAX_SINGLE_NAME_PCT,reviewSingleNamePct:REVIEW_SINGLE_NAME_PCT,reserveTickers:[...RESERVES],automaticExecution:false},
