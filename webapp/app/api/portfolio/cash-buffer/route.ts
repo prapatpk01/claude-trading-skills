@@ -109,12 +109,14 @@ export async function GET() {
     const verified = missingPrices.length === 0;
     const totalNav = verified ? securitiesValue + cashBalance : null;
 
-    // The policy buffer is a sleeve, not a bank-account balance. USD cash and
-    // approved short-duration reserve instruments belong to the same buffer.
-    // Haircuts keep credit/duration risk from being counted as one-for-one cash.
+    // Policy Cash Buffer is the actual reserve sleeve: USD broker cash plus the
+    // full market value of approved reserve holdings such as SGOV and JAAA.
+    // A separate risk-adjusted figure retains haircuts for stress/liquidity work,
+    // but haircuts must not make the committee think the policy buffer is missing.
     const totalReserveAssets = cashBalance + reserveMarketValue;
     const haircutAdjustedReserveAssets = cashBalance + reserveLiquidityValue;
-    const liquidityBuffer = haircutAdjustedReserveAssets;
+    const liquidityBuffer = totalReserveAssets;
+    const riskAdjustedLiquidityBuffer = haircutAdjustedReserveAssets;
     const bufferPct = totalNav != null && totalNav > 0 ? (liquidityBuffer / totalNav) * 100 : null;
     const targetValue = totalNav != null ? totalNav * regime.targetPct / 100 : null;
     const gapValue = targetValue != null ? liquidityBuffer - targetValue : null;
@@ -125,7 +127,7 @@ export async function GET() {
     const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
     return NextResponse.json({
-      version: "v8.5",
+      version: "v8.6",
       verified,
       missingPrices,
       // Which source these positions came from, and anything it disagreed with.
@@ -143,6 +145,7 @@ export async function GET() {
       haircutAdjustedReserveAssets,
       grossBuffer: totalReserveAssets,
       liquidityBuffer,
+      riskAdjustedLiquidityBuffer,
       bufferPct,
       targetPct: regime.targetPct,
       targetValue,
@@ -155,7 +158,7 @@ export async function GET() {
         cashOnlyPolicy: false,
         combinedBufferPolicy: true,
         reserveTickers: Object.keys(RESERVE_RULES),
-        principle: "Cash Buffer equals USD broker cash plus haircut-adjusted approved reserve instruments. Selling SGOV into USD is an internal liquidity transfer and does not increase the total buffer.",
+        principle: "Cash Buffer equals USD broker cash plus full market value of approved reserve instruments. Risk-adjusted liquidity is reported separately. Selling SGOV or JAAA into USD is an internal buffer transfer and does not increase the total Cash Buffer.",
       },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
