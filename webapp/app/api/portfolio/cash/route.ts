@@ -27,14 +27,36 @@ export async function GET(req: NextRequest) {
   }, {});
   const unlinkedTrades = entries.filter((row) => ["BUY", "SELL"].includes(row.entry_type) && !row.transaction_id).length;
   const unlinkedDividends = entries.filter((row) => row.entry_type === "DIVIDEND" && !row.dividend_id).length;
-  return NextResponse.json({ version: "v8.3", balance, count: entries.length, byType, unlinkedTrades, unlinkedDividends, entries });
+  return NextResponse.json({ version: "v8.4", balance, count: entries.length, byType, unlinkedTrades, unlinkedDividends, entries });
 }
 
 export async function POST(req: NextRequest) {
-  if (!supabaseAdminConfigured()) return NextResponse.json({ error: "Secure cash writes require SUPABASE_SERVICE_ROLE_KEY." }, { status: 503 });
+  if (!supabaseAdminConfigured()) return NextResponse.json({ error: "Secure cash writes require a configured server admin key." }, { status: 503 });
   const sb = getSupabaseAdmin();
   if (!sb) return NextResponse.json({ error: "Admin database client unavailable." }, { status: 503 });
   const body = await req.json().catch(() => ({}));
+
+  // SET_BALANCE is a reconciliation operation for the broker's current USD cash.
+  // It never changes Holdings/NAV: it records only the delta required to make the
+  // cash ledger equal the broker cash entered by the user. Cash-buffer analytics
+  // consume this ledger separately from securities valuation.
+  if (String(body.mode ?? "").trim().toUpperCase() === "SET_BALANCE") {
+    const target = finite(body.balance);
+    if (target == null || target < 0) return NextResponse.json({ error: "Broker USD cash must be zero or greater." }, { status: 400 });
+    const { data: rows, error: readError } = await sb.from("cash_ledger").select("amount");
+    if (readError) return NextResponse.json({ error: readError.message }, { status: 400 });
+    const current = (rows ?? []).reduce((sum, row) => sum + (finite(row.amount) ?? 0), 0);
+    const delta = Number((target - current).toFixed(8));
+    if (Math.abs(delta) < 0.00000001) return NextResponse.json({ balance: target, changed: false });
+    const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.entry_date ?? "")) ? body.entry_date : new Date().toISOString().slice(0, 10);
+    const { data, error } = await sb.from("cash_ledger").insert({
+      entry_type: "ADJUSTMENT", amount: delta, entry_date: entryDate, currency: "USD",
+      notes: String(body.notes ?? "Broker USD cash reconciliation").trim() || "Broker USD cash reconciliation",
+    }).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ entry: data, balance: target, previousBalance: current, adjustment: delta, changed: true }, { status: 201 });
+  }
+
   const entryType = String(body.entry_type ?? "").trim().toUpperCase();
   const rawAmount = finite(body.amount);
   if (!TYPES.has(entryType)) return NextResponse.json({ error: "Manual entries support DEPOSIT, WITHDRAWAL, FEE or ADJUSTMENT." }, { status: 400 });
@@ -52,7 +74,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!supabaseAdminConfigured()) return NextResponse.json({ error: "Secure cash writes require SUPABASE_SERVICE_ROLE_KEY." }, { status: 503 });
+  if (!supabaseAdminConfigured()) return NextResponse.json({ error: "Secure cash writes require a configured server admin key." }, { status: 503 });
   const id = String(req.nextUrl.searchParams.get("id") ?? "").trim();
   if (!id) return NextResponse.json({ error: "Missing id." }, { status: 400 });
   const sb = getSupabaseAdmin();
