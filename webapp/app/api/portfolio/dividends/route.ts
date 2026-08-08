@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 const tickerPattern = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const DIVIDEND_WITHHOLDING_RATE = 0.15;
 
 const finite = (value: unknown): number | null => {
   if (value === null || value === undefined || String(value).trim() === "") return null;
@@ -78,7 +79,8 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
-    version: "v8.3",
+    version: "v8.7",
+    withholdingRate: DIVIDEND_WITHHOLDING_RATE,
     ticker: ticker || null,
     count: dividends.length,
     totals,
@@ -95,18 +97,16 @@ export async function POST(req: NextRequest) {
   const recordDate = dateOrNull(body.record_date);
   const sharesEligible = finite(body.shares_eligible);
   const grossPerShare = finite(body.gross_per_share);
-  const withholdingTax = finite(body.withholding_tax) ?? 0;
   const currency = String(body.currency ?? "USD").trim().toUpperCase();
 
   if (!tickerPattern.test(ticker)) return NextResponse.json({ error: "Enter a valid ticker symbol." }, { status: 400 });
   if (!payDate) return NextResponse.json({ error: "A valid pay date is required." }, { status: 400 });
   if (sharesEligible == null || sharesEligible <= 0) return NextResponse.json({ error: "Eligible shares must be greater than zero." }, { status: 400 });
   if (grossPerShare == null || grossPerShare < 0) return NextResponse.json({ error: "Gross dividend per share must be zero or greater." }, { status: 400 });
-  if (withholdingTax < 0) return NextResponse.json({ error: "Withholding tax cannot be negative." }, { status: 400 });
   if (!/^[A-Z]{3}$/.test(currency)) return NextResponse.json({ error: "Currency must be a 3-letter ISO code." }, { status: 400 });
 
   const grossAmount = Math.round(sharesEligible * grossPerShare * 1e8) / 1e8;
-  if (withholdingTax > grossAmount) return NextResponse.json({ error: "Withholding tax cannot exceed the gross dividend." }, { status: 400 });
+  const withholdingTax = Math.round(grossAmount * DIVIDEND_WITHHOLDING_RATE * 1e8) / 1e8;
   const netAmount = Math.round((grossAmount - withholdingTax) * 1e8) / 1e8;
 
   const { admin, error: writeError } = writeClientOrResponse();
@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ dividend: data, version: "v8.3" }, { status: 201 });
+  return NextResponse.json({ dividend: data, withholdingRate: DIVIDEND_WITHHOLDING_RATE, version: "v8.7" }, { status: 201 });
 }
 
 export async function DELETE(req: NextRequest) {
