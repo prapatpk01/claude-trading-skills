@@ -8,26 +8,29 @@ export type GatewayResult = {
 
 /**
  * Privileged-write fallback that does not require a long-lived Supabase secret
- * in Vercel. Vercel injects a short-lived OIDC identity token into Function
- * requests. The Supabase Edge Function verifies the exact team, project and
- * production environment claims before using its platform-provided secret key.
+ * in Vercel. Production Vercel Functions receive a short-lived OIDC token in
+ * the VERCEL_OIDC_TOKEN environment variable. Forward that token to the
+ * Supabase sentinel-write Edge Function, which verifies the exact Production
+ * deployment claims before using its platform-provided privileged key.
  */
 export async function callSupabaseWriteGateway(
-  req: NextRequest,
+  _req: NextRequest,
   payload: Record<string, unknown>,
 ): Promise<GatewayResult> {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const oidc = req.headers.get("x-vercel-oidc-token");
+  const oidc = process.env.VERCEL_OIDC_TOKEN;
+
   if (!base) {
     return { ok: false, status: 503, body: { error: "NEXT_PUBLIC_SUPABASE_URL is missing" } };
   }
+
   if (!oidc) {
     return {
       ok: false,
       status: 503,
       body: {
         code: "VERCEL_OIDC_UNAVAILABLE",
-        error: "Secure writes require either a Supabase server secret or Vercel OIDC Secure Backend Access.",
+        error: "Secure writes require either SUPABASE_SECRET_KEY on the server or Vercel Production OIDC Secure Backend Access.",
       },
     };
   }
