@@ -54,13 +54,8 @@ patch("app/api/committee/meeting/route.ts", [
 patch("app/components/CIOCommandCenterV20.tsx", [
   [
     'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";',
-    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20.2";',
-    "invalidate stale frozen meeting",
-  ],
-  [
-    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20";',
-    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20.2";',
-    "invalidate stale last meeting",
+    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20.3";\nconst LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20.3";',
+    "invalidate stale meeting cache and add last meeting key",
   ],
   [
     'const response = await fetch("/api/committee/meeting", { cache: "no-store", headers: { Accept: "application/json" } });',
