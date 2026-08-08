@@ -10,16 +10,11 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
 
   return (
     <section className="portfolio-truth-summary" aria-label={t("Verified portfolio summary", "สรุปพอร์ตที่ตรวจสอบแล้ว")}>
-      <div className="grid cols-4">
+      <div className="grid cols-3">
         <div className="metric">
-          <div className="label">{t("Verified Portfolio Value", "มูลค่าพอร์ตที่ยืนยันแล้ว")}</div>
-          <div className="value">{fund.loading ? "…" : fund.verified ? money(fund.totalNav) : "—"}</div>
-          <div className="sub">{fund.openPositions} {t("open positions · includes broker cash", "สถานะเปิด · รวมเงินสดโบรกเกอร์")}</div>
-        </div>
-        <div className="metric">
-          <div className="label">{t("Securities Cost Basis", "ต้นทุนหลักทรัพย์รวม")}</div>
-          <div className="value">{fund.loading ? "…" : money(fund.costBasis)}</div>
-          <div className="sub">{t("Recorded open holdings", "จากสถานะเปิดที่บันทึกไว้")}</div>
+          <div className="label">{t("Verified Holdings Value", "มูลค่าหุ้นที่ยืนยันแล้ว")}</div>
+          <div className="value">{fund.loading ? "…" : fund.verified ? money(fund.securitiesValue) : "—"}</div>
+          <div className="sub">{fund.openPositions} {t("open positions · broker cash tracked separately", "สถานะเปิด · เงินสดโบรกเกอร์แยกติดตามต่างหาก")}</div>
         </div>
         <div className="metric">
           <div className="label">{t("Unrealized P/L", "กำไร/ขาดทุนที่ยังไม่รับรู้")}</div>
@@ -31,7 +26,7 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
           <div className={cls("value", fund.unrealizedPnlPct >= 0 ? "pos" : "neg")}>
             {fund.loading ? "…" : fund.verified ? `${fund.unrealizedPnlPct >= 0 ? "+" : ""}${pct(fund.unrealizedPnlPct)}` : "—"}
           </div>
-          <div className="sub">{t("No separate valuation pipeline", "ไม่มีระบบคำนวณมูลค่าแยกอีกชุด")}</div>
+          <div className="sub">{t("Cost basis remains internal for P/L calculation", "เก็บต้นทุนไว้ภายในเพื่อคำนวณกำไร/ขาดทุน")}</div>
         </div>
       </div>
 
