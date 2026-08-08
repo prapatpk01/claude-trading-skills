@@ -21,8 +21,8 @@ function patch(rel, edits) {
 patch("app/api/committee/meeting/route.ts", [
   [
     'import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";',
-    'import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";\nimport { GET as getCashBufferResponse } from "@/app/api/portfolio/cash-buffer/route";',
-    "direct cash buffer import",
+    'import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";\nimport { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";',
+    "shared cash buffer import",
   ],
   [
     '    headers: { accept: "application/json", ...(cookie ? { cookie } : {}), ...(authorization ? { authorization } : {}) },\n  });',
@@ -41,20 +41,25 @@ patch("app/api/committee/meeting/route.ts", [
   ],
   [
     '    let buffer: any = null;\n    try { buffer = await internalJson(req, "/api/portfolio/cash-buffer"); }\n    catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }',
-    '    let buffer: any = null;\n    try {\n      const bufferResponse = await getCashBufferResponse();\n      const bufferPayload = await bufferResponse.json();\n      if (!bufferResponse.ok) throw new Error(bufferPayload?.error ?? `cash buffer returned ${bufferResponse.status}`);\n      buffer = bufferPayload;\n    } catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }',
-    "direct cash buffer read",
+    '    let buffer: any = null;\n    try { buffer = await buildCashBufferSnapshot(); }\n    catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }',
+    "direct combined buffer read",
+  ],
+  [
+    '    const securitiesValue = gathered.reduce((s, g) => s + (g.price ?? g.avgCost) * g.shares, 0);\n    const cashBalance = finite(buffer?.cashBalance) ?? 0;\n    const nav = finite(buffer?.totalNav) ?? securitiesValue + cashBalance;\n    const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? finite(buffer?.gapValue) ?? 0);\n    const cashBufferPct = finite(buffer?.bufferPct) ?? (nav > 0 ? (cashBalance / nav) * 100 : null);\n    const targetCashPct = finite(buffer?.targetPct);',
+    '    const securitiesValue = gathered.reduce((s, g) => s + (g.price ?? g.avgCost) * g.shares, 0);\n    const reserveFallback = gathered.reduce((sum, g) => RESERVES.has(g.ticker) ? sum + (g.price ?? g.avgCost) * g.shares : sum, 0);\n    const cashBalance = finite(buffer?.cashBalance) ?? 0;\n    const dividendAvailable = finite(buffer?.dividendAvailable) ?? 0;\n    const combinedBuffer = finite(buffer?.liquidityBuffer) ?? (cashBalance + dividendAvailable + reserveFallback);\n    const nav = finite(buffer?.totalNav) ?? securitiesValue;\n    const targetCashPct = finite(buffer?.targetPct);\n    const cashBufferPct = finite(buffer?.bufferPct) ?? (nav > 0 ? (combinedBuffer / nav) * 100 : null);\n    const targetCashValue = nav > 0 && targetCashPct != null ? nav * targetCashPct / 100 : null;\n    const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? (targetCashValue == null ? 0 : combinedBuffer - targetCashValue));',
+    "combined buffer inputs",
   ],
 ]);
 
 patch("app/components/CIOCommandCenterV20.tsx", [
   [
     'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";',
-    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20.1";',
+    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20.2";',
     "invalidate stale frozen meeting",
   ],
   [
     'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20";',
-    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20.1";',
+    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20.2";',
     "invalidate stale last meeting",
   ],
   [
@@ -80,9 +85,9 @@ patch("app/page.tsx", [
 patch("app/components/ThaiMeetingTranslator.tsx", [
   [
     '    const observer = new MutationObserver(() => translateRoot(root));\n    observer.observe(root, { childList: true, subtree: true, characterData: true });',
-    '    let queued = false;\n    const observer = new MutationObserver(() => {\n      if (queued) return;\n      queued = true;\n      queueMicrotask(() => {\n        queued = false;\n        translateRoot(root);\n      });\n    });\n    // Observe structural changes only. translateRoot itself edits text nodes;\n    // observing characterData caused a self-triggering translation loop on TH.\n    observer.observe(root, { childList: true, subtree: true });',
+    '    let queued = false;\n    const observer = new MutationObserver(() => {\n      if (queued) return;\n      queued = true;\n      queueMicrotask(() => {\n        queued = false;\n        translateRoot(root);\n      });\n    });\n    observer.observe(root, { childList: true, subtree: true });',
     "prevent translator mutation loop",
   ],
 ]);
 
-console.log("Applied CIO meeting resilience, direct buffer, and Thai UI patch.");
+console.log("Applied CIO resilience, Thai toggle, and combined Cash Buffer policy.");
