@@ -1,8 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
 import { openOnly } from "@/lib/openPositions";
 import { runActiveFund, LIQUIDITY_TICKERS, type PositionValue } from "@/lib/activeFund";
+import { GET as getCashBufferResponse } from "@/app/api/portfolio/cash-buffer/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,30 +15,14 @@ const finite = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-async function internalJson(req: NextRequest, path: string) {
-  const cookie = req.headers.get("cookie") ?? "";
-  const authorization = req.headers.get("authorization") ?? "";
-  const response = await fetch(new URL(path, req.nextUrl.origin), {
-    cache: "no-store",
-    headers: {
-      ...(cookie ? { cookie } : {}),
-      ...(authorization ? { authorization } : {}),
-      accept: "application/json",
-    },
-  });
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = await response.text();
-  if (!contentType.includes("application/json")) {
-    throw new Error(`${path} returned ${response.status} ${contentType || "non-JSON"}; preview authentication may not have been forwarded.`);
-  }
-  let json: any;
-  try { json = body ? JSON.parse(body) : {}; }
-  catch { throw new Error(`${path} returned malformed JSON.`); }
-  if (!response.ok) throw new Error(json?.error ?? `${path} returned ${response.status}`);
+async function loadCashBuffer() {
+  const response = await getCashBufferResponse();
+  const json = await response.json();
+  if (!response.ok) throw new Error(json?.error ?? `Cash buffer returned ${response.status}`);
   return json;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const sb = getSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
@@ -45,7 +30,7 @@ export async function GET(req: NextRequest) {
     const [holdingsResult, watchResult, buffer] = await Promise.all([
       sb.from("holdings").select("ticker,shares,avg_cost,closed_at"),
       sb.from("watchlist").select("ticker,source,target_price,entry_price,stop_price,reason"),
-      internalJson(req, "/api/portfolio/cash-buffer"),
+      loadCashBuffer(),
     ]);
 
     if (holdingsResult.error) throw new Error(holdingsResult.error.message);
@@ -53,7 +38,7 @@ export async function GET(req: NextRequest) {
 
     if (!buffer.verified || finite(buffer.totalNav) == null) {
       return NextResponse.json({
-        version: "v8.3",
+        version: "v8.4",
         status: "BLOCKED",
         reason: "Portfolio NAV is not verified. Opportunity capital cannot be allocated.",
         missingPrices: buffer.missingPrices ?? [],
@@ -77,7 +62,7 @@ export async function GET(req: NextRequest) {
 
     if (missingPrices.length) {
       return NextResponse.json({
-        version: "v8.3",
+        version: "v8.4",
         status: "BLOCKED",
         reason: "At least one holding lacks a verified market price.",
         missingPrices,
@@ -148,7 +133,7 @@ export async function GET(req: NextRequest) {
     }));
 
     return NextResponse.json({
-      version: "v8.3",
+      version: "v8.4",
       status: blockers.length ? "WAIT" : allocations.some((a) => a.approvedCapitalUsd > 0) ? "READY_FOR_HUMAN_REVIEW" : "NO_APPROVED_ALLOCATION",
       asOf: new Date().toISOString(),
       policy: {
