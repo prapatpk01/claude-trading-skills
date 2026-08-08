@@ -9,8 +9,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 type Holding = { ticker: string; shares: number; avg_cost: number; closed_at?: string | null };
-
 type ReserveRule = { label: string; haircut: number; tier: "cash" | "treasury" | "credit" };
+const DIVIDEND_WITHDRAWAL_TAG = "[DIVIDEND_WITHDRAWAL]";
 const RESERVE_RULES: Record<string, ReserveRule> = {
   SGOV: { label: "0–3 Month US Treasury", haircut: 1.0, tier: "treasury" },
   BIL: { label: "1–3 Month US Treasury", haircut: 1.0, tier: "treasury" },
@@ -26,6 +26,32 @@ const finite = (v: unknown): number | null => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 };
+
+function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown; notes?: string | null }>) {
+  let investmentCash = 0;
+  let dividendGrossCash = 0;
+  let dividendTax = 0;
+  let dividendWithdrawn = 0;
+  for (const row of rows) {
+    const amount = finite(row.amount) ?? 0;
+    if (row.entry_type === "DIVIDEND") {
+      dividendGrossCash += Math.max(0, amount);
+      continue;
+    }
+    if (row.entry_type === "TAX") {
+      dividendTax += Math.abs(Math.min(0, amount));
+      continue;
+    }
+    if (row.entry_type === "WITHDRAWAL" && String(row.notes ?? "").includes(DIVIDEND_WITHDRAWAL_TAG)) {
+      dividendWithdrawn += Math.abs(Math.min(0, amount));
+      continue;
+    }
+    investmentCash += amount;
+  }
+  const dividendNet = Math.max(0, dividendGrossCash - dividendTax);
+  const dividendAvailable = Math.max(0, dividendNet - dividendWithdrawn);
+  return { investmentCash, dividendGrossCash, dividendTax, dividendNet, dividendWithdrawn, dividendAvailable, realizedInvestmentProfit: dividendWithdrawn };
+}
 
 const sma = (values: number[], length: number): number | null => {
   if (values.length < length) return null;
@@ -66,12 +92,9 @@ export async function GET() {
   try {
     const sb = getSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-    // Positions come from the transaction ledger, the same source /api/portfolio
-    // serves the holdings screen. Reading the raw table here is what made this
-    // panel and the performance panel print two different NAVs.
     const [ledgerRead, { data: cashRows, error: cashError }, regime] = await Promise.all([
       loadOpenHoldings(sb),
-      sb.from("cash_ledger").select("amount"),
+      sb.from("cash_ledger").select("entry_type,amount,notes"),
       marketRegime(),
     ]);
     if (cashError) throw new Error(cashError.message);
@@ -79,7 +102,7 @@ export async function GET() {
     const holdings: Holding[] = ledgerRead.rows
       .map((row) => ({ ticker: row.ticker, shares: Number(row.shares), avg_cost: Number(row.avg_cost), closed_at: null }))
       .filter((row) => Number.isFinite(row.shares) && row.shares > 0);
-    const cashBalance = (cashRows ?? []).reduce((sum, row) => sum + (finite(row.amount) ?? 0), 0);
+    const cash = classifyCash(cashRows ?? []);
     const tickers = Array.from(new Set(holdings.map((row) => row.ticker)));
     const quotePairs = await Promise.all(tickers.map(async (ticker) => [ticker, await getLightQuote(ticker).catch(() => null)] as const));
     const quotes = new Map(quotePairs);
@@ -107,14 +130,14 @@ export async function GET() {
     }
 
     const verified = missingPrices.length === 0;
-    const totalNav = verified ? securitiesValue + cashBalance : null;
+    // Fund NAV / Holdings value intentionally excludes broker USD cash and dividend cash.
+    const totalNav = verified ? securitiesValue : null;
 
-    // Policy Cash Buffer is the actual reserve sleeve: USD broker cash plus the
-    // full market value of approved reserve holdings such as SGOV and JAAA.
-    // A separate risk-adjusted figure retains haircuts for stress/liquidity work,
-    // but haircuts must not make the committee think the policy buffer is missing.
-    const totalReserveAssets = cashBalance + reserveMarketValue;
-    const haircutAdjustedReserveAssets = cashBalance + reserveLiquidityValue;
+    // Policy Cash Buffer = investment USD cash + available net dividends + approved reserve holdings.
+    // Withdrawn dividends leave the fund and become realized investment profit; they are not deployable capital.
+    const liquidCash = cash.investmentCash + cash.dividendAvailable;
+    const totalReserveAssets = liquidCash + reserveMarketValue;
+    const haircutAdjustedReserveAssets = liquidCash + reserveLiquidityValue;
     const liquidityBuffer = totalReserveAssets;
     const riskAdjustedLiquidityBuffer = haircutAdjustedReserveAssets;
     const bufferPct = totalNav != null && totalNav > 0 ? (liquidityBuffer / totalNav) * 100 : null;
@@ -127,16 +150,23 @@ export async function GET() {
     const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
     return NextResponse.json({
-      version: "v8.6",
+      version: "v8.7",
       verified,
       missingPrices,
-      // Which source these positions came from, and anything it disagreed with.
       holdingsSource: ledgerRead.origin,
       unbackedPositions: ledgerRead.unbacked,
       shareMismatches: ledgerRead.shareMismatches,
       reconciliationNote: ledgerRead.note,
       regime,
-      cashBalance,
+      cashBalance: cash.investmentCash,
+      investmentCash: cash.investmentCash,
+      dividendGrossCash: cash.dividendGrossCash,
+      dividendTax: cash.dividendTax,
+      dividendNet: cash.dividendNet,
+      dividendAvailable: cash.dividendAvailable,
+      dividendWithdrawn: cash.dividendWithdrawn,
+      realizedInvestmentProfit: cash.realizedInvestmentProfit,
+      liquidCash,
       securitiesValue: verified ? securitiesValue : null,
       totalNav,
       reserveMarketValue,
@@ -158,7 +188,8 @@ export async function GET() {
         cashOnlyPolicy: false,
         combinedBufferPolicy: true,
         reserveTickers: Object.keys(RESERVE_RULES),
-        principle: "Cash Buffer equals USD broker cash plus full market value of approved reserve instruments. Risk-adjusted liquidity is reported separately. Selling SGOV or JAAA into USD is an internal buffer transfer and does not increase the total Cash Buffer.",
+        dividendWithholdingRate: 0.15,
+        principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. Withdrawn dividends are realized investment profit and are excluded from deployable capital and Fund NAV.",
       },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
