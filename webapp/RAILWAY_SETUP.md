@@ -9,6 +9,7 @@ Create a new Railway service from GitHub repository:
 - Repository: `prapatpk01/claude-trading-skills`
 - Branch: `main`
 - Root Directory: `/webapp`
+- Config File Path: `/webapp/railway.toml`
 - Builder: Railpack (from `railway.toml`)
 - Build command: `npm ci && npm run build`
 - Start command: `npm start`
@@ -16,7 +17,7 @@ Create a new Railway service from GitHub repository:
 - Healthcheck timeout: `300`
 - Restart policy: `ON_FAILURE`, max 10 retries
 
-Do not use the repository root as the service root. The Next.js application is in `/webapp`.
+Do not use the repository root as the service root. The Next.js application is in `/webapp`. Railway's config-file lookup does not automatically follow the Root Directory for a monorepo, so set the Config File Path explicitly to `/webapp/railway.toml`.
 
 ## Required Railway Variables
 
