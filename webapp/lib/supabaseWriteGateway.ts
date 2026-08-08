@@ -7,11 +7,12 @@ export type GatewayResult = {
 };
 
 /**
- * Privileged-write fallback that does not require a long-lived Supabase secret
- * in Vercel. Production Vercel Functions receive a short-lived OIDC token in
- * the VERCEL_OIDC_TOKEN environment variable. Forward that token to the
- * Supabase sentinel-write Edge Function, which verifies the exact Production
- * deployment claims before using its platform-provided privileged key.
+ * Privileged-write fallback used only when a direct Supabase server secret is
+ * not configured. On Vercel, Production Functions may forward the short-lived
+ * VERCEL_OIDC_TOKEN to the Supabase sentinel-write Edge Function. Railway does
+ * not provide Vercel OIDC, so Railway deployments must use SUPABASE_SECRET_KEY
+ * (or one of the supported legacy service-role aliases) for direct server-side
+ * writes. The browser never receives the privileged key.
  */
 export async function callSupabaseWriteGateway(
   _req: NextRequest,
@@ -19,6 +20,11 @@ export async function callSupabaseWriteGateway(
 ): Promise<GatewayResult> {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const oidc = process.env.VERCEL_OIDC_TOKEN;
+  const onRailway = Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+      process.env.RAILWAY_PROJECT_ID ||
+      process.env.RAILWAY_SERVICE_ID,
+  );
 
   if (!base) {
     return { ok: false, status: 503, body: { error: "NEXT_PUBLIC_SUPABASE_URL is missing" } };
@@ -28,10 +34,17 @@ export async function callSupabaseWriteGateway(
     return {
       ok: false,
       status: 503,
-      body: {
-        code: "VERCEL_OIDC_UNAVAILABLE",
-        error: "Secure writes require either SUPABASE_SECRET_KEY on the server or Vercel Production OIDC Secure Backend Access.",
-      },
+      body: onRailway
+        ? {
+            code: "RAILWAY_SUPABASE_SECRET_REQUIRED",
+            error:
+              "Railway secure writes require SUPABASE_SECRET_KEY on the server. Add it in Railway Variables and redeploy.",
+          }
+        : {
+            code: "VERCEL_OIDC_UNAVAILABLE",
+            error:
+              "Secure writes require either SUPABASE_SECRET_KEY on the server or Vercel Production OIDC Secure Backend Access.",
+          },
     };
   }
 
