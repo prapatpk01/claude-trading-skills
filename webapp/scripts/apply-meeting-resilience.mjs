@@ -20,6 +20,11 @@ function patch(rel, edits) {
 
 patch("app/api/committee/meeting/route.ts", [
   [
+    'import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";',
+    'import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";\nimport { GET as getCashBufferResponse } from "@/app/api/portfolio/cash-buffer/route";',
+    "direct cash buffer import",
+  ],
+  [
     '    headers: { accept: "application/json", ...(cookie ? { cookie } : {}), ...(authorization ? { authorization } : {}) },\n  });',
     '    headers: { accept: "application/json", ...(cookie ? { cookie } : {}), ...(authorization ? { authorization } : {}) },\n    signal: AbortSignal.timeout(8_000),\n  });',
     "internal API timeout",
@@ -34,13 +39,23 @@ patch("app/api/committee/meeting/route.ts", [
     'setTimeout(() => reject(new Error("the sweep did not finish inside the meeting\'s time budget")), 12_000)',
     "desk scan budget",
   ],
+  [
+    '    let buffer: any = null;\n    try { buffer = await internalJson(req, "/api/portfolio/cash-buffer"); }\n    catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }',
+    '    let buffer: any = null;\n    try {\n      const bufferResponse = await getCashBufferResponse();\n      const bufferPayload = await bufferResponse.json();\n      if (!bufferResponse.ok) throw new Error(bufferPayload?.error ?? `cash buffer returned ${bufferResponse.status}`);\n      buffer = bufferPayload;\n    } catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }',
+    "direct cash buffer read",
+  ],
 ]);
 
 patch("app/components/CIOCommandCenterV20.tsx", [
   [
     'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";',
-    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";\nconst LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20";',
-    "last meeting key",
+    'const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20.1";',
+    "invalidate stale frozen meeting",
+  ],
+  [
+    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20";',
+    'const LAST_MEETING_KEY = "sentinel:cio:last-meeting:v20.1";',
+    "invalidate stale last meeting",
   ],
   [
     'const response = await fetch("/api/committee/meeting", { cache: "no-store", headers: { Accept: "application/json" } });',
@@ -54,4 +69,20 @@ patch("app/components/CIOCommandCenterV20.tsx", [
   ],
 ]);
 
-console.log("Applied CIO meeting resilience patch.");
+patch("app/page.tsx", [
+  [
+    '<CIOCommandCenterV20 key={`cio-${lang}`} lang={lang} onNavigate={navigate} />',
+    '<CIOCommandCenterV20 lang={lang} onNavigate={navigate} />',
+    "language toggle must not remount CIO",
+  ],
+]);
+
+patch("app/components/ThaiMeetingTranslator.tsx", [
+  [
+    '    const observer = new MutationObserver(() => translateRoot(root));\n    observer.observe(root, { childList: true, subtree: true, characterData: true });',
+    '    let queued = false;\n    const observer = new MutationObserver(() => {\n      if (queued) return;\n      queued = true;\n      queueMicrotask(() => {\n        queued = false;\n        translateRoot(root);\n      });\n    });\n    // Observe structural changes only. translateRoot itself edits text nodes;\n    // observing characterData caused a self-triggering translation loop on TH.\n    observer.observe(root, { childList: true, subtree: true });',
+    "prevent translator mutation loop",
+  ],
+]);
+
+console.log("Applied CIO meeting resilience, direct buffer, and Thai UI patch.");
