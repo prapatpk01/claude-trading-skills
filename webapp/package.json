@@ -5,6 +5,7 @@
   "description": "Sentinel Investment OS v20 decision, execution, research, portfolio and performance feedback system",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/ensure-cio-runtime-source.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
