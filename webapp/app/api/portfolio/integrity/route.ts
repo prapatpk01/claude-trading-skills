@@ -28,6 +28,17 @@ const finite = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+/**
+ * Portfolio truth uses the same close semantics as the rest of the app:
+ * a position is open only when it has positive shares and no explicit close date.
+ * A zero-share row is retained as historical ledger evidence after a full sale;
+ * it is not a broken current holding.
+ */
+const isOpenHolding = (holding: HoldingRow): boolean => {
+  const shares = finite(holding.shares);
+  return !holding.closed_at && shares != null && shares > 0;
+};
+
 export async function GET() {
   if (!supabaseAdminConfigured()) {
     return NextResponse.json(
@@ -68,11 +79,13 @@ export async function GET() {
     const avgCost = finite(holding.avg_cost);
 
     if (!ticker) issues.push({ severity: "critical", code: "HOLDING_TICKER_MISSING", detail: `Holding ${holding.id} has no ticker.` });
-    if (shares == null || shares <= 0) issues.push({ severity: "critical", code: "HOLDING_SHARES_INVALID", ticker, detail: `Shares are ${String(holding.shares)}.` });
+    // Zero shares means the position was fully sold and the row is historical.
+    // Only malformed or negative share balances are integrity failures.
+    if (shares == null || shares < 0) issues.push({ severity: "critical", code: "HOLDING_SHARES_INVALID", ticker, detail: `Shares are ${String(holding.shares)}.` });
     if (avgCost == null || avgCost < 0) issues.push({ severity: "critical", code: "HOLDING_COST_INVALID", ticker, detail: `Average cost is ${String(holding.avg_cost)}.` });
     if (!holding.opened_at) issues.push({ severity: "warning", code: "OPEN_DATE_MISSING", ticker, detail: "Position has no opened_at date." });
 
-    if (!holding.closed_at) {
+    if (isOpenHolding(holding)) {
       const rows = openByTicker.get(ticker) ?? [];
       rows.push(holding);
       openByTicker.set(ticker, rows);
@@ -105,7 +118,7 @@ export async function GET() {
     if (!ledgerByHolding.has(holding.id)) continue; // Legacy holdings predate the v8.2 ledger.
     const ledgerShares = Math.round((ledgerByHolding.get(holding.id) ?? 0) * 1e7) / 1e7;
     const storedShares = Math.round((finite(holding.shares) ?? 0) * 1e7) / 1e7;
-    const expected = holding.closed_at ? 0 : storedShares;
+    const expected = isOpenHolding(holding) ? storedShares : 0;
     if (Math.abs(ledgerShares - expected) > 1e-7) {
       issues.push({
         severity: "critical",
@@ -120,18 +133,18 @@ export async function GET() {
   const warnings = issues.filter((issue) => issue.severity === "warning");
 
   return NextResponse.json({
-    version: "v8.3",
+    version: "v8.4",
     status: critical.length ? "FAILED" : warnings.length ? "WARNING" : "PASS",
     productionReady: critical.length === 0,
     checkedAt: new Date().toISOString(),
     counts: {
       holdings: holdings.length,
-      openHoldings: holdings.filter((h) => !h.closed_at).length,
+      openHoldings: holdings.filter(isOpenHolding).length,
       transactions: transactions.length,
       critical: critical.length,
       warnings: warnings.length,
     },
     issues,
-    legacyNote: "Holdings without ledger rows are treated as legacy positions and are not falsely marked mismatched.",
+    legacyNote: "Zero-share holdings are closed historical positions. They remain in the ledger for audit history but are excluded from current-holding integrity checks and open-position counts.",
   });
 }
