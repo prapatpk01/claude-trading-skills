@@ -21,7 +21,7 @@
     "audit:safety": "node scripts/audit-runtime-safety.mjs",
     "quality": "npm run validate:institutional && npm run audit:safety && npm run typecheck && npm run build",
     "test:committee": "tsc lib/team/committee.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-committee.mjs .test-build && rm -rf .test-build",
-    "test:swing": "tsc lib/team/swing.ts --outDir .test-build-swing --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-swing.mjs .test-build-swing",
+    "test:swing": "tsc lib/team/swing.ts --outDir .test-build-swing --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-swing.mjs .test-build-swing && rm -rf .test-build-swing",
     "test:conviction": "tsc lib/team/conviction.ts --outDir .test-build-conv --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scripts/test-conviction.mjs .test-build-conv && rm -rf .test-build-conv",
     "test:technical-overlay": "tsc lib/portfolioTechnicalOverlay.ts --outDir .test-build-overlay --module commonjs --target es2022 --skipLibCheck --esModuleInterop && node scripts/test-portfolio-technical-overlay.mjs .test-build-overlay && rm -rf .test-build-overlay",
     "test:engines": "npm run test:constitution && npm run test:committee && npm run test:swing && npm run test:conviction && npm run test:technical-overlay && npm run test:reconciliation",
