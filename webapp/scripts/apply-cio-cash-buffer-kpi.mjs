@@ -15,7 +15,7 @@ let meeting = fs.readFileSync(meetingPath, "utf8");
 meeting = replaceOnce(
   meeting,
   '        sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },',
-  '        cashBuffer: { valueUsd: cashBalance, pct: cashBufferPct, targetPct: targetCashPct },\n        sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },',
+  '        cashBuffer: { valueUsd: finite(buffer?.liquidityBuffer) ?? cashBalance, pct: cashBufferPct, targetPct: targetCashPct },\n        sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },',
   "meeting cashBuffer response"
 );
 fs.writeFileSync(meetingPath, meeting);
