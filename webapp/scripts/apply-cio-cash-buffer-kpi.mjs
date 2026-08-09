@@ -38,7 +38,7 @@ cio = replaceOnce(
 cio = replaceOnce(
   cio,
   '      <Kpi label={tr(lang, "Capital allocation", "แผนจัดสรรเงิน")} value={meeting.capitalPlan.allocationStatus} note={meeting.capitalPlan.allocationComplete ? `${money(meeting.capitalPlan.temporaryParkingUsd)} temporary reserve` : `${money(meeting.capitalPlan.unallocatedUsd)} has no destination`} />',
-  '      <Kpi label={tr(lang, "Capital allocation", "แผนจัดสรรเงิน")} value={meeting.capitalPlan.allocationStatus} note={meeting.capitalPlan.allocationComplete ? `${tr(lang, "Temporary reserve", "เงินพักชั่วคราว")}: ${money(meeting.capitalPlan.temporaryParkingUsd)} · ${tr(lang, "Cash Buffer", "Cash Buffer")}: ${meeting.cashBuffer ? `${money(meeting.cashBuffer.valueUsd)} (${meeting.cashBuffer.pct == null ? "—" : meeting.cashBuffer.pct.toFixed(1) + "%"})` : "—"}` : `${money(meeting.capitalPlan.unallocatedUsd)} ${tr(lang, "has no destination", "ยังไม่มีปลายทาง")}`} />',
+  '      <Kpi label={tr(lang, "Capital allocation", "แผนจัดสรรเงิน")} value={meeting.capitalPlan.allocationStatus} note={meeting.capitalPlan.allocationComplete ? `${tr(lang, "Temporary reserve", "เงินพักชั่วคราว")}: ${money(meeting.capitalPlan.temporaryParkingUsd)} · ${tr(lang, "Unallocated", "เงินไม่มีปลายทาง")}: ${money(meeting.capitalPlan.unallocatedUsd)}` : `${money(meeting.capitalPlan.unallocatedUsd)} ${tr(lang, "has no destination", "ยังไม่มีปลายทาง")}`} />',
   "Capital allocation note"
 );
 
