@@ -20,8 +20,12 @@ requireTokens("app/components/HoldingsMarketMonitor.tsx",[
  "Portfolio & Watchlist Market Monitor","/api/watchlist","TECHNICAL WATCHLIST OVERLAY","BUY CANDIDATE","AVOID NEW BUY","REMOVE REVIEW",
  "Investment must verify thesis, valuation and catalyst","No automatic promotion or execution","WatchlistTable"
 ]);
+// The route now expresses the old “split-brain” safeguard as an explicit
+// ledger-first source-of-truth contract. Validate behavior, not a deleted
+// comment/string from an earlier generation.
 requireTokens("app/api/portfolio/route.ts",[
- "execute_portfolio_trade","export async function PATCH","export async function DELETE","Shares support up to 7 decimal places","split-brain"
+ "execute_portfolio_trade","export async function PATCH","export async function DELETE","Shares support up to 7 decimal places",
+ 'sourceOfTruth: "portfolio_transactions"','ledgerFirst: true','reconcile_holding_from_broker','Direct holding deletion is disabled'
 ]);
 // The mounted component is the contract. The generation number is not: pinning
 // it here made this script fail on every upgrade rather than on a regression,
