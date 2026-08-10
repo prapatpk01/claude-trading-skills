@@ -148,6 +148,7 @@ export interface DualObjective {
   target: string;
   actual: string;
   pass: boolean | null;
+  status: string;
   note: string;
 }
 
@@ -163,13 +164,15 @@ export function dualObjectiveScorecard(
   blendedYieldPct: number | null
 ): DualObjective[] {
   const required = spyReturnPct != null ? spyReturnPct * 1.3 : null;
+  const totalReturnPass = portfolioReturnPct != null && required != null ? portfolioReturnPct >= required : null;
   const income = assessIncomeYield(blendedYieldPct);
   return [
     {
       label: "Objective 1 — Total return ≥ 1.3× SPY",
       target: required != null ? `${required >= 0 ? "+" : ""}${required.toFixed(2)}%` : "n/a",
       actual: portfolioReturnPct != null ? `${portfolioReturnPct >= 0 ? "+" : ""}${portfolioReturnPct.toFixed(2)}%` : "n/a",
-      pass: portfolioReturnPct != null && required != null ? portfolioReturnPct >= required : null,
+      pass: totalReturnPass,
+      status: totalReturnPass === true ? "PASS" : totalReturnPass === false ? "BEHIND" : "UNAVAILABLE",
       note:
         spyReturnPct != null
           ? `SPY over the same window ${spyReturnPct >= 0 ? "+" : ""}${spyReturnPct.toFixed(2)}%`
@@ -180,7 +183,8 @@ export function dualObjectiveScorecard(
       target: `${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}% preferred`,
       actual: blendedYieldPct != null ? `${blendedYieldPct.toFixed(2)}%` : "n/a",
       pass: income.pass,
-      note: `${income.label}. ${income.action} Total return has priority over distribution yield.`,
+      status: income.label,
+      note: `${income.action} Total return has priority over distribution yield.`,
     },
   ];
 }
