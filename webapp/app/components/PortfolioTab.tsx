@@ -9,6 +9,7 @@ import AllocationDonut from "./AllocationDonut";
 import TickerInput from "./TickerInput";
 import { MOVE_HEADERS, MoveCells, type Moves } from "./PriceMove";
 import { openOnly, isOpen } from "@/lib/openPositions";
+import { assessIncomeYield, INCOME_POLICY } from "@/lib/team/constitution";
 
 interface Holding {
   id: string; ticker: string; shares: number; avg_cost: number;
@@ -159,6 +160,8 @@ export default function PortfolioTab() {
           buildBody={() => ({ mode: "portfolio" })}
           render={(res) => {
             const r = res.review;
+            const income = assessIncomeYield(r.blendedYieldPct ?? null);
+            const incomeAccent = income.tone === "good" ? "pos" : income.tone === "bad" ? "neg" : "muted";
             return (
               <>
                 <div className="grid cols-4" style={{ marginBottom: 14 }}>
@@ -167,11 +170,13 @@ export default function PortfolioTab() {
                     <div className="value" style={{ fontSize: 18 }}>{money(r.nav)}</div>
                   </div>
                   <div className="metric">
-                    <div className="label">Blended yield</div>
-                    <div className={cls("value", (r.blendedYieldPct ?? 0) >= 5 ? "pos" : "neg")} style={{ fontSize: 18 }}>
+                    <div className="label">Portfolio income</div>
+                    <div className={cls("value", incomeAccent)} style={{ fontSize: 18 }}>
                       {r.blendedYieldPct != null ? pct(r.blendedYieldPct) : "—"}
                     </div>
-                    <div className="sub">target ≥ 5%</div>
+                    <div className="sub">
+                      {income.label} · preferred {INCOME_POLICY.targetMinPct.toFixed(1)}–{INCOME_POLICY.targetMaxPct.toFixed(1)}%
+                    </div>
                   </div>
                   <div className="metric">
                     <div className="label">Cash sleeve</div>
@@ -186,6 +191,10 @@ export default function PortfolioTab() {
                     <div className="sub">{r.actions.length ? "outstanding" : "book in policy"}</div>
                   </div>
                 </div>
+
+                <p className="notice" style={{ marginTop: -2, marginBottom: 14 }}>
+                  <strong>Income policy:</strong> soft floor {INCOME_POLICY.softFloorPct.toFixed(2)}% · preferred {INCOME_POLICY.targetMinPct.toFixed(2)}–{INCOME_POLICY.targetMaxPct.toFixed(2)}% · midpoint {INCOME_POLICY.midpointPct.toFixed(2)}% · review above {INCOME_POLICY.reviewHighPct.toFixed(2)}%. Total return has priority; never buy or retain an asset solely to manufacture yield.
+                </p>
 
                 {r.actions.length > 0 && (
                   <>
@@ -244,7 +253,7 @@ export default function PortfolioTab() {
                           <td className="num">{o.actual}</td>
                           <td className="num muted">{o.target}</td>
                           <td className={o.pass === true ? "pos" : o.pass === false ? "neg" : "muted"}>
-                            {o.pass === true ? "✅ Pass" : o.pass === false ? "❌ Behind" : "⏸ n/a"}
+                            {o.status ?? (o.pass === true ? "PASS" : o.pass === false ? "REVIEW" : "UNAVAILABLE")}
                           </td>
                         </tr>
                       ))}
@@ -388,10 +397,6 @@ export default function PortfolioTab() {
                       <td><input className="edit-input" value={draft.target_price ?? ""} onChange={set("target_price")} inputMode="decimal" placeholder="—" /></td>
                       <td style={{ minWidth: 150 }}>
                         <input className="edit-input" type="date" value={draft.opened_at ?? ""} onChange={set("opened_at")} />
-                        {/* Sold is a state, not a date to type. The second bare
-                            date box read as a field waiting to be filled and
-                            invited an accidental closing date; this says what it
-                            does and supplies the date itself. */}
                         <button
                           className="btn ghost sm"
                           style={{ marginTop: 4, width: "100%" }}
@@ -467,8 +472,6 @@ export default function PortfolioTab() {
                       </button>{" "}
                       {confirmDelete === h.id ? (
                         <>
-                          {/* Keep sits where the ✕ was, so a stray second tap in
-                              the same spot cancels instead of deleting. */}
                           <button className="btn ghost sm" onClick={() => setConfirmDelete(null)}>Keep</button>{" "}
                           <button
                             className="btn danger sm"
