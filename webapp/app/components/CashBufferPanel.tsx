@@ -19,6 +19,12 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load, refreshKey]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onCashChange = () => void load();
+    window.addEventListener("sentinel:cash-ledger-changed", onCashChange);
+    return () => window.removeEventListener("sentinel:cash-ledger-changed", onCashChange);
+  }, [load]);
 
   const posture = String(data?.posture ?? "UNVERIFIED");
   const accent = posture === "ON_TARGET" ? "pos" : posture === "UNVERIFIED" ? "muted" : "neg";
@@ -59,7 +65,7 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
         {(data.reserveHoldings ?? []).map((row: any) => <tr key={row.ticker}><td><strong>{row.ticker}</strong><br/><span className="muted" style={{fontSize:11}}>{row.label}</span></td><td>{row.tier}</td><td className="num">{money(row.marketValue)}</td><td className="num">{pct((1 - Number(row.haircut)) * 100)}</td><td className="num pos">{money(row.liquidityValue)}</td></tr>)}
         {!(data.reserveHoldings ?? []).length && <tr><td colSpan={5} className="muted">{t("No approved reserve ETFs are currently held.", "ยังไม่มี ETF สำรองที่ได้รับอนุมัติในพอร์ต")}</td></tr>}
       </tbody></table></div>
-      <p className="notice" style={{ marginTop: 12 }}>{t("Buffer targets: Risk-On 8%, Neutral 15%, Risk-Off 30% with a ±2% tolerance. USD cash counts at 100%; approved reserve instruments count after their policy haircut. A reserve sale may fund an approved purchase, but it never counts as raising the buffer by itself.", "เป้าหมาย Buffer: Risk-On 8%, Neutral 15%, Risk-Off 30% พร้อมช่วงยอมรับ ±2% เงินสด USD นับ 100% ส่วนตราสารสำรองนับหลัง Haircut การขายตราสารสำรองสามารถใช้เป็นแหล่งเงินของรายการซื้อที่อนุมัติแล้ว แต่ไม่ถือว่าเป็นการเพิ่ม Buffer ด้วยตัวมันเอง")}</p>
+      <p className="notice" style={{ marginTop: 12 }}>{t("Buffer targets: Risk-On 8%, Neutral 15%, Risk-Off 30% with a ±2% tolerance. USD cash counts at 100%; approved reserve instruments count after their policy haircut. New external capital is recorded in Fund Cash Flows as External capital in; the cash-balance reconciliation control is only for matching Sentinel to the broker.", "เป้าหมาย Buffer: Risk-On 8%, Neutral 15%, Risk-Off 30% พร้อมช่วงยอมรับ ±2% เงินสด USD นับ 100% ส่วนตราสารสำรองนับหลัง Haircut เงินเพิ่มทุนใหม่จากภายนอกให้บันทึกที่กระแสเงินกองทุนเป็น เพิ่มทุนจากภายนอก ส่วนช่องกระทบยอดเงินสดใช้เฉพาะทำให้ยอด Sentinel ตรงกับโบรกเกอร์")}</p>
     </>}
   </div>;
 }

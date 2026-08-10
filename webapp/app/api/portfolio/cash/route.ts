@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 const TYPES = new Set(["DEPOSIT", "WITHDRAWAL", "FEE", "ADJUSTMENT"]);
 const DIVIDEND_WITHDRAWAL_TAG = "[DIVIDEND_WITHDRAWAL]";
+const CAPITAL_WITHDRAWAL_TAG = "[CAPITAL_WITHDRAWAL]";
 const finite = (value: unknown): number | null => {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -19,6 +20,8 @@ function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown
   let dividendGrossCash = 0;
   let dividendTax = 0;
   let dividendWithdrawn = 0;
+  let capitalContributed = 0;
+  let capitalWithdrawn = 0;
   let ledgerBalance = 0;
 
   for (const row of rows) {
@@ -36,6 +39,8 @@ function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown
       dividendWithdrawn += Math.abs(Math.min(0, amount));
       continue;
     }
+    if (row.entry_type === "DEPOSIT") capitalContributed += Math.max(0, amount);
+    if (row.entry_type === "WITHDRAWAL") capitalWithdrawn += Math.abs(Math.min(0, amount));
     investmentCash += amount;
   }
 
@@ -49,6 +54,9 @@ function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown
     dividendNet,
     dividendWithdrawn,
     dividendAvailable,
+    capitalContributed,
+    capitalWithdrawn,
+    netExternalCapital: capitalContributed - capitalWithdrawn,
     realizedInvestmentProfit: dividendWithdrawn,
   };
 }
@@ -70,7 +78,7 @@ export async function GET(req: NextRequest) {
   }, {});
   const unlinkedTrades = entries.filter((row) => ["BUY", "SELL"].includes(row.entry_type) && !row.transaction_id).length;
   const unlinkedDividends = entries.filter((row) => row.entry_type === "DIVIDEND" && !row.dividend_id).length;
-  return NextResponse.json({ version: "v8.7", balance: cash.ledgerBalance, ...cash, count: entries.length, byType, unlinkedTrades, unlinkedDividends, entries });
+  return NextResponse.json({ version: "v8.8", balance: cash.ledgerBalance, ...cash, count: entries.length, byType, unlinkedTrades, unlinkedDividends, entries });
 }
 
 export async function POST(req: NextRequest) {
@@ -95,6 +103,51 @@ export async function POST(req: NextRequest) {
     }).select().single();
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({ entry: data, balance: target, investmentCash: target, previousBalance: current, adjustment: delta, changed: true }, { status: 201 });
+  }
+
+  if (mode === "WITHDRAW_CASH") {
+    const rawAmount = finite(body.amount);
+    if (rawAmount == null || rawAmount <= 0) return NextResponse.json({ error: "Cash withdrawal amount must be greater than zero." }, { status: 400 });
+    const { data: rows, error: readError } = await sb.from("cash_ledger").select("entry_type,amount,notes");
+    if (readError) return NextResponse.json({ error: readError.message }, { status: 400 });
+    const cash = classifyCash(rows ?? []);
+    const amount = Number(rawAmount.toFixed(8));
+    const availableCash = Math.max(0, cash.ledgerBalance);
+    if (amount > availableCash + 0.00000001) {
+      return NextResponse.json({ error: `Only $${availableCash.toFixed(2)} of ledger cash is available to withdraw.` }, { status: 409 });
+    }
+
+    const dividendPortion = Number(Math.min(amount, cash.dividendAvailable).toFixed(8));
+    const capitalPortion = Number(Math.max(0, amount - dividendPortion).toFixed(8));
+    const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.entry_date ?? "")) ? body.entry_date : new Date().toISOString().slice(0, 10);
+    const note = String(body.notes ?? "").trim();
+    const inserts: Array<Record<string, unknown>> = [];
+    if (dividendPortion > 0) inserts.push({
+      entry_type: "WITHDRAWAL",
+      amount: -dividendPortion,
+      entry_date: entryDate,
+      currency: "USD",
+      notes: `${DIVIDEND_WITHDRAWAL_TAG}${note ? ` ${note}` : " Withdrawn dividend recognized as realized investment profit"}`,
+    });
+    if (capitalPortion > 0) inserts.push({
+      entry_type: "WITHDRAWAL",
+      amount: -capitalPortion,
+      entry_date: entryDate,
+      currency: "USD",
+      notes: `${CAPITAL_WITHDRAWAL_TAG}${note ? ` ${note}` : " External withdrawal of invested capital"}`,
+    });
+    const { data, error } = await sb.from("cash_ledger").insert(inserts).select();
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({
+      entries: data ?? [],
+      withdrawn: amount,
+      dividendPortion,
+      capitalPortion,
+      dividendAvailable: Number(Math.max(0, cash.dividendAvailable - dividendPortion).toFixed(8)),
+      capitalWithdrawn: Number((cash.capitalWithdrawn + capitalPortion).toFixed(8)),
+      realizedInvestmentProfit: Number((cash.realizedInvestmentProfit + dividendPortion).toFixed(8)),
+      splitAutomatically: true,
+    }, { status: 201 });
   }
 
   if (mode === "WITHDRAW_DIVIDEND") {
@@ -132,10 +185,14 @@ export async function POST(req: NextRequest) {
   const amount = entryType === "DEPOSIT" ? Math.abs(rawAmount)
     : entryType === "ADJUSTMENT" ? rawAmount : -Math.abs(rawAmount);
   const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.entry_date ?? "")) ? body.entry_date : new Date().toISOString().slice(0, 10);
+  const rawNote = String(body.notes ?? "").trim();
+  const notes = entryType === "WITHDRAWAL"
+    ? `${CAPITAL_WITHDRAWAL_TAG}${rawNote ? ` ${rawNote}` : " External withdrawal of invested capital"}`
+    : rawNote || null;
   const { data, error } = await sb.from("cash_ledger").insert({
     entry_type: entryType, amount, entry_date: entryDate,
     currency: String(body.currency ?? "USD").trim().toUpperCase(),
-    notes: String(body.notes ?? "").trim() || null,
+    notes,
   }).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   return NextResponse.json({ entry: data }, { status: 201 });
