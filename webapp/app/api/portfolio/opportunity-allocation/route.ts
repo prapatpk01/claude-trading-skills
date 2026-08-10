@@ -9,11 +9,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const SETTLEMENT_FLOAT_USD = 25;
+const RESERVE_REVIEW_DAYS = 7;
+
 const finite = (value: unknown): number | null => {
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : null;
 };
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
 async function loadCashBuffer() {
   const response = await getCashBufferResponse();
@@ -38,7 +42,7 @@ export async function GET() {
 
     if (!buffer.verified || finite(buffer.totalNav) == null) {
       return NextResponse.json({
-        version: "v8.4",
+        version: "v8.5",
         status: "BLOCKED",
         reason: "Portfolio NAV is not verified. Opportunity capital cannot be allocated.",
         missingPrices: buffer.missingPrices ?? [],
@@ -62,7 +66,7 @@ export async function GET() {
 
     if (missingPrices.length) {
       return NextResponse.json({
-        version: "v8.4",
+        version: "v8.5",
         status: "BLOCKED",
         reason: "At least one holding lacks a verified market price.",
         missingPrices,
@@ -107,8 +111,8 @@ export async function GET() {
         return {
           ticker: idea.ticker,
           decision: approved > 0 ? "COMMITTEE_APPROVED_ALLOCATION" : "APPROVED_WAITING_FOR_CAPITAL",
-          approvedCapitalUsd: Math.round(approved * 100) / 100,
-          requestedCapitalUsd: Math.round(requested * 100) / 100,
+          approvedCapitalUsd: round2(approved),
+          requestedCapitalUsd: round2(requested),
           proposedWeightPct: finite(idea.targetWeightPct),
           currentPrice: finite(idea.currentPrice),
           targetPrice: finite(idea.targetPrice),
@@ -132,9 +136,50 @@ export async function GET() {
       reason: idea.reasons?.[0] ?? "Candidate did not clear the allocation evidence gate.",
     }));
 
+    const allocatedCapitalUsd = round2(deployable - remaining);
+    const remainingCapitalUsd = round2(Math.max(0, remaining));
+
+    // Funding preference is USD first, approved reserves second. The routing
+    // below describes what to do with capital that remains after approved risk
+    // uses. Existing reserve assets stay parked; only actual residual broker USD
+    // is proposed for a new SGOV purchase, so the system never double-counts an
+    // SGOV position that is already inside the Cash Buffer.
+    const liquidUsdAvailable = Math.max(0, (finite(buffer.investmentCash) ?? finite(buffer.cashBalance) ?? 0) + (finite(buffer.dividendAvailable) ?? 0));
+    const usdAfterApprovedRiskUses = Math.max(0, liquidUsdAvailable - allocatedCapitalUsd);
+    const residualUsdInsideDeployable = Math.min(remainingCapitalUsd, usdAfterApprovedRiskUses);
+    const holdUsdTemporarily = round2(Math.min(residualUsdInsideDeployable, SETTLEMENT_FLOAT_USD));
+    const parkInSgovUsd = round2(Math.max(0, residualUsdInsideDeployable - holdUsdTemporarily));
+    const keepExistingReserveUsd = round2(Math.max(0, remainingCapitalUsd - residualUsdInsideDeployable));
+    const capitalRouting = {
+      investUsd: allocatedCapitalUsd,
+      holdUsdTemporarily,
+      parkInSgovUsd,
+      keepExistingReserveUsd,
+      reservePreference: "SGOV",
+      alternativeReserve: "JAAA_REQUIRES_EXPLICIT_COMMITTEE_APPROVAL",
+      settlementFloatUsd: SETTLEMENT_FLOAT_USD,
+      reviewDays: RESERVE_REVIEW_DAYS,
+      execution: "HUMAN_REQUIRED",
+      instruction: parkInSgovUsd > 0
+        ? `After approved risk purchases settle, keep $${holdUsdTemporarily.toFixed(2)} as USD settlement cash and park $${parkInSgovUsd.toFixed(2)} of otherwise-idle broker USD in SGOV. Existing approved reserve assets remain parked. Re-review in ${RESERVE_REVIEW_DAYS} days.`
+        : keepExistingReserveUsd > 0
+          ? `No new SGOV purchase is required from USD. $${keepExistingReserveUsd.toFixed(2)} of remaining deployable capacity is already represented by approved reserve assets; keep it parked and re-review in ${RESERVE_REVIEW_DAYS} days.`
+          : remainingCapitalUsd > 0
+            ? `Keep the $${holdUsdTemporarily.toFixed(2)} residual as broker USD settlement cash and re-review in ${RESERVE_REVIEW_DAYS} days.`
+            : "All currently deployable capital has an approved risk destination.",
+    };
+
+    const status = blockers.length
+      ? "WAIT"
+      : allocatedCapitalUsd > 0
+        ? "READY_FOR_HUMAN_REVIEW"
+        : parkInSgovUsd > 0 || keepExistingReserveUsd > 0
+          ? "RESERVE_PARKING_RECOMMENDED"
+          : "NO_APPROVED_ALLOCATION";
+
     return NextResponse.json({
-      version: "v8.4",
-      status: blockers.length ? "WAIT" : allocations.some((a) => a.approvedCapitalUsd > 0) ? "READY_FOR_HUMAN_REVIEW" : "NO_APPROVED_ALLOCATION",
+      version: "v8.5",
+      status,
       asOf: new Date().toISOString(),
       policy: {
         verifiedNavRequired: true,
@@ -142,6 +187,10 @@ export async function GET() {
         committeeApprovalRequired: true,
         minimumExpectedReturnPct: 8,
         maximumNewPositionPct: 8,
+        settlementFloatUsd: SETTLEMENT_FLOAT_USD,
+        reserveReviewDays: RESERVE_REVIEW_DAYS,
+        reserveParkingDefault: "SGOV",
+        jaaaRequiresExplicitApproval: true,
         automaticExecution: false,
       },
       portfolio: {
@@ -151,9 +200,10 @@ export async function GET() {
         bufferPct: finite(buffer.bufferPct),
         targetBufferPct: finite(buffer.targetPct),
         deployableCapitalUsd: deployable,
-        allocatedCapitalUsd: Math.round((deployable - remaining) * 100) / 100,
-        remainingCapitalUsd: Math.round(remaining * 100) / 100,
+        allocatedCapitalUsd,
+        remainingCapitalUsd,
       },
+      capitalRouting,
       sources: {
         watchlistCandidates: watchTickers.length,
         discoveredCandidates: review.discovery,
@@ -161,7 +211,7 @@ export async function GET() {
       blockers,
       allocations,
       rejected,
-      note: "Decision support only. Approved allocations require a final human price check and manual execution.",
+      note: "Decision support only. Approved risk allocations and SGOV parking instructions require a final human cash/price check and manual execution.",
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Opportunity allocation failed." }, { status: 500 });
