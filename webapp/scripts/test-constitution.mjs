@@ -1,9 +1,9 @@
-// The fund's own rules, asserted against the document.
+// The fund's own rules, asserted against the approved policy.
 //
-// Every number here is quoted from investment-system SKILL.md (16 June 2026).
-// If the document changes, this file changes with it and the failure tells you
-// which module still holds the old value. That is the whole point: a rulebook
-// nothing checks is a rulebook that drifts.
+// Base rules come from investment-system SKILL.md (16 June 2026).
+// The income-policy amendment was approved by the fund manager on 11 Aug 2026.
+// If policy changes, this file changes with it and the failure tells us which
+// module still holds the old value.
 //
 //   npm run test:constitution
 
@@ -24,10 +24,23 @@ const ok = (name, cond, detail = "") => {
 };
 const section = (t) => console.log(`\n${t}`);
 
-section("Dual objective (Section 3)");
+section("Dual objective and income policy");
 {
   ok("total return target is 1.3× the benchmark", C.DUAL_OBJECTIVE.benchmarkMultiple === 1.3);
-  ok("the yield floor is 5%", C.DUAL_OBJECTIVE.yieldFloorPct === 5);
+  ok("income soft floor is 3.25%", C.INCOME_POLICY.softFloorPct === 3.25);
+  ok("preferred income band is 3.5–4.0%", C.INCOME_POLICY.targetMinPct === 3.5 && C.INCOME_POLICY.targetMaxPct === 4);
+  ok("preferred midpoint is 3.75%", C.INCOME_POLICY.midpointPct === 3.75);
+  ok("high-distribution review starts above 4.5%", C.INCOME_POLICY.reviewHighPct === 4.5);
+  ok("total return outranks distribution yield", C.INCOME_POLICY.totalReturnPriority === true);
+  ok("yield chasing is prohibited", C.INCOME_POLICY.noYieldChasing === true);
+  ok("compatibility yield floor points to the soft floor", C.DUAL_OBJECTIVE.yieldFloorPct === 3.25);
+
+  ok("3.00% requires remediation", C.assessIncomeYield(3).status === "BELOW_FLOOR" && C.assessIncomeYield(3).pass === false);
+  ok("3.30% is watch, not a forced failure", C.assessIncomeYield(3.3).status === "WATCH_LOW" && C.assessIncomeYield(3.3).pass === null);
+  ok("3.75% is optimal", C.assessIncomeYield(3.75).status === "OPTIMAL" && C.assessIncomeYield(3.75).pass === true);
+  ok("4.25% remains acceptable with total-return review", C.assessIncomeYield(4.25).status === "ACCEPTABLE_HIGH" && C.assessIncomeYield(4.25).pass === true);
+  ok("4.70% is a high-distribution review, not a better score", C.assessIncomeYield(4.7).status === "REVIEW_HIGH" && C.assessIncomeYield(4.7).pass === false);
+  ok("missing yield stays unavailable", C.assessIncomeYield(null).status === "UNAVAILABLE" && C.assessIncomeYield(null).pass === null);
 }
 
 section("Portfolio structure (Section 4)");
@@ -47,8 +60,6 @@ section("Rule #3 v2 — position balance zones");
   ok("a mandatory trim targets the 18–19% band",
     C.POSITION_ZONES.trimTargetLowPct === 18 && C.POSITION_ZONES.trimTargetHighPct === 19);
   ok("a trim requires a replacement first", C.TRIM_REQUIRES_REPLACEMENT === true);
-  // The document leaves 22–23 unnamed. The bands must still be exhaustive so
-  // no weight falls through without a zone.
   ok("no weight falls through the bands",
     ["BASE", "WATCH", "TRIM", "EMERGENCY"].includes(C.zoneForWeight(22.5)), C.zoneForWeight(22.5));
 }
@@ -167,7 +178,7 @@ section("The nine gates and the ten hard rules");
 section("Provenance");
 {
   ok("the version names the source document", /investment-system/.test(C.FUND_CONSTITUTION_VERSION), C.FUND_CONSTITUTION_VERSION);
-  ok("and its date", /16 June 2026/.test(C.FUND_CONSTITUTION_VERSION));
+  ok("the version records the income-policy amendment", /11 August 2026/.test(C.FUND_CONSTITUTION_VERSION), C.FUND_CONSTITUTION_VERSION);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
