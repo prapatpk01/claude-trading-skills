@@ -9,19 +9,117 @@
 // this file, and the module that needs it says it is unspecified rather than
 // picking something reasonable.
 //
-// Source: investment-system SKILL.md, last updated 16 June 2026.
+// Base source: investment-system SKILL.md, 16 June 2026.
+// Income-policy amendment approved by the fund manager: 11 August 2026.
 // CIO James Hartwell · CRO Miriam Osei.
 
-export const FUND_CONSTITUTION_VERSION = "investment-system · 16 June 2026";
+export const FUND_CONSTITUTION_VERSION = "investment-system · 11 August 2026 income-policy amendment";
 
 /* ─────────────────────────── objectives ───────────────────────────── */
+
+export type IncomeYieldStatus =
+  | "UNAVAILABLE"
+  | "BELOW_FLOOR"
+  | "WATCH_LOW"
+  | "OPTIMAL"
+  | "ACCEPTABLE_HIGH"
+  | "REVIEW_HIGH";
+
+/**
+ * Income is an objective, not the master objective.
+ *
+ * The 11 Aug 2026 amendment replaces the old hard ≥5% blended-yield target.
+ * A high distribution rate must never be purchased at the expense of expected
+ * total return, NAV growth, quality or portfolio construction.
+ */
+export const INCOME_POLICY = {
+  /** Below this, Income Team must propose remediation — never a forced trade. */
+  softFloorPct: 3.25,
+  /** Preferred portfolio-income band. */
+  targetMinPct: 3.5,
+  midpointPct: 3.75,
+  targetMaxPct: 4,
+  /** Above this, review where the distribution comes from and what upside is surrendered. */
+  reviewHighPct: 4.5,
+  /** Total return has priority over distribution yield when the two conflict. */
+  totalReturnPriority: true,
+  /** No asset may be bought or retained solely to manufacture the target yield. */
+  noYieldChasing: true,
+} as const;
+
+export interface IncomeYieldAssessment {
+  status: IncomeYieldStatus;
+  pass: boolean | null;
+  tone: "good" | "warn" | "bad" | "neutral";
+  label: string;
+  action: string;
+}
+
+export function assessIncomeYield(yieldPct: number | null | undefined): IncomeYieldAssessment {
+  if (yieldPct == null || !Number.isFinite(yieldPct)) {
+    return {
+      status: "UNAVAILABLE",
+      pass: null,
+      tone: "neutral",
+      label: "Yield unavailable",
+      action: "Verify portfolio distribution data before making an income decision.",
+    };
+  }
+  if (yieldPct < INCOME_POLICY.softFloorPct) {
+    return {
+      status: "BELOW_FLOOR",
+      pass: false,
+      tone: "bad",
+      label: "Below soft floor",
+      action: `Income Team must propose a remediation path toward ${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}%, but may not sacrifice expected total return or buy yield merely to close the gap.`,
+    };
+  }
+  if (yieldPct < INCOME_POLICY.targetMinPct) {
+    return {
+      status: "WATCH_LOW",
+      pass: null,
+      tone: "warn",
+      label: "Watch — below preferred band",
+      action: "Monitor income coverage. No forced trade is required while total-return opportunities are superior.",
+    };
+  }
+  if (yieldPct <= INCOME_POLICY.targetMaxPct) {
+    return {
+      status: "OPTIMAL",
+      pass: true,
+      tone: "good",
+      label: "Optimal income band",
+      action: "Maintain unless a higher-quality total-return allocation improves the portfolio.",
+    };
+  }
+  if (yieldPct <= INCOME_POLICY.reviewHighPct) {
+    return {
+      status: "ACCEPTABLE_HIGH",
+      pass: true,
+      tone: "good",
+      label: "Acceptable — above preferred band",
+      action: "Accept only while growth, quality and expected total return are not being impaired.",
+    };
+  }
+  return {
+    status: "REVIEW_HIGH",
+    pass: false,
+    tone: "warn",
+    label: "Review high distribution",
+    action: "Review distribution source, sustainability, return-of-capital/option-premium effects and upside sacrificed. Higher yield is not automatically better.",
+  };
+}
 
 export const DUAL_OBJECTIVE = {
   /** Total return must beat the benchmark by this multiple, per year. */
   benchmarkMultiple: 1.3,
   benchmark: "SPY total return",
-  /** Blended portfolio distribution yield floor. */
-  yieldFloorPct: 5,
+  /** Compatibility field: the new income soft floor, not the preferred target. */
+  yieldFloorPct: INCOME_POLICY.softFloorPct,
+  yieldTargetMinPct: INCOME_POLICY.targetMinPct,
+  yieldTargetMidPct: INCOME_POLICY.midpointPct,
+  yieldTargetMaxPct: INCOME_POLICY.targetMaxPct,
+  yieldReviewHighPct: INCOME_POLICY.reviewHighPct,
 } as const;
 
 /* ──────────────────────── portfolio structure ─────────────────────── */
@@ -57,9 +155,9 @@ export const POSITION_ZONES = {
  * Rule #3 procedure, and one of the fund's ten hard rules:
  * **research must identify a replacement before a trim is executed.**
  *
- * Income sleeve → the replacement's yield must be at least the trimmed name's.
- * Growth sleeve → comparable return or momentum.
- * Neither available → park the proceeds in SGOV/JAAA and wait.
+ * The replacement is judged on total-return quality first. Income contribution
+ * is a portfolio constraint, not a requirement to match the trimmed name's
+ * headline yield. If nothing qualifies, park proceeds in SGOV/JAAA and wait.
  */
 export const TRIM_REQUIRES_REPLACEMENT = true;
 

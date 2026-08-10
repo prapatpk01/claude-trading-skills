@@ -86,9 +86,10 @@ for (const component of ["PortfolioTruthSummary", "PortfolioTransactionOverride"
   if (!liveNames.includes(component)) failures.push(`${component} is not reachable from app/page.tsx`);
 }
 
-// Every workspace section must render something, whatever the generation names
-// its wrapper.
-for (const workspace of ["cio-v20", "portfolio-v13", "research-v13"]) {
+// Every workspace section must render something. Research was upgraded from
+// v13 to v14; the validator follows the live shell rather than intentionally
+// pinning an obsolete marker that prevents typecheck/build from ever running.
+for (const workspace of ["cio-v20", "portfolio-v13", "research-v14"]) {
   if (!liveSource.includes(`data-workspace="${workspace}"`)) failures.push(`workspace marker missing: ${workspace}`);
 }
 

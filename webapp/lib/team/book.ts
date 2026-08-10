@@ -2,6 +2,7 @@
 // Miriam Osei, James Hartwell) applied to the user's own holdings.
 
 import { buildSleeves, dualObjectiveScorecard, blendedYield, correlationFlags, type HoldingLike, type SleeveRow, type DualObjective } from "./portfolio";
+import { assessIncomeYield, INCOME_POLICY } from "./constitution";
 import { assessPositionZone, type ZoneAssessment } from "./risk";
 import { assessRegime, type RegimeAssessment } from "./governance";
 import { ROSTER } from "./roster";
@@ -75,6 +76,7 @@ export function buildBookReview(input: BookInput): BookReview {
   const { holdings } = input;
   const { rows: sleeves, nav } = buildSleeves(holdings);
   const { blended, rows: yieldRows } = blendedYield(holdings);
+  const income = assessIncomeYield(blended);
   const objectives = dualObjectiveScorecard(
     input.portfolioReturnPct ?? null,
     input.spyReturnPct ?? null,
@@ -136,14 +138,19 @@ export function buildBookReview(input: BookInput): BookReview {
       `${s.alert ? "🔔" : "•"} ${s.sleeve}: ${pct(s.actualPct)} vs ${s.targetPct}% target (drift ${s.driftPct >= 0 ? "+" : ""}${s.driftPct.toFixed(2)} pts)${s.tickers.length ? ` — ${s.tickers.join(", ")}` : " — empty"}`
   );
   lenaBullets.push(`NAV ${money(nav)} across ${holdings.length} position${holdings.length === 1 ? "" : "s"}.`);
-  if (blended != null) lenaBullets.push(`Blended forward yield ${pct(blended)} against the 5% objective.`);
+  if (blended != null) {
+    lenaBullets.push(
+      `Blended forward income ${pct(blended)} — ${income.label}. Preferred ${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}%, soft floor ${INCOME_POLICY.softFloorPct.toFixed(2)}%.`
+    );
+    lenaBullets.push("Total return has priority over distribution yield; no asset is bought or retained solely to manufacture the income target.");
+  }
   desks.push({
     member: ROSTER.lena.name,
     role: ROSTER.lena.role,
     heading: "Sleeve balance & dual objectives",
     bullets: lenaBullets,
     verdict: objectives
-      .map((o) => `${o.pass === true ? "✅" : o.pass === false ? "❌" : "⏸"} ${o.label}: ${o.actual} vs ${o.target}`)
+      .map((o) => `${o.pass === true ? "✅" : o.pass === false ? "⚠️" : "⏸"} ${o.label}: ${o.actual} vs ${o.target} — ${o.status}`)
       .join(" | "),
   });
   for (const s of sleeves) {
@@ -152,6 +159,15 @@ export function buildBookReview(input: BookInput): BookReview {
         `Rule #7 drift alert — ${s.sleeve} is ${s.driftPct >= 0 ? "over" : "under"} target by ${Math.abs(s.driftPct).toFixed(2)} points (${pct(s.actualPct)} vs ${s.targetPct}%). Rebalance at the next review.`
       );
     }
+  }
+  if (income.status === "BELOW_FLOOR") {
+    actions.push(
+      `Income soft-floor review — blended income ${pct(blended)} is below ${INCOME_POLICY.softFloorPct.toFixed(2)}%. Income Team must propose a path toward ${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}%, but must not sacrifice expected total return or buy yield solely to close the gap.`
+    );
+  } else if (income.status === "REVIEW_HIGH") {
+    actions.push(
+      `High-distribution review — blended income ${pct(blended)} is above ${INCOME_POLICY.reviewHighPct.toFixed(2)}%. Review distribution source, sustainability and upside sacrificed; higher yield is not automatically better and does not require a sale by itself.`
+    );
   }
 
   // Kai — concentration
@@ -195,28 +211,21 @@ export function buildBookReview(input: BookInput): BookReview {
   });
 
   // James — CIO
-  const failing = objectives.filter((o) => o.pass === false).length;
+  const reviewCount = objectives.filter((o) => o.pass === false).length;
   desks.push({
     member: ROSTER.james.name,
     role: ROSTER.james.role,
     heading: `CIO review — ${actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""} outstanding` : "book within policy"}`,
     bullets: [
-      `NAV ${money(nav)} · ${holdings.length} positions · blended yield ${pct(blended)}.`,
-      failing
-        ? `${failing} of 2 objectives are behind target.`
-        : "Both objectives are on or ahead of target where measurable.",
+      `NAV ${money(nav)} · ${holdings.length} positions · blended income ${pct(blended)} (${income.label}).`,
+      reviewCount
+        ? `${reviewCount} of 2 objectives require review; an income review is not automatically a direction to raise yield.`
+        : "Both objectives are acceptable where measurable.",
       actions.length ? "Actions are listed below in priority order." : "No rebalancing action required this review.",
     ],
   });
 
-
   // ══ The committee round table ═══════════════════════════════════════
-  //
-  // Running the book is everyone's job, not the portfolio manager's alone, so
-  // every seat gets the floor and every seat can file a risk. A desk with a
-  // measurement tables it; a desk without one says so and says what would give
-  // it a view — which is itself useful, because it shows the meeting what the
-  // fund cannot currently see.
   const riskRegister: RiskItem[] = [];
   const roundTable: RoundTableEntry[] = [];
   const candles = input.candlesByTicker ?? {};
@@ -313,8 +322,6 @@ export function buildBookReview(input: BookInput): BookReview {
         const advDollar = recent.reduce((s, x) => s + x.close * x.volume, 0) / recent.length;
         const positionValue = (h.price ?? h.avg_cost) * h.shares;
         if (!(advDollar > 0)) return null;
-        // Days to exit at a fifth of average daily volume — the share a desk can
-        // take without moving the price against itself.
         return { ticker: h.ticker, days: positionValue / (advDollar * 0.2), advDollar, positionValue };
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
@@ -360,11 +367,6 @@ export function buildBookReview(input: BookInput): BookReview {
     }
   }
 
-  // ── Sofia Reyes, Marcus Webb, Aisha Fontaine, Thomas Eriksson ──
-  //
-  // These four need per-name fundamentals, which the book review does not
-  // fetch. Rather than invent a view, each says what it would need — which
-  // tells the meeting exactly what the fund is currently blind to.
   table(ROSTER.sofia,
     "No business-quality read this review: the book pass does not pull filings per holding. The valuation desk's per-position work covers this ground name by name.", false);
   table(ROSTER.marcus,
@@ -374,7 +376,6 @@ export function buildBookReview(input: BookInput): BookReview {
   table(ROSTER.thomas,
     "No valuation read this review; fair values are produced by the valuation desk per position rather than in the book pass.", false);
 
-  // ── The seats that already spoke above ──
   if (regime) {
     table(ROSTER.daniel, `${regime.regime} at ${regime.score}/100, cash floor ${regime.cashMinPct}%. ${regime.note}`);
     if (cashRequiredPct != null && cashPct < cashRequiredPct) {
@@ -387,7 +388,8 @@ export function buildBookReview(input: BookInput): BookReview {
     table(ROSTER.daniel, "Benchmark history was unavailable, so no regime could be scored this review.", false);
   }
   table(ROSTER.lena,
-    `NAV ${money(nav)} across ${holdings.length} position(s); blended forward yield ${pct(blended)} against the 5% objective. ` +
+    `NAV ${money(nav)} across ${holdings.length} position(s); blended forward income ${pct(blended)} — ${income.label}. ` +
+    `Preferred ${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}%; total return takes priority over distribution yield. ` +
     sleeves.map((x) => `${x.sleeve} ${pct(x.actualPct)}/${x.targetPct}%`).join(", ") + ".");
   for (const sl of sleeves) {
     if (sl.alert) {
@@ -396,6 +398,17 @@ export function buildBookReview(input: BookInput): BookReview {
         `${pct(sl.actualPct)} against a ${sl.targetPct}% target — ${sl.driftPct >= 0 ? "+" : ""}${sl.driftPct.toFixed(2)} points, past the Rule #7 alert.`,
         "Rebalance at this review, funding the move from the most extended position rather than the weakest thesis.");
     }
+  }
+  if (income.status === "BELOW_FLOOR") {
+    file(ROSTER.lena, "medium",
+      "Portfolio income below the soft floor",
+      `${pct(blended)} against a ${INCOME_POLICY.softFloorPct.toFixed(2)}% soft floor.`,
+      "Propose an income remediation path, but do not force a purchase or retain a weaker asset solely to raise headline yield.");
+  } else if (income.status === "REVIEW_HIGH") {
+    file(ROSTER.lena, "medium",
+      "Portfolio distribution rate above the review threshold",
+      `${pct(blended)} is above ${INCOME_POLICY.reviewHighPct.toFixed(2)}%.`,
+      "Review distribution composition, sustainability and opportunity cost. A high distribution rate is not automatically a superior total-return allocation.");
   }
   table(ROSTER.kai,
     zones.length
@@ -440,6 +453,7 @@ export function buildBookReview(input: BookInput): BookReview {
     riskRegister,
     actions,
     disclosures: [
+      `Income policy: preferred ${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}%, soft floor ${INCOME_POLICY.softFloorPct.toFixed(2)}%, review above ${INCOME_POLICY.reviewHighPct.toFixed(2)}%; total return has priority and yield chasing is prohibited.`,
       "Sleeve classification is inferred from yield, beta and the fund's own instrument list; override it if a holding belongs elsewhere.",
       "Return figures are computed from current share counts valued back through time, not from a transaction ledger.",
       "Cost basis is user-supplied and unaudited [E].",

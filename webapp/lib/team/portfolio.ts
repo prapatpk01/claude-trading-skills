@@ -1,6 +1,8 @@
 // Sentinel Global Fund — portfolio framework (Lena Müller).
 // Sleeve targets, Rule #7 drift alerts, dual-objective scorecard.
 
+import { assessIncomeYield, INCOME_POLICY } from "./constitution";
+
 export type Sleeve = "Growth/Momentum" | "Income/Dividend" | "Cash/Defensive";
 
 /**
@@ -146,12 +148,15 @@ export interface DualObjective {
   target: string;
   actual: string;
   pass: boolean | null;
+  status: string;
   note: string;
 }
 
 /**
  * Objective 1: total return ≥ 1.3 × SPY.
- * Objective 2: blended yield ≥ 5%.
+ * Objective 2: blended portfolio income is preferably 3.5–4.0%, with a 3.25%
+ * soft floor. Total return outranks distribution yield; high yield is not an
+ * automatic pass and no trade is required merely to manufacture the band.
  */
 export function dualObjectiveScorecard(
   portfolioReturnPct: number | null,
@@ -159,23 +164,27 @@ export function dualObjectiveScorecard(
   blendedYieldPct: number | null
 ): DualObjective[] {
   const required = spyReturnPct != null ? spyReturnPct * 1.3 : null;
+  const totalReturnPass = portfolioReturnPct != null && required != null ? portfolioReturnPct >= required : null;
+  const income = assessIncomeYield(blendedYieldPct);
   return [
     {
       label: "Objective 1 — Total return ≥ 1.3× SPY",
       target: required != null ? `${required >= 0 ? "+" : ""}${required.toFixed(2)}%` : "n/a",
       actual: portfolioReturnPct != null ? `${portfolioReturnPct >= 0 ? "+" : ""}${portfolioReturnPct.toFixed(2)}%` : "n/a",
-      pass: portfolioReturnPct != null && required != null ? portfolioReturnPct >= required : null,
+      pass: totalReturnPass,
+      status: totalReturnPass === true ? "PASS" : totalReturnPass === false ? "BEHIND" : "UNAVAILABLE",
       note:
         spyReturnPct != null
           ? `SPY over the same window ${spyReturnPct >= 0 ? "+" : ""}${spyReturnPct.toFixed(2)}%`
           : "Benchmark unavailable",
     },
     {
-      label: "Objective 2 — Blended yield ≥ 5%",
-      target: "5.00%",
+      label: "Objective 2 — Sustainable portfolio income",
+      target: `${INCOME_POLICY.targetMinPct.toFixed(2)}–${INCOME_POLICY.targetMaxPct.toFixed(2)}% preferred`,
       actual: blendedYieldPct != null ? `${blendedYieldPct.toFixed(2)}%` : "n/a",
-      pass: blendedYieldPct != null ? blendedYieldPct >= 5 : null,
-      note: "Weighted by position value, from forward income estimates",
+      pass: income.pass,
+      status: income.label,
+      note: `${income.action} Total return has priority over distribution yield.`,
     },
   ];
 }
