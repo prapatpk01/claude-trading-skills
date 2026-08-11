@@ -4,6 +4,7 @@
 import type { Candle } from "../types";
 import { ema, pctReturn } from "../indicators";
 import type { HardBlock, MomentumScoreV3 } from "./scoring";
+import { regimeBandFor } from "./constitution";
 
 export type Regime = "Risk-On" | "Neutral" | "Risk-Off" | "Crisis";
 
@@ -29,10 +30,9 @@ function realizedVolAnnualized(candles: Candle[], lookback = 20): number | null 
 }
 
 /**
- * Regime score 0-100. The published model weights VIX 30 / yield 25 /
- * inflation 20 / breadth 15 / credit 10. Only the market-derived components
- * can be computed from price data, so the macro inputs we cannot verify are
- * scored neutrally and flagged rather than guessed (Rule #5).
+ * Regime score 0-100. The score is measured here, while the regime bands,
+ * minimum Cash Buffer and deployment limits are owned by constitution.ts.
+ * This prevents the committee and Cash Buffer engine from drifting apart.
  */
 export function assessRegime(spy: Candle[]): RegimeAssessment {
   const closes = spy.map((c) => c.close);
@@ -45,7 +45,6 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
 
   const components: RegimeAssessment["components"] = [];
 
-  // Volatility proxy (stands in for VIX, 30 pts)
   let volPts = 15;
   let volDetail = "realized volatility unavailable — scored neutral";
   if (vol != null) {
@@ -57,7 +56,6 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
   }
   components.push({ label: "Volatility (VIX proxy)", points: volPts, max: 30, detail: volDetail });
 
-  // Trend / breadth proxy (25)
   let trendPts = 0;
   let trendDetail = "benchmark history unavailable";
   if (ema20 != null && ema50 != null) {
@@ -69,7 +67,6 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
   }
   components.push({ label: "Index trend / breadth", points: trendPts, max: 25, detail: trendDetail });
 
-  // Momentum of the tape (20)
   let momPts = 10;
   let momDetail = "return history unavailable";
   if (ret1m != null && ret3m != null) {
@@ -82,7 +79,6 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
   }
   components.push({ label: "Tape momentum", points: momPts, max: 20, detail: momDetail });
 
-  // Drawdown from the 1-year high (15)
   let ddPts = 8;
   let ddDetail = "insufficient history";
   if (closes.length > 60) {
@@ -94,7 +90,6 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
   }
   components.push({ label: "Index drawdown", points: ddPts, max: 15, detail: ddDetail });
 
-  // Rate / credit inputs cannot be verified from price data alone.
   components.push({
     label: "Rates & credit",
     points: 5,
@@ -103,20 +98,15 @@ export function assessRegime(spy: Candle[]): RegimeAssessment {
   });
 
   const score = Math.max(0, Math.min(100, components.reduce((s, c) => s + c.points, 0)));
-  const regime: Regime = score >= 70 ? "Risk-On" : score >= 40 ? "Neutral" : score >= 20 ? "Risk-Off" : "Crisis";
-  const map = {
-    "Risk-On": { icon: "🟢", cashMinPct: 10, deployRule: "Full deployment permitted" },
-    Neutral: { icon: "🟡", cashMinPct: 15, deployRule: "Deploy up to 75% of plan" },
-    "Risk-Off": { icon: "🔴", cashMinPct: 25, deployRule: "One-third of plan only" },
-    Crisis: { icon: "⚫", cashMinPct: 40, deployRule: "Freeze — no new deployment" },
-  }[regime];
+  const band = regimeBandFor(score);
+  const regime = band.name as Regime;
 
   return {
     score,
     regime,
-    icon: map.icon,
-    cashMinPct: map.cashMinPct,
-    deployRule: map.deployRule,
+    icon: band.icon,
+    cashMinPct: band.cashMinPct,
+    deployRule: band.deployRule,
     components,
     realizedVol: vol,
     note:
@@ -132,7 +122,7 @@ export interface Gate {
   n: number;
   label: string;
   owner: string;
-  pass: boolean | null; // null = cannot be evaluated here
+  pass: boolean | null;
   detail: string;
 }
 
@@ -146,31 +136,24 @@ export interface GateResult {
 
 export interface GateInput {
   regime: RegimeAssessment;
-  /** The engine this candidate is being assessed under. */
   engine?: "Momentum Growth" | "High Dividend Growth" | "Cash/Defensive";
-  /** Engine score 0-100 and its qualification facts (v4). */
   engineScore?: number | null;
   growthPct?: number | null;
   yieldPct?: number | null;
-  /** Structure confirmation from the entry layer. */
   entryCleared?: boolean | null;
   entryDetail?: string;
-  /** Valuation verdict, reviewed rather than gated on. */
   valuationVerdict?: string | null;
   hardBlocks?: { code: string; reason: string }[];
   positionWeightPct: number | null;
   stop: number | null;
   entry: number | null;
   dataQualityScore: number;
-  /** Coverage of the engine model — how much of it could be evaluated. */
   coveragePct?: number | null;
   nearTier1Event?: boolean;
-  /** Both engine gates must pass independently for a hybrid. */
   isHybrid?: boolean;
   hybridMissing?: string[];
 }
 
-/** v4 §19 — the eleven pre-trade gates. */
 export function runGates(input: GateInput): GateResult {
   const { regime } = input;
   const blocks = input.hardBlocks ?? [];
@@ -241,7 +224,6 @@ export function runGates(input: GateInput): GateResult {
       n: 8,
       label: "Valuation reviewed",
       owner: "Thomas Eriksson",
-      // v4 §13 — valuation is reviewed, not gated on. It sizes the trade.
       pass: input.valuationVerdict ? true : null,
       detail: input.valuationVerdict
         ? `${input.valuationVerdict} — modifies size, does not veto (§13)`
@@ -276,7 +258,6 @@ export function runGates(input: GateInput): GateResult {
     },
   ];
 
-  // A Hybrid Compounder must clear both engines independently (§19).
   if (input.isHybrid === false && input.hybridMissing?.length) {
     gates[2].detail += ` — not a hybrid: ${input.hybridMissing.join(", ")}`;
   }
