@@ -2,11 +2,14 @@ import { getSupabase } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
 import { yahooCandles } from "@/lib/yahoo";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
+import { regimeBandFor } from "@/lib/team/constitution";
 
 type Holding = { ticker: string; shares: number; avg_cost: number };
 type ReserveRule = { label: string; haircut: number; tier: "cash" | "treasury" | "credit" };
 
 const DIVIDEND_WITHDRAWAL_TAG = "[DIVIDEND_WITHDRAWAL]";
+const OVERFUNDED_MARGIN_PCT = 2;
+
 export const RESERVE_RULES: Record<string, ReserveRule> = {
   SGOV: { label: "0–3 Month US Treasury", haircut: 1.0, tier: "treasury" },
   BIL: { label: "1–3 Month US Treasury", haircut: 1.0, tier: "treasury" },
@@ -47,7 +50,7 @@ function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown
 const sma = (values: number[], length: number): number | null => {
   if (values.length < length) return null;
   const slice = values.slice(-length);
-  return slice.reduce((sum, value) => sum + value, 0) / length;
+  return slice.reduce((sum, value) => sum + value, 0) / slice.length;
 };
 
 async function marketRegime() {
@@ -74,9 +77,24 @@ async function marketRegime() {
   let score = Math.round((spyState.score + qqqState.score) / 2);
   if (vixLast != null) score += vixLast < 18 ? 5 : vixLast > 25 ? -10 : 0;
   score = Math.max(0, Math.min(100, score));
-  const classification = score >= 65 ? "RISK_ON" : score <= 40 ? "RISK_OFF" : "NEUTRAL";
-  const targetPct = classification === "RISK_ON" ? 8 : classification === "RISK_OFF" ? 30 : 15;
-  return { score, classification, targetPct, tolerancePct: 2, spy: spyState, qqq: qqqState, vix: vixLast, complete: spyState.complete && qqqState.complete };
+
+  // Single source of truth: regime thresholds and minimum Cash Buffer live in
+  // constitution.ts. This engine measures the score but does not invent policy.
+  const band = regimeBandFor(score);
+  const classification = band.name.toUpperCase().replaceAll("-", "_");
+  return {
+    score,
+    classification,
+    targetPct: band.cashMinPct,
+    cashFloorPct: band.cashMinPct,
+    deployFraction: band.deployFraction,
+    deployRule: band.deployRule,
+    overfundedMarginPct: OVERFUNDED_MARGIN_PCT,
+    spy: spyState,
+    qqq: qqqState,
+    vix: vixLast,
+    complete: spyState.complete && qqqState.complete,
+  };
 }
 
 export async function buildCashBufferSnapshot() {
@@ -127,14 +145,24 @@ export async function buildCashBufferSnapshot() {
   const bufferPct = totalNav != null && totalNav > 0 ? (liquidityBuffer / totalNav) * 100 : null;
   const targetValue = totalNav != null ? totalNav * regime.targetPct / 100 : null;
   const gapValue = targetValue != null ? liquidityBuffer - targetValue : null;
+  const shortfallValue = gapValue != null ? Math.max(0, -gapValue) : null;
   const deployableCash = gapValue != null ? Math.max(0, gapValue) : null;
-  const lower = regime.targetPct - regime.tolerancePct;
-  const upper = regime.targetPct + regime.tolerancePct;
-  const posture = bufferPct == null ? "UNVERIFIED" : bufferPct < lower ? "UNDERFUNDED" : bufferPct > upper ? "OVERFUNDED" : "ON_TARGET";
+  const overfundedThresholdPct = regime.targetPct + OVERFUNDED_MARGIN_PCT;
+
+  // The constitution specifies a minimum cash floor, not a symmetric target.
+  // Any value below the floor is UNDERFUNDED. The +2pt band is only a buffer
+  // above the floor before we label liquidity as genuinely OVERFUNDED.
+  const posture = bufferPct == null
+    ? "UNVERIFIED"
+    : bufferPct < regime.targetPct
+      ? "UNDERFUNDED"
+      : bufferPct > overfundedThresholdPct
+        ? "OVERFUNDED"
+        : "ON_TARGET";
   const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
   return {
-    version: "v8.8",
+    version: "v8.9",
     verified,
     missingPrices,
     holdingsSource: ledgerRead.origin,
@@ -162,18 +190,23 @@ export async function buildCashBufferSnapshot() {
     riskAdjustedLiquidityBuffer,
     bufferPct,
     targetPct: regime.targetPct,
+    cashFloorPct: regime.cashFloorPct,
     targetValue,
     gapValue,
+    shortfallValue,
     deployableCash,
+    overfundedThresholdPct,
     posture,
     action,
     reserveHoldings,
     policy: {
+      sourceOfTruth: "lib/team/constitution.ts::REGIME_BANDS",
       cashOnlyPolicy: false,
       combinedBufferPolicy: true,
       reserveTickers: Object.keys(RESERVE_RULES),
       dividendWithholdingRate: 0.15,
-      principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. Withdrawn dividends are realized investment profit and are excluded from deployable capital and Fund NAV.",
+      overfundedMarginPct: OVERFUNDED_MARGIN_PCT,
+      principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. The regime cash percentage is a hard minimum floor from the fund constitution; only the overfunded classification uses an additional margin above that floor.",
     },
   };
 }

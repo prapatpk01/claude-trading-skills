@@ -27,7 +27,7 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
   }, [load]);
 
   const posture = String(data?.posture ?? "UNVERIFIED");
-  const accent = posture === "ON_TARGET" ? "pos" : posture === "UNVERIFIED" ? "muted" : "neg";
+  const accent = posture === "ON_TARGET" ? "pos" : posture === "UNVERIFIED" ? "muted" : posture === "OVERFUNDED" ? "muted" : "neg";
   const action = useMemo(() => {
     if (!data) return "—";
     if (data.action === "RAISE_BUFFER") return t("Raise total cash buffer", "เพิ่ม Cash Buffer รวม");
@@ -40,7 +40,7 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
       <div>
         <h2 className="section" style={{ margin: 0 }}>🛡️ {t("Cash & Reserve Policy Engine", "ระบบนโยบายเงินสดและสินทรัพย์สำรอง")}</h2>
-        <p className="muted" style={{ margin: "6px 0 0" }}>{t("Cash Buffer includes USD broker cash plus haircut-adjusted SGOV and approved short-duration reserve instruments. Converting SGOV to USD changes liquidity form, not total buffer size.", "Cash Buffer รวมเงินสด USD ในโบรกเกอร์กับ SGOV และตราสารพักเงินที่กำหนดหลังปรับ Haircut การขาย SGOV เป็น USD เป็นเพียงการเปลี่ยนรูปสภาพคล่อง ไม่ได้เพิ่ม Buffer รวม")}</p>
+        <p className="muted" style={{ margin: "6px 0 0" }}>{t("Cash Buffer includes USD broker cash plus haircut-adjusted SGOV and approved short-duration reserve instruments. The regime cash percentage is a minimum floor from the fund constitution, not a separate target invented by this panel.", "Cash Buffer รวมเงินสด USD ในโบรกเกอร์กับ SGOV และตราสารพักเงินที่กำหนดหลังปรับ Haircut โดยเปอร์เซ็นต์ตามสภาวะตลาดเป็นขั้นต่ำจากกฎหลักของกองทุน ไม่ใช่เป้าหมายอีกชุดที่หน้านี้กำหนดเอง")}</p>
       </div>
       <button className="btn ghost sm" onClick={load} disabled={loading}>{loading ? "…" : "↻ Refresh"}</button>
     </div>
@@ -49,15 +49,15 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
       <div className="grid cols-4" style={{ marginTop: 14 }}>
         <Metric label={t("Market regime", "สภาวะตลาด")} value={String(data.regime?.classification ?? "—").replaceAll("_", "-")} sub={`${data.regime?.score ?? "—"}/100`} />
         <Metric label={t("Total cash buffer", "Cash Buffer รวม")} value={data.bufferPct == null ? "—" : pct(data.bufferPct)} sub={money(data.liquidityBuffer ?? 0)} accent={accent} />
-        <Metric label={t("Policy buffer target", "เป้าหมาย Buffer ตามนโยบาย")} value={pct(data.targetPct ?? 0)} sub={data.targetValue == null ? t("NAV unverified", "NAV ยังไม่ยืนยัน") : money(data.targetValue)} />
+        <Metric label={t("Constitution cash floor", "Cash Floor ตามกฎกองทุน")} value={pct(data.cashFloorPct ?? data.targetPct ?? 0)} sub={data.targetValue == null ? t("NAV unverified", "NAV ยังไม่ยืนยัน") : money(data.targetValue)} />
         <Metric label={t("Policy action", "คำแนะนำเชิงนโยบาย")} value={action} sub={posture.replaceAll("_", "-")} accent={accent} />
       </div>
       {!data.verified && <div className="err" style={{ marginTop: 12 }}>⚠ {t("NAV and cash-buffer ratio are suspended because prices are missing for", "ระงับการคำนวณ NAV และสัดส่วนเงินสด เนื่องจากไม่มีราคาของ")}: <strong>{(data.missingPrices ?? []).join(", ")}</strong></div>}
       {data.verified && <div className="grid cols-4" style={{ marginTop: 12 }}>
         <Metric label={t("Broker cash available now", "เงินสดโบรกเกอร์ที่ใช้ได้ทันที")} value={money(data.cashBalance ?? 0)} />
         <Metric label={t("Reserve instruments", "ตราสารใน Cash Buffer")} value={money(data.reserveMarketValue ?? 0)} />
-        <Metric label={t("Haircut-adjusted reserve", "ตราสารสำรองหลัง Haircut")} value={money(data.reserveLiquidityValue ?? 0)} />
-        <Metric label={t("Total buffer gap vs target", "ส่วนต่าง Buffer รวมจากเป้าหมาย")} value={money(data.gapValue ?? 0)} accent={(data.gapValue ?? 0) >= 0 ? "pos" : "neg"} />
+        <Metric label={t("Amount required to floor", "เงินที่ต้องเติมให้ถึง Floor")} value={money(data.shortfallValue ?? 0)} accent={(data.shortfallValue ?? 0) > 0 ? "neg" : "pos"} />
+        <Metric label={t("Buffer excess vs floor", "Buffer ส่วนเกินเหนือ Floor")} value={money(Math.max(0, data.gapValue ?? 0))} accent={(data.gapValue ?? 0) >= 0 ? "pos" : "muted"} />
       </div>}
 
       <h3 className="sub">{t("Reserve holdings", "สินทรัพย์สำรอง")}</h3>
@@ -65,7 +65,7 @@ export default function CashBufferPanel({ lang, refreshKey }: { lang: AppLang; r
         {(data.reserveHoldings ?? []).map((row: any) => <tr key={row.ticker}><td><strong>{row.ticker}</strong><br/><span className="muted" style={{fontSize:11}}>{row.label}</span></td><td>{row.tier}</td><td className="num">{money(row.marketValue)}</td><td className="num">{pct((1 - Number(row.haircut)) * 100)}</td><td className="num pos">{money(row.liquidityValue)}</td></tr>)}
         {!(data.reserveHoldings ?? []).length && <tr><td colSpan={5} className="muted">{t("No approved reserve ETFs are currently held.", "ยังไม่มี ETF สำรองที่ได้รับอนุมัติในพอร์ต")}</td></tr>}
       </tbody></table></div>
-      <p className="notice" style={{ marginTop: 12 }}>{t("Buffer targets: Risk-On 8%, Neutral 15%, Risk-Off 30% with a ±2% tolerance. USD cash counts at 100%; approved reserve instruments count after their policy haircut. New external capital is recorded in Fund Cash Flows as External capital in. Do not put a new $300 contribution into Update USD Cash; that control is reconciliation only, used to make Sentinel match the broker.", "เป้าหมาย Buffer: Risk-On 8%, Neutral 15%, Risk-Off 30% พร้อมช่วงยอมรับ ±2% เงินสด USD นับ 100% ส่วนตราสารสำรองนับหลัง Haircut เงินเพิ่มทุนใหม่จากภายนอกให้บันทึกที่กระแสเงินกองทุนเป็น เพิ่มทุนจากภายนอก ห้ามนำเงินเพิ่มทุนใหม่ เช่น $300 ไปกรอกที่ Update USD Cash เพราะช่องนั้นใช้เฉพาะกระทบยอดให้ Sentinel ตรงกับโบรกเกอร์")}</p>
+      <p className="notice" style={{ marginTop: 12 }}>{t("Single-source cash floors: Risk-On 10%, Neutral 15%, Risk-Off 25%, Crisis 40%, all read from the fund constitution. Below the floor is always UNDERFUNDED. The extra 2 percentage points are used only to decide when a buffer is sufficiently above its floor to be called OVERFUNDED and considered for selective deployment. USD cash counts at 100%; approved reserve instruments count after their policy haircut.", "Cash Floor ใช้แหล่งเดียวจากกฎกองทุน: Risk-On 10%, Neutral 15%, Risk-Off 25%, Crisis 40% ต่ำกว่า Floor เมื่อใดถือว่า UNDERFUNDED ทันที ส่วนระยะเผื่อ +2 จุดเปอร์เซ็นต์ใช้เฉพาะตัดสินว่า Buffer สูงกว่า Floor มากพอที่จะเป็น OVERFUNDED และพิจารณานำส่วนเกินไปลงทุน เงินสด USD นับ 100% ส่วนตราสารสำรองนับหลัง Haircut")}</p>
     </>}
   </div>;
 }
