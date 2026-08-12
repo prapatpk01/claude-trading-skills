@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { AppLang } from "../page";
+import { evidenceLabel } from "@/lib/team/evidenceLabels";
 import MeetingApprovalPanel from "./MeetingApprovalPanel";
 import styles from "./CIOCommandCenterV20.module.css";
 
@@ -266,7 +267,11 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
               <td><strong>{String(index + 1).padStart(2, "0")}</strong></td>
               <td><DecisionTag kind={motion.kind} /> <strong>{motion.ticker}</strong></td>
               <td>{motion.kind === "HOLD" ? "—" : money(motion.sizeUsd)}<small className="muted" style={{ display: "block" }}>{motion.approxShares ? `~${motion.approxShares.toLocaleString()} shares` : ""}</small></td>
-              <td>{motion.evidenceCoveragePct}%<small className="muted" style={{ display: "block" }}>{motion.missingEvidence.length ? `${motion.missingEvidence.length} gaps` : "complete"}</small></td>
+              <td>
+                {motion.evidenceCoveragePct}%
+                <small className="muted" style={{ display: "block" }}>{motion.missingEvidence.length ? tr(lang, `${motion.missingEvidence.length} gap${motion.missingEvidence.length > 1 ? "s" : ""}`, `ขาดข้อมูล ${motion.missingEvidence.length} รายการ`) : tr(lang, "complete", "ครบถ้วน")}</small>
+                {!!motion.missingEvidence.length && <small style={{ display: "block", marginTop: 5, lineHeight: 1.35 }}>{tr(lang, "Missing", "ขาด")}: {motion.missingEvidence.map((item) => evidenceLabel(item, lang)).join(" · ")}</small>}
+              </td>
               <td><AuthorityGates gates={motion.decisionGates ?? []} /></td>
               <td><OutcomeTag outcome={motion.outcome} kind={motion.kind} /><p className={styles.reason}>{motion.outcomeReason}</p>{motion.veto && <small className={styles.veto}>VETO · {motion.veto.member}: {motion.veto.reason}</small>}</td>
             </tr>)}</tbody>
