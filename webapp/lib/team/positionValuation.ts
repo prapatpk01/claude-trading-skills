@@ -4,18 +4,20 @@
 // against what this instrument has historically been worth, and what size
 // change does that imply — add, hold, trim, or exit the position entirely.
 //
-// Fair value is never taken from a single model. Three independent anchors are
+// Fair value is never taken from a single model. Independent anchors are
 // computed where the data supports them and blended by confidence:
 //
 //   1. Earnings multiple  — median P/E the market has actually paid, applied to
-//      forward EPS. Only used with enough history; the "current P/E ± band"
-//      fallback is deliberately excluded because it prices the stock off its own
-//      price and would always read FAIR.
+//      forward EPS. PEG, revenue growth and FCF quality adjust the confidence
+//      weight rather than manufacturing a second price target from the same EPS.
 //   2. Dividend yield     — current distribution capitalised at the median yield
 //      the market has assigned this instrument. The workable anchor for BDCs,
 //      REITs and income ETFs, which have no meaningful EPS series.
 //   3. Trend              — log-linear regression of price on time. The only
 //      anchor available for broad ETFs; weighted lightly and by fit quality.
+//   4. DCF                — a conservative five-year FCF model built from SEC
+//      filing evidence when positive cash flow, shares and balance-sheet data
+//      are available. Terminal-heavy DCFs are deliberately down-weighted.
 //
 // The FAIR band widens when the anchors disagree, so a name whose valuation is
 // genuinely uncertain is not labelled OVERVALUED on a coin-flip.
@@ -43,6 +45,20 @@ export interface FairValueAnchor {
   detail: string;
 }
 
+export interface GrowthValuationMetrics {
+  forwardEps: number | null;
+  epsGrowthPct: number | null;
+  currentPe: number | null;
+  historicalPe: number | null;
+  peg: number | null;
+  revenueGrowthPct: number | null;
+  freeCashFlow: number | null;
+  fcfGrowthPct: number | null;
+  dcfFairValue: number | null;
+  dcfWaccPct: number | null;
+  dcfTerminalSharePct: number | null;
+}
+
 export interface ValuationRead {
   fairValue: number | null;
   /** Price against fair value, in percent. Positive = trading above fair. */
@@ -56,6 +72,8 @@ export interface ValuationRead {
   buyBelow: number | null;
   /** True for constant-NAV instruments, where no verdict is meaningful. */
   cashLike?: boolean;
+  /** Growth/FCF evidence behind Thomas's read; nulls mean the SEC evidence was unavailable. */
+  growthMetrics: GrowthValuationMetrics;
   note: string;
 }
 
@@ -72,6 +90,147 @@ function median(xs: number[]): number | null {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
+const growthPct = (current: number | null | undefined, prior: number | null | undefined): number | null =>
+  current != null && prior != null && Number.isFinite(current) && Number.isFinite(prior) && prior !== 0
+    ? ((current / prior) - 1) * 100
+    : null;
+
+const mean = (values: (number | null | undefined)[]): number | null => {
+  const clean = values.filter((v): v is number => v != null && Number.isFinite(v));
+  return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null;
+};
+
+const EMPTY_GROWTH_METRICS: GrowthValuationMetrics = {
+  forwardEps: null,
+  epsGrowthPct: null,
+  currentPe: null,
+  historicalPe: null,
+  peg: null,
+  revenueGrowthPct: null,
+  freeCashFlow: null,
+  fcfGrowthPct: null,
+  dcfFairValue: null,
+  dcfWaccPct: null,
+  dcfTerminalSharePct: null,
+};
+
+type DcfInput = { fairValue: number; wacc: number; terminalSharePct: number; reliable: boolean };
+
+/**
+ * Translate the SEC-enriched EPS observations into the growth evidence Thomas
+ * needs. Growth changes confidence; it never overrides a missing cash flow.
+ * DCF is produced only from positive FCF and a real share count.
+ */
+function buildGrowthContext(
+  candles: Candle[],
+  annualEps: AnnualEps[],
+  epsTTM: number | null,
+  price: number
+): { metrics: GrowthValuationMetrics; dcf: DcfInput | null } {
+  if (!annualEps.length || !(price > 0)) return { metrics: { ...EMPTY_GROWTH_METRICS }, dcf: null };
+
+  const currentPe = epsTTM != null && epsTTM > 0 ? price / epsTTM : null;
+  const scenarios = multipleScenarios(candles, annualEps, epsTTM, currentPe);
+
+  let historicalEpsCagr: number | null = null;
+  const positiveEps = annualEps.filter((row) => row.eps > 0).slice(0, 5);
+  if (positiveEps.length >= 2) {
+    const newest = positiveEps[0];
+    const oldest = positiveEps[positiveEps.length - 1];
+    const years = Math.max(1, newest.year - oldest.year);
+    if (oldest.eps > 0 && newest.eps > 0) historicalEpsCagr = (Math.pow(newest.eps / oldest.eps, 1 / years) - 1) * 100;
+  }
+
+  const epsGrowthPct = scenarios?.epsGrowth ?? historicalEpsCagr;
+  const forwardEps = scenarios?.forwardEps ?? (epsTTM != null && epsTTM > 0 && epsGrowthPct != null
+    ? epsTTM * (1 + clamp(epsGrowthPct, -15, 35) / 100)
+    : null);
+  const historicalPe = scenarios?.peMid ?? null;
+  const peForPeg = currentPe ?? historicalPe;
+  const peg = peForPeg != null && epsGrowthPct != null && epsGrowthPct > 0
+    ? peForPeg / epsGrowthPct
+    : null;
+
+  const latest = annualEps[0];
+  const prior = annualEps[1];
+  const ttmRevenue = latest.revenueTTM ?? null;
+  const annualRevenue = latest.revenue ?? null;
+  const priorRevenue = prior?.revenue ?? null;
+  const revenueGrowthPct =
+    ttmRevenue != null && annualRevenue != null && annualRevenue > 0 && Math.abs(ttmRevenue / annualRevenue - 1) > 0.005
+      ? growthPct(ttmRevenue, annualRevenue)
+      : growthPct(annualRevenue, priorRevenue);
+
+  const ttmFcf = latest.freeCashFlowTTM ?? null;
+  const annualFcf = latest.freeCashFlow ?? null;
+  const priorFcf = prior?.freeCashFlow ?? null;
+  const freeCashFlow = ttmFcf ?? annualFcf;
+  const fcfGrowthPct =
+    ttmFcf != null && annualFcf != null && annualFcf > 0 && Math.abs(ttmFcf / annualFcf - 1) > 0.005
+      ? growthPct(ttmFcf, annualFcf)
+      : annualFcf != null && priorFcf != null && annualFcf > 0 && priorFcf > 0
+        ? growthPct(annualFcf, priorFcf)
+        : null;
+
+  const shares = latest.sharesOutstanding ?? null;
+  const netDebt = latest.netDebt ?? 0;
+  let dcf: DcfInput | null = null;
+  if (freeCashFlow != null && freeCashFlow > 0 && shares != null && shares > 0) {
+    const rawGrowth = mean([revenueGrowthPct, fcfGrowthPct, epsGrowthPct]);
+    const initialGrowth = clamp((rawGrowth ?? 5) / 100, -0.05, 0.20);
+    // A generic but conservative cost of capital. High-growth or shrinking-FCF
+    // businesses receive an extra risk premium instead of a more flattering DCF.
+    const wacc = clamp(
+      0.095 + (initialGrowth > 0.15 ? 0.005 : 0) + (fcfGrowthPct != null && fcfGrowthPct < 0 ? 0.005 : 0),
+      0.09,
+      0.11
+    );
+    const terminalGrowth = clamp(0.015 + Math.max(0, revenueGrowthPct ?? 5) / 100 * 0.12, 0.015, 0.03);
+
+    let projectedFcf = freeCashFlow;
+    let pvExplicit = 0;
+    for (let year = 1; year <= 5; year += 1) {
+      // Fade exceptional growth toward a sustainable terminal rate over the
+      // explicit forecast instead of assuming today's rate lasts forever.
+      const fade = (year / 5) * 0.65;
+      const yearGrowth = initialGrowth * (1 - fade) + terminalGrowth * fade;
+      projectedFcf *= 1 + yearGrowth;
+      pvExplicit += projectedFcf / Math.pow(1 + wacc, year);
+    }
+    const terminalValue = projectedFcf * (1 + terminalGrowth) / Math.max(0.01, wacc - terminalGrowth);
+    const pvTerminal = terminalValue / Math.pow(1 + wacc, 5);
+    const enterpriseValue = pvExplicit + pvTerminal;
+    const equityValue = enterpriseValue - netDebt;
+    const fairValue = equityValue / shares;
+    const terminalSharePct = enterpriseValue > 0 ? (pvTerminal / enterpriseValue) * 100 : 100;
+    const positiveFcfYears = annualEps.filter((row) => (row.freeCashFlow ?? 0) > 0).length;
+    const ratio = fairValue / price;
+    if (Number.isFinite(fairValue) && fairValue > 0 && ratio >= 0.25 && ratio <= 4) {
+      dcf = {
+        fairValue: round2(fairValue),
+        wacc,
+        terminalSharePct: round2(terminalSharePct),
+        reliable: positiveFcfYears >= 2 && terminalSharePct <= 80 && ratio >= 0.4 && ratio <= 2.5 && rawGrowth != null,
+      };
+    }
+  }
+
+  const metrics: GrowthValuationMetrics = {
+    forwardEps: forwardEps == null ? null : round2(forwardEps),
+    epsGrowthPct: epsGrowthPct == null ? null : round2(epsGrowthPct),
+    currentPe: currentPe == null ? null : round2(currentPe),
+    historicalPe: historicalPe == null ? null : round2(historicalPe),
+    peg: peg == null ? null : round2(peg),
+    revenueGrowthPct: revenueGrowthPct == null ? null : round2(revenueGrowthPct),
+    freeCashFlow: freeCashFlow == null ? null : round2(freeCashFlow),
+    fcfGrowthPct: fcfGrowthPct == null ? null : round2(fcfGrowthPct),
+    dcfFairValue: dcf?.fairValue ?? null,
+    dcfWaccPct: dcf ? round2(dcf.wacc * 100) : null,
+    dcfTerminalSharePct: dcf?.terminalSharePct ?? null,
+  };
+  return { metrics, dcf };
+}
+
 // ── Anchor 1: earnings multiple ──────────────────────────────────────────
 
 /** No market sustains a median multiple above this; beyond it the denominator broke. */
@@ -81,10 +240,11 @@ function earningsAnchor(
   candles: Candle[],
   annualEps: AnnualEps[],
   epsTTM: number | null,
-  price: number
+  price: number,
+  metrics: GrowthValuationMetrics
 ): FairValueAnchor | null {
   if (!annualEps.length) return null;
-  const sc = multipleScenarios(candles, annualEps, epsTTM, null);
+  const sc = multipleScenarios(candles, annualEps, epsTTM, metrics.currentPe);
   // `observations` below 8 means multipleScenarios fell back to the current
   // multiple, which prices the stock off itself — no information.
   if (!sc || sc.observations < 8 || !(sc.base > 0)) return null;
@@ -97,11 +257,28 @@ function earningsAnchor(
   const ratio = price > 0 ? sc.base / price : 0;
   if (!(ratio >= 0.4 && ratio <= 2.5)) return null;
 
+  // PEG and cash generation affect how much confidence we put in the P/E
+  // anchor. They do not create another target from the same earnings stream.
+  let weight = sc.observations >= 24 ? 3 : 2;
+  if (metrics.peg != null && metrics.peg <= 1.5 && (metrics.revenueGrowthPct ?? 0) > 0 && (metrics.freeCashFlow ?? 0) > 0) weight += 0.5;
+  if (metrics.peg != null && metrics.peg >= 3) weight -= 0.5;
+  if (metrics.freeCashFlow != null && metrics.freeCashFlow <= 0) weight -= 0.5;
+  weight = clamp(weight, 1, 3.5);
+
+  const detail = [
+    `Median P/E ${sc.peMid.toFixed(1)}× (${sc.observations} monthly observations) on forward EPS $${sc.forwardEps.toFixed(2)}`,
+    metrics.epsGrowthPct == null ? null : `EPS growth ${metrics.epsGrowthPct.toFixed(1)}%`,
+    metrics.peg == null ? null : `PEG ${metrics.peg.toFixed(2)}×`,
+    metrics.revenueGrowthPct == null ? null : `revenue growth ${metrics.revenueGrowthPct.toFixed(1)}%`,
+    metrics.freeCashFlow == null ? null : `FCF $${Math.round(metrics.freeCashFlow).toLocaleString("en-US")}`,
+    metrics.fcfGrowthPct == null ? null : `FCF growth ${metrics.fcfGrowthPct.toFixed(1)}%`,
+  ].filter(Boolean).join("; ");
+
   return {
     method: "Earnings multiple",
     fairValue: round2(sc.base),
-    weight: sc.observations >= 24 ? 3 : 2,
-    detail: `Median P/E ${sc.peMid.toFixed(1)}× (${sc.observations} monthly observations) on forward EPS $${sc.forwardEps.toFixed(2)}`,
+    weight,
+    detail,
   };
 }
 
@@ -202,8 +379,8 @@ export interface ValuationInput {
   annualEps?: AnnualEps[];
   epsTTM?: number | null;
   dividends?: DividendEvent[];
-  /** Discounted-cash-flow output, when one could be computed. */
-  dcf?: { fairValue: number; wacc: number; terminalSharePct: number; reliable: boolean } | null;
+  /** Discounted-cash-flow output, when one could be computed externally. */
+  dcf?: DcfInput | null;
 }
 
 /**
@@ -228,7 +405,7 @@ function dcfAnchor(
     method: "Discounted cash flow",
     fairValue: round2(dcf.fairValue),
     weight: dcf.reliable ? 1.5 : 0.75,
-    detail: `5-year FCF at a ${(dcf.wacc * 100).toFixed(1)}% WACC; ${dcf.terminalSharePct.toFixed(0)}% of the value is the terminal value${dcf.reliable ? "" : " — above the 80% line, so the model is weighted down as a perpetuity guess"}`,
+    detail: `5-year FCF at a ${(dcf.wacc * 100).toFixed(1)}% WACC; ${dcf.terminalSharePct.toFixed(0)}% of the value is the terminal value${dcf.reliable ? "" : " — above the 80% line or built on thinner growth history, so the model is weighted down"}`,
   };
 }
 
@@ -269,6 +446,7 @@ function cashLike(candles: Candle[]): { isCash: boolean; detail: string } {
 
 export function assessValuation(input: ValuationInput): ValuationRead {
   const { candles, price } = input;
+  const growth = buildGrowthContext(candles, input.annualEps ?? [], input.epsTTM ?? null, price);
 
   const cash = cashLike(candles);
   if (cash.isCash && price > 0) {
@@ -281,6 +459,7 @@ export function assessValuation(input: ValuationInput): ValuationRead {
       confidence: "high",
       buyBelow: null,
       cashLike: true,
+      growthMetrics: growth.metrics,
       note: cash.detail,
     };
   }
@@ -288,7 +467,7 @@ export function assessValuation(input: ValuationInput): ValuationRead {
   const anchors: FairValueAnchor[] = [];
 
   const eA = input.annualEps?.length
-    ? earningsAnchor(candles, input.annualEps, input.epsTTM ?? null, price)
+    ? earningsAnchor(candles, input.annualEps, input.epsTTM ?? null, price, growth.metrics)
     : null;
   if (eA) anchors.push(eA);
 
@@ -298,7 +477,10 @@ export function assessValuation(input: ValuationInput): ValuationRead {
   const tA = trendAnchor(candles);
   if (tA) anchors.push(tA);
 
-  const dA = input.dcf ? dcfAnchor(input.dcf, price) : null;
+  // The caller may provide a dedicated DCF. Otherwise Thomas builds one from
+  // the SEC-enriched EPS/FCF hand-off. The explicit caller always wins.
+  const selectedDcf = input.dcf ?? growth.dcf;
+  const dA = selectedDcf ? dcfAnchor(selectedDcf, price) : null;
   if (dA) anchors.push(dA);
 
   // Three independent methods should land in the same neighbourhood. When one
@@ -325,7 +507,8 @@ export function assessValuation(input: ValuationInput): ValuationRead {
       confidence: "low",
       buyBelow: null,
       cashLike: false,
-      note: "No usable valuation anchor — needs either an EPS history, a distribution history, or a year of prices.",
+      growthMetrics: growth.metrics,
+      note: "No usable valuation anchor — needs either an EPS/FCF history, a distribution history, or a year of prices.",
     };
   }
 
@@ -352,6 +535,16 @@ export function assessValuation(input: ValuationInput): ValuationRead {
     : heavy >= 1 || anchors.length >= 2 ? "medium"
     : "low";
 
+  const metricNote = [
+    growth.metrics.forwardEps == null ? null : `forward EPS $${growth.metrics.forwardEps.toFixed(2)}`,
+    growth.metrics.epsGrowthPct == null ? null : `EPS growth ${growth.metrics.epsGrowthPct.toFixed(1)}%`,
+    growth.metrics.revenueGrowthPct == null ? null : `revenue growth ${growth.metrics.revenueGrowthPct.toFixed(1)}%`,
+    growth.metrics.peg == null ? null : `PEG ${growth.metrics.peg.toFixed(2)}×`,
+    growth.metrics.freeCashFlow == null ? null : `FCF $${Math.round(growth.metrics.freeCashFlow).toLocaleString("en-US")}`,
+    growth.metrics.fcfGrowthPct == null ? null : `FCF growth ${growth.metrics.fcfGrowthPct.toFixed(1)}%`,
+    growth.metrics.dcfFairValue == null ? null : `DCF $${growth.metrics.dcfFairValue.toFixed(2)} at ${growth.metrics.dcfWaccPct?.toFixed(1)}% WACC`,
+  ].filter(Boolean).join("; ");
+
   return {
     fairValue: round2(fairValue),
     deviationPct: round2(deviationPct),
@@ -360,10 +553,13 @@ export function assessValuation(input: ValuationInput): ValuationRead {
     anchors,
     confidence,
     buyBelow: round2(fairValue * (1 + fairBandPct / 100)),
+    cashLike: false,
+    growthMetrics: growth.metrics,
     note: [
       anchors.length === 1
         ? `Single anchor (${anchors[0].method}) — treat the reading as indicative.`
         : `Blend of ${anchors.length} anchors; they disagree by ${(spread * 100).toFixed(0)}% of fair value, so the FAIR band is ±${fairBandPct.toFixed(1)}%.`,
+      metricNote ? `Growth/FCF evidence: ${metricNote}.` : "",
       rejected.length
         ? `Discarded as an outlier: ${rejected.map((r) => `${r.method} $${r.fairValue}`).join(", ")} — more than 2.2× away from where the other methods agree.`
         : "",
@@ -443,10 +639,12 @@ export function gradeIncome(q: IncomeQuality): Conviction {
   const bits: string[] = [];
 
   if (q.yieldPct != null) {
-    // The fund's income objective is a 5% blended yield.
-    if (q.yieldPct >= 7) { score += 20; bits.push(`${q.yieldPct.toFixed(1)}% yield, well above the 5% objective`); }
-    else if (q.yieldPct >= 5) { score += 15; bits.push(`${q.yieldPct.toFixed(1)}% yield, at or above the 5% objective`); }
-    else if (q.yieldPct >= 3) { score += 6; bits.push(`${q.yieldPct.toFixed(1)}% yield, below the 5% objective`); }
+    // This sleeve score predates the portfolio-level total-return policy; it is
+    // intentionally descriptive of the individual income holding, not a mandate
+    // to force the whole fund to a 5% yield.
+    if (q.yieldPct >= 7) { score += 20; bits.push(`${q.yieldPct.toFixed(1)}% yield, high for the income sleeve`); }
+    else if (q.yieldPct >= 5) { score += 15; bits.push(`${q.yieldPct.toFixed(1)}% yield, strong income contribution`); }
+    else if (q.yieldPct >= 3) { score += 6; bits.push(`${q.yieldPct.toFixed(1)}% yield, moderate income contribution`); }
     else { bits.push(`${q.yieldPct.toFixed(1)}% yield — thin for an income sleeve position`); }
   }
 
@@ -471,17 +669,16 @@ export function gradeIncome(q: IncomeQuality): Conviction {
   let grade: ConvictionGrade =
     blocks.length ? "BROKEN" : score >= 75 ? "STRONG" : score >= 55 ? "ADEQUATE" : "WEAK";
 
-  // Stability alone must not carry a thin payer to a strong grade. A perfectly
-  // steady 1.2% distribution scores well on every consistency term and would
-  // otherwise grade STRONG, which says nothing about whether it belongs in an
-  // income sleeve underwritten to a 5% blended yield.
+  // Stability alone must not carry a thin payer to a strong grade. The current
+  // portfolio income target is handled at book level; here a very low-yield
+  // instrument simply cannot be called STRONG as an income holding.
   if (grade !== "BROKEN" && q.yieldPct != null) {
     if (q.yieldPct < 3 && grade !== "WEAK") {
       grade = "WEAK";
       bits.push(`grade capped at WEAK — a ${q.yieldPct.toFixed(1)}% yield does not carry an income-sleeve position however steady it is`);
     } else if (q.yieldPct < 5 && grade === "STRONG") {
       grade = "ADEQUATE";
-      bits.push(`grade capped at ADEQUATE — the yield is below the fund's 5% objective`);
+      bits.push("grade capped at ADEQUATE — income contribution is moderate rather than dominant");
     }
   }
 
