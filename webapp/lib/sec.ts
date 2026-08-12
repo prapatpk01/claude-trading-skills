@@ -169,10 +169,22 @@ export interface QuarterRow {
   netMargin: number | null;
 }
 
+/**
+ * Annual EPS is also the compact hand-off into the valuation desk. The optional
+ * fields deliberately travel with the EPS observation so a meeting that already
+ * fetched SEC data can build growth/FCF/DCF evidence without making a second
+ * network request or teaching the committee route another fundamentals schema.
+ */
 export interface AnnualEps {
   year: number;
   end: string;
   eps: number;
+  revenue?: number | null;
+  freeCashFlow?: number | null;
+  revenueTTM?: number | null;
+  freeCashFlowTTM?: number | null;
+  netDebt?: number | null;
+  sharesOutstanding?: number | null;
 }
 
 export interface SecFundamentals {
@@ -180,7 +192,7 @@ export interface SecFundamentals {
   financials: Financials;
   /** Last 8 reported quarters, newest first. */
   quarters: QuarterRow[];
-  /** Annual diluted EPS by fiscal year, newest first. */
+  /** Annual diluted EPS by fiscal year, newest first, enriched for valuation. */
   annualEps: AnnualEps[];
   epsTTM: number | null;
   sharesOutstanding: number | null;
@@ -188,6 +200,7 @@ export interface SecFundamentals {
   netIncomeTTM: number | null;
   grossProfitTTM: number | null;
   operatingIncomeTTM: number | null;
+  freeCashFlowTTM: number | null;
   /** Period end of the most recent quarter filed, e.g. "2026-04-30". */
   latestQuarterEnd: string | null;
   equity: number | null;
@@ -267,6 +280,11 @@ export function parseCompanyFacts(data: any): SecFundamentals {
   // No fiscal-year fallback here: a full-year figure is not trailing, and
   // labelling it as such would misdate it.
   const operatingIncomeTTM = ttm(facts, TAGS.operatingIncome);
+  const operatingCashflowTTM = ttm(facts, TAGS.operatingCashflow);
+  const capexTTM = ttm(facts, TAGS.capex);
+  const freeCashFlowTTM = operatingCashflowTTM == null
+    ? null
+    : operatingCashflowTTM - Math.abs(capexTTM ?? 0);
 
   // ── Quarterly series (revenue / net income / EPS) ──
   const qRev = quarterlySeries(facts, TAGS.revenue);
@@ -290,12 +308,39 @@ export function parseCompanyFacts(data: any): SecFundamentals {
     };
   });
 
-  // ── Annual diluted EPS (for historical-multiple valuation) ──
+  // ── Annual diluted EPS + compact valuation fundamentals ──
+  const incomeByYear = new Map(income.map((row) => [Number(String(row.fiscalDate).slice(0, 4)), row]));
+  const cashflowByYear = new Map(cashflow.map((row) => [Number(String(row.fiscalDate).slice(0, 4)), row]));
+  const balanceByYear = new Map(balance.map((row) => [Number(String(row.fiscalDate).slice(0, 4)), row]));
   const annualEps: AnnualEps[] = Array.from(
     annualFlow(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], "USD/shares").entries()
   )
     .sort((a, b) => b[0] - a[0])
-    .map(([year, eps]) => ({ year, end: `${year}-12-31`, eps }));
+    .map(([year, eps], index) => {
+      const inc = incomeByYear.get(year);
+      const cf = cashflowByYear.get(year);
+      const bs = balanceByYear.get(year);
+      const revenue = Number(inc?.totalRevenue) || null;
+      const ocf = Number(cf?.operatingCashflow) || null;
+      const capex = Math.abs(Number(cf?.capitalExpenditures) || 0);
+      const freeCashFlow = ocf == null ? null : ocf - capex;
+      const debt = (Number(bs?.longTermDebt) || 0) + (Number(bs?.shortTermDebt) || 0);
+      const cash = Number(bs?.cashAndEquivalents);
+      const netDebt = Number.isFinite(cash) ? debt - cash : null;
+      return {
+        year,
+        end: `${year}-12-31`,
+        eps,
+        revenue,
+        freeCashFlow,
+        // TTM/current balance-sheet fields are attached only to the newest EPS
+        // observation; older rows remain historical observations.
+        revenueTTM: index === 0 ? revenueTTM : null,
+        freeCashFlowTTM: index === 0 ? freeCashFlowTTM : null,
+        netDebt: index === 0 ? netDebt : null,
+        sharesOutstanding: index === 0 ? sharesOutstanding : null,
+      };
+    });
 
   return {
     entityName: data?.entityName ?? "",
@@ -308,6 +353,7 @@ export function parseCompanyFacts(data: any): SecFundamentals {
     netIncomeTTM,
     grossProfitTTM,
     operatingIncomeTTM,
+    freeCashFlowTTM,
     // The quarter the trailing figures run through — the answer to "how current
     // is this?", which a report that only shows fiscal years cannot give.
     latestQuarterEnd: quarters[0]?.end ?? null,
