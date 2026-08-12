@@ -7,6 +7,7 @@ import { readFearGreed } from "@/lib/team/fearGreed";
 import { buildNewsPulse } from "@/lib/news/pulse";
 import { dailyCandles, getLightQuote } from "@/lib/marketData";
 import { fetchDividends, inferFrequency } from "@/lib/dividends";
+import { getSecFundamentals } from "@/lib/sec";
 import { computeBeta } from "@/lib/derive";
 import { pctReturn } from "@/lib/indicators";
 import { sma } from "@/lib/indicators";
@@ -152,22 +153,31 @@ function technicalEvidence(candles: Candle[], benchmark: Candle[]) {
   return { total: score.total, signal: score.signal, hardBlocks: score.hardBlocks.map((block: any) => block.reason ?? String(block)), dataQualityPct: Math.round(score.dataQualityScore) };
 }
 
+function yieldFromEvents(events: { date: string; amount: number }[], price: number | null): number | null {
+  if (!events.length || !price || price <= 0) return null;
+  const { perYear } = inferFrequency(events);
+  const last = events[events.length - 1];
+  const cutoff = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  const ttm = events.filter((e) => e.date >= cutoff).reduce((s, e) => s + e.amount, 0);
+  const est = perYear ? last.amount * perYear : ttm;
+  return est > 0 ? Math.round((est / price) * 10000) / 100 : null;
+}
+
 /** Forward yield from the name's own distribution history, or null. */
 async function forwardYield(ticker: string, price: number | null): Promise<number | null> {
   try {
     const { events, price: p } = await fetchDividends(ticker, 3);
-    if (!events.length) return null;
-    const px = price ?? p;
-    if (!px) return null;
-    const { perYear } = inferFrequency(events);
-    const last = events[events.length - 1];
-    const cutoff = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
-    const ttm = events.filter((e) => e.date >= cutoff).reduce((s, e) => s + e.amount, 0);
-    const est = perYear ? last.amount * perYear : ttm;
-    return est > 0 ? Math.round((est / px) * 10000) / 100 : null;
+    return yieldFromEvents(events, price ?? finite(p));
   } catch {
     return null;
   }
+}
+
+async function secInputsWithinBudget(ticker: string) {
+  return Promise.race([
+    getSecFundamentals(ticker).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+  ]);
 }
 
 /** Sessions to liquidate the line at 20% of median dollar volume. */
@@ -213,13 +223,25 @@ export async function GET(req: NextRequest) {
     // ── per-name evidence, gathered once and shared across the desks ──
     const gathered = await mapLimit(holdings, 4, async (h) => {
       const ticker = String(h.ticker).toUpperCase();
-      const [candles, quote, yieldPct] = await Promise.all([
+      const [candles, quote, dividendPack, fundamentals] = await Promise.all([
         dailyCandles(ticker, 320).catch(() => [] as Candle[]),
         getLightQuote(ticker).catch(() => null),
-        forwardYield(ticker, null),
+        fetchDividends(ticker, 3).catch(() => ({ events: [], price: null })),
+        RESERVES.has(ticker) ? Promise.resolve(null) : secInputsWithinBudget(ticker),
       ]);
-      const price = finite(quote?.price) ?? finite(candles.at(-1)?.close);
-      return { ticker, shares: Number(h.shares), avgCost: Number(h.avg_cost), candles, quote, price, yieldPct };
+      const price = finite(quote?.price) ?? finite(candles.at(-1)?.close) ?? finite(dividendPack.price);
+      const yieldPct = yieldFromEvents(dividendPack.events, price);
+      return {
+        ticker,
+        shares: Number(h.shares),
+        avgCost: Number(h.avg_cost),
+        candles,
+        quote,
+        price,
+        yieldPct,
+        dividends: dividendPack.events,
+        fundamentals,
+      };
     });
 
     const unpriced = gathered.filter((g) => g.price == null).map((g) => g.ticker);
@@ -265,12 +287,20 @@ export async function GET(req: NextRequest) {
             })()
           : null;
 
-      // Thomas prices reserves as cash-like; the module already knows that and
-      // returns CASH EQUIVALENT rather than a verdict nobody should act on.
+      // Thomas now receives the evidence his valuation engine actually supports:
+      // SEC annual/TTM EPS for operating companies plus distribution history for
+      // income ETFs/REITs. Trend remains the third independent anchor. If none
+      // of those is credible the read stays null rather than inventing fair value.
       const valuation =
         price != null && g.candles.length >= 60
           ? (() => {
-              const v = assessValuation({ candles: g.candles, price });
+              const v = assessValuation({
+                candles: g.candles,
+                price,
+                annualEps: g.fundamentals?.annualEps ?? [],
+                epsTTM: g.fundamentals?.epsTTM ?? null,
+                dividends: g.dividends,
+              });
               return v.verdict ? { verdict: v.verdict, deviationPct: v.deviationPct, confidence: v.confidence } : null;
             })()
           : null;
