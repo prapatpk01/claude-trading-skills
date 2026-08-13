@@ -37,6 +37,7 @@ async function buildReview(extraCandidates: string[] = []) {
     cash: {
       totalNav,
       cashBalance: Number(cash.cashBalance ?? 0),
+      dividendAvailable: Number(cash.dividendAvailable ?? 0),
       liquidityBuffer: Number(cash.liquidityBuffer ?? 0),
       cashFloorPct: Number(cash.cashFloorPct ?? cash.targetPct ?? 0),
       targetValue: Number(cash.targetValue ?? 0),
