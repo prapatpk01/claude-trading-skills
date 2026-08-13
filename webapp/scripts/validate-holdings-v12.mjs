@@ -18,7 +18,7 @@ requireTokens("app/components/HoldingsDashboardV12.tsx",[
 requireTokens("app/components/HoldingsMarketMonitor.tsx",[
  "holding-reconciliation","Shares","Average cost","Save corrected holding","reconcil","PATCH",
  "Portfolio & Watchlist Market Monitor","/api/watchlist","TECHNICAL WATCHLIST OVERLAY","BUY CANDIDATE","AVOID NEW BUY","REMOVE REVIEW",
- "Investment must verify thesis, valuation and catalyst","No automatic promotion or execution","WatchlistTable"
+ "Investment must verify thesis, valuation and catalyst","Adding here creates a research item only—not a BUY order","WatchlistTable"
 ]);
 // The route now expresses the old “split-brain” safeguard as an explicit
 // ledger-first source-of-truth contract. Validate behavior, not a deleted
