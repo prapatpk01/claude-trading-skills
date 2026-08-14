@@ -4,10 +4,14 @@ import { loadOpenHoldings } from "@/lib/portfolioSource";
 import { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
 import { runActiveFundV2 } from "@/lib/activeFundV2";
 import { applyCommitteeCashPool, type CommitteeSnapshot } from "@/lib/activeFundGovernance";
+import { dailyCandles } from "@/lib/marketData";
+import { computePortfolioTechnicalOverlay, type PortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+const RESERVE_TICKERS = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA", "TBIL", "SHY", "MINT"]);
 
 const cleanTickers = (value: unknown, limit: number) =>
   Array.isArray(value)
@@ -19,6 +23,19 @@ const finiteOrNull = (value: unknown): number | null => {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) break;
+      out[index] = await fn(items[index]);
+    }
+  }));
+  return out;
+}
 
 function cleanCommittee(value: unknown): CommitteeSnapshot | null {
   if (!value || typeof value !== "object") return null;
@@ -63,10 +80,6 @@ function committeeForCurrentBook(committee: CommitteeSnapshot | null, heldTicker
     const ticker = String(motion.ticker ?? "").trim().toUpperCase();
     const kind = String(motion.kind ?? "").trim().toUpperCase();
     const isHeld = heldTickers.has(ticker);
-    // Existing-position motions are invalid as soon as the live ledger says the
-    // line is closed. This prevents a recorded pre-sale meeting from recreating
-    // a sold-out name in the fund Action Sheet. Conversely, a NEW BUY is no
-    // longer a new-position motion once the name is already held.
     const valid = kind === "NEW BUY" ? !isHeld : ["ADD", "HOLD", "TRIM", "EXIT", "RAISE CASH"].includes(kind) ? isHeld : true;
     if (valid) kept.push(motion);
     else ignored.push(`${kind || "MOTION"} ${ticker}`.trim());
@@ -75,6 +88,74 @@ function committeeForCurrentBook(committee: CommitteeSnapshot | null, heldTicker
   return {
     committee: { ...committee, motions: kept },
     ignored,
+  };
+}
+
+async function loadHoldingTechnicalOverlays(rows: { ticker: string }[]) {
+  const tickers = Array.from(new Set(rows
+    .map((row) => String(row.ticker ?? "").trim().toUpperCase())
+    .filter((ticker) => ticker && !RESERVE_TICKERS.has(ticker))));
+  const pairs = await mapLimit(tickers, 5, async (ticker) => {
+    const candles = await dailyCandles(ticker, 460).catch(() => []);
+    return [ticker, computePortfolioTechnicalOverlay(candles)] as const;
+  });
+  return new Map<string, PortfolioTechnicalOverlay | null>(pairs);
+}
+
+function priceLevel(value: number | null | undefined, fallback: string) {
+  return value == null ? fallback : `$${value.toFixed(2)}`;
+}
+
+function technicalGateCommittee(committee: CommitteeSnapshot | null, overlays: Map<string, PortfolioTechnicalOverlay | null>) {
+  if (!committee) return { committee: null as CommitteeSnapshot | null, blockedAdds: [] as string[] };
+  const blockedAdds: string[] = [];
+  const motions = (committee.motions ?? []).map((motion: any) => {
+    const ticker = String(motion?.ticker ?? "").trim().toUpperCase();
+    const kind = String(motion?.kind ?? "").trim().toUpperCase();
+    if (kind !== "ADD") return motion;
+
+    const overlay = overlays.get(ticker) ?? null;
+    if (overlay?.action === "ADD") return motion;
+
+    const technicalState = overlay?.action ?? "UNAVAILABLE";
+    const reason = overlay
+      ? `Holdings technical execution gate is ${technicalState} (${overlay.confidence}% confidence), not ADD. T1 ${priceLevel(overlay.target1, "n/a")}, T2 ${priceLevel(overlay.target2, "conditional")}, S1 ${priceLevel(overlay.support1, "n/a")}. Re-run the CIO meeting after the technical gate changes before adding risk.`
+      : "Holdings technical execution gate is unavailable, so an ADD cannot be treated as executable. Re-run the CIO meeting after the Holdings technical overlay is measurable.";
+    blockedAdds.push(`${ticker}: ${technicalState}`);
+    return {
+      ...motion,
+      outcome: "DEFERRED",
+      outcomeReason: reason,
+      veto: { member: "Maya Chen · Holdings Technical Gate", reason },
+    };
+  });
+  return { committee: { ...committee, motions }, blockedAdds };
+}
+
+function attachTechnicalOverlay(result: any, overlays: Map<string, PortfolioTechnicalOverlay | null>, blockedAdds: string[]) {
+  const technicalFields = (tickerValue: unknown) => {
+    const ticker = String(tickerValue ?? "").trim().toUpperCase();
+    const overlay = overlays.get(ticker) ?? null;
+    return {
+      technicalDecision: overlay?.action ?? null,
+      technicalConfidence: overlay?.confidence ?? null,
+      technicalReason: overlay?.reason ?? null,
+      technicalTarget1: overlay?.target1 ?? null,
+      technicalTarget2: overlay?.target2 ?? null,
+      technicalSupport1: overlay?.support1 ?? null,
+      technicalRoomAtr: overlay?.roomAtr ?? null,
+    };
+  };
+
+  return {
+    ...result,
+    existing: (result?.existing ?? []).map((row: any) => ({ ...row, ...technicalFields(row.ticker) })),
+    executionPlans: (result?.executionPlans ?? []).map((row: any) => ({ ...row, ...technicalFields(row.ticker) })),
+    technicalSignalAlignment: {
+      source: "portfolioTechnicalOverlay · same engine as Holdings",
+      rule: "Current holdings may ADD only when the Holdings technical execution gate is also ADD. TRIM/HOLD/EXIT REVIEW or unavailable technical evidence blocks a contradictory ADD.",
+      blockedAdds,
+    },
   };
 }
 
@@ -98,7 +179,8 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
   const totalNav = Number(cash.totalNav ?? 0);
   if (!(totalNav > 0)) throw new Error("Verified or provisional Fund NAV is required before active rotation review.");
 
-  const raw = await runActiveFundV2({
+  const technicalPromise = loadHoldingTechnicalOverlays(holdingsRead.rows);
+  const activeFundPromise = runActiveFundV2({
     positions: holdingsRead.rows.map(row => ({ ticker: row.ticker, shares: Number(row.shares), avgCost: Number(row.avg_cost) })),
     watchlistTickers,
     cash: {
@@ -113,7 +195,11 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
     },
   });
 
-  const result = applyCommitteeCashPool(raw, committeeSnapshot.committee);
+  const [raw, overlays] = await Promise.all([activeFundPromise, technicalPromise]);
+  const technicalGate = technicalGateCommittee(committeeSnapshot.committee, overlays);
+  const governed = applyCommitteeCashPool(raw, technicalGate.committee);
+  const result = attachTechnicalOverlay(governed, overlays, technicalGate.blockedAdds);
+
   return {
     ...result,
     sourceOfTruth: holdingsRead.origin,

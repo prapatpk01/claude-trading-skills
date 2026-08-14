@@ -143,7 +143,10 @@ requireAll("app/components/HoldingTransactionForm.tsx", [
 ]);
 
 requireAll("app/components/PortfolioTransactionOverride.tsx", ["HoldingTransactionForm", "Buy / Sell Transaction"]);
-requireAll("app/components/PortfolioLedgerPanel.tsx", ["/api/portfolio/transactions?limit=100", "Ledger & Portfolio Integrity", "Realized P/L"]);
+// The operating UI intentionally shows a compact recent-history window. Keep
+// the validator aligned with that product contract rather than pinning the old
+// 100-row request forever.
+requireAll("app/components/PortfolioLedgerPanel.tsx", ["/api/portfolio/transactions?limit=20", "Ledger & Portfolio Integrity", "Realized P/L"]);
 requireAll("app/api/portfolio/rebalance-execution/route.ts", ["humanApproved", "reserveTicker", "packageId"]);
 
 requireAll("app/institutional-shell.css", [
