@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { AppLang } from "../page";
 import { evidenceLabel } from "@/lib/team/evidenceLabels";
 import MeetingApprovalPanel from "./MeetingApprovalPanel";
+import ActiveFundDecisionView from "./ActiveFundDecisionView";
 import styles from "./CIOCommandCenterV20.module.css";
 
 type MotionKind = "ADD" | "HOLD" | "TRIM" | "EXIT" | "NEW BUY" | "RAISE CASH";
@@ -220,9 +221,9 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
   return <div className={`workspace-stack ${styles.command}`} data-cio-version="20.0" data-workspace="decision-execution-command-center" data-source-of-truth="committee-meeting">
     <section className={`card ${styles.hero}`}>
       <div>
-        <span className="tag">SENTINEL CIO V20 · ONE FUND → ONE MEETING → ONE ACTION LIST</span>
+        <span className="tag">SENTINEL CIO V20.1 · ONE FUND → ONE MEETING → ONE ACTION LIST</span>
         <h2 className="section">{tr(lang, "Decision & Execution Command Center", "ศูนย์ตัดสินใจและดำเนินการกองทุน")}</h2>
-        <p className="muted">{tr(lang, "The desks work in the background. This screen shows what changed, what the fund should do, how it is funded and what still needs human approval.", "ทีมวิเคราะห์ทำงานอยู่เบื้องหลัง หน้านี้แสดงเฉพาะสิ่งที่เปลี่ยน สิ่งที่กองทุนควรทำ แหล่งเงินทุน และรายการที่รออนุมัติ")}</p>
+        <p className="muted">{tr(lang, "Research, valuation, portfolio construction, funding, trade blotter and approval now belong to the same meeting snapshot.", "Research, Valuation, การจัดพอร์ต, Funding, Trade Blotter และ Approval อยู่ใน Meeting Snapshot เดียวกันแล้ว")}</p>
       </div>
       <div className={styles.heroActions}>
         <span className={`tag ${frozen || meeting.quorum.met ? styles.good : styles.bad}`}>{frozen ? "MEETING RECORDED · FROZEN" : meeting.quorum.met ? "QUORUM READY" : "QUORUM BLOCKED"}</span>
@@ -267,11 +268,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
               <td><strong>{String(index + 1).padStart(2, "0")}</strong></td>
               <td><DecisionTag kind={motion.kind} /> <strong>{motion.ticker}</strong></td>
               <td>{motion.kind === "HOLD" ? "—" : money(motion.sizeUsd)}<small className="muted" style={{ display: "block" }}>{motion.approxShares ? `~${motion.approxShares.toLocaleString()} shares` : ""}</small></td>
-              <td>
-                {motion.evidenceCoveragePct}%
-                <small className="muted" style={{ display: "block" }}>{motion.missingEvidence.length ? tr(lang, `${motion.missingEvidence.length} gap${motion.missingEvidence.length > 1 ? "s" : ""}`, `ขาดข้อมูล ${motion.missingEvidence.length} รายการ`) : tr(lang, "complete", "ครบถ้วน")}</small>
-                {!!motion.missingEvidence.length && <small style={{ display: "block", marginTop: 5, lineHeight: 1.35 }}>{tr(lang, "Missing", "ขาด")}: {motion.missingEvidence.map((item) => evidenceLabel(item, lang)).join(" · ")}</small>}
-              </td>
+              <td>{motion.evidenceCoveragePct}%<small className="muted" style={{ display: "block" }}>{motion.missingEvidence.length ? tr(lang, `${motion.missingEvidence.length} gap${motion.missingEvidence.length > 1 ? "s" : ""}`, `ขาดข้อมูล ${motion.missingEvidence.length} รายการ`) : tr(lang, "complete", "ครบถ้วน")}</small>{!!motion.missingEvidence.length && <small style={{ display: "block", marginTop: 5, lineHeight: 1.35 }}>{tr(lang, "Missing", "ขาด")}: {motion.missingEvidence.map((item) => evidenceLabel(item, lang)).join(" · ")}</small>}</td>
               <td><AuthorityGates gates={motion.decisionGates ?? []} /></td>
               <td><OutcomeTag outcome={motion.outcome} kind={motion.kind} /><p className={styles.reason}>{motion.outcomeReason}</p>{motion.veto && <small className={styles.veto}>VETO · {motion.veto.member}: {motion.veto.reason}</small>}</td>
             </tr>)}</tbody>
@@ -279,9 +276,11 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
         </div>
       </section>
 
+      <ActiveFundDecisionView lang={lang} committeeMeeting={meeting} embedded />
+
       <section className={styles.twoCol}>
         <article className="card">
-          <SectionTitle eyebrow="02 · FUNDING" title={tr(lang, "Every use names its source", "ทุกการใช้เงินต้องระบุแหล่งเงิน")} />
+          <SectionTitle eyebrow="03 · FUNDING & CASH ROUTING" title={tr(lang, "Every use names its source", "ทุกการใช้เงินต้องระบุแหล่งเงิน")} />
           <div className={styles.capitalMetrics}>
             <Kpi label={tr(lang, "Sale / cash sources", "เงินจากการขาย/เงินพร้อมใช้")} value={money(meeting.capitalPlan.sourcesUsd)} note={`${meeting.capitalPlan.sourceLines.length} source lines`} />
             <Kpi label={tr(lang, "Approved investment", "เงินลงทุนที่อนุมัติ")} value={money(meeting.capitalPlan.usesUsd)} note={`${money(meeting.capitalPlan.deployableSourcesUsd)} deployable · ${meeting.capitalPlan.useLines.length} uses`} />
@@ -305,9 +304,9 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
           </div>
         </article>
         <article className="card">
-          <SectionTitle eyebrow="03 · TRADE BLOTTER" title={tr(lang, "What a human must enter", "รายการที่มนุษย์ต้องบันทึก")} />
+          <SectionTitle eyebrow="04 · TRADE BLOTTER" title={tr(lang, "What a human must enter", "รายการที่มนุษย์ต้องบันทึก")} />
           {!meeting.blotter.length ? <div className="notice">{tr(lang, "No funded trade carried this meeting.", "ไม่มีรายการซื้อขายที่ผ่านและมีเงินทุนในการประชุมนี้")}</div> : <div className={styles.blotter}>{meeting.blotter.map((line, index) => <div className={styles.blotterLine} key={`${line.side}-${line.ticker}-${index}`}><span className={line.side === "BUY" ? styles.buy : styles.sell}>{line.side}</span><strong>{line.ticker}</strong><span>{money(line.approxUsd)}</span><small>{line.approxShares ? `~${line.approxShares.toLocaleString()} shares` : "size pending"}</small></div>)}</div>}
-          <button className="btn ghost" type="button" onClick={() => setView("approval")} style={{ marginTop: 14 }}>{tr(lang, "Review approval package →", "ตรวจชุดอนุมัติ →")}</button>
+          <button className="btn ghost" type="button" onClick={() => setView("approval")} style={{ marginTop: 14 }}>{tr(lang, "05 · Review human approval →", "05 · ตรวจชุดอนุมัติโดยมนุษย์ →")}</button>
         </article>
       </section>
     </>}

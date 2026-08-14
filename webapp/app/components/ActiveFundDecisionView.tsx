@@ -1,27 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppLang } from "../page";
 import { money } from "./format";
 
 const tr = (lang: AppLang, en: string, th: string) => (lang === "th" ? th : en);
 const FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";
 
-type CommitteeSnapshot = {
+export type CommitteeMeetingAuthority = {
   meetingId: string | null;
   asOf: string | null;
   motions: any[];
-  source: "FROZEN CIO MEETING" | "FRESH CIO GATE";
 };
 
-async function committeeSnapshot(): Promise<CommitteeSnapshot> {
+type CommitteeSnapshot = CommitteeMeetingAuthority & {
+  source: "CURRENT CIO MEETING" | "FROZEN CIO MEETING" | "FRESH CIO GATE";
+};
+
+function suppliedMeeting(meeting?: CommitteeMeetingAuthority | null): CommitteeSnapshot | null {
+  if (!meeting?.meetingId || !Array.isArray(meeting.motions)) return null;
+  return { meetingId: meeting.meetingId, asOf: meeting.asOf ?? null, motions: meeting.motions, source: "CURRENT CIO MEETING" };
+}
+
+async function committeeSnapshot(meeting?: CommitteeMeetingAuthority | null): Promise<CommitteeSnapshot> {
+  const supplied = suppliedMeeting(meeting);
+  if (supplied) return supplied;
+
   if (typeof window !== "undefined") {
     try {
       const saved = window.localStorage.getItem(FROZEN_MEETING_KEY);
       if (saved) {
-        const meeting = JSON.parse(saved);
-        if (meeting?.meetingId && Array.isArray(meeting?.motions)) {
-          return { meetingId: meeting.meetingId, asOf: meeting.asOf ?? null, motions: meeting.motions, source: "FROZEN CIO MEETING" };
+        const frozen = JSON.parse(saved);
+        if (frozen?.meetingId && Array.isArray(frozen?.motions)) {
+          return { meetingId: frozen.meetingId, asOf: frozen.asOf ?? null, motions: frozen.motions, source: "FROZEN CIO MEETING" };
         }
       }
     } catch {
@@ -62,17 +73,73 @@ function compactCommittee(snapshot: CommitteeSnapshot) {
   };
 }
 
-export default function ActiveFundDecisionView({ lang }: { lang: AppLang }) {
+async function enrichValuationGaps(review: any) {
+  const all = [...(review?.existing ?? []), ...(review?.newIdeas ?? [])];
+  const tickers = Array.from(new Set(all
+    .filter((row: any) => String(row?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE")
+    .map((row: any) => String(row?.ticker ?? "").trim().toUpperCase())
+    .filter((ticker: string) => ticker)))
+    .slice(0, 12);
+  if (!tickers.length) return review;
+
+  const response = await fetch(`/api/valuation-fallback?t=${Date.now()}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+    body: JSON.stringify({ tickers }),
+  });
+  if (!response.ok) return review;
+  const payload = await response.json().catch(() => ({ rows: [] }));
+  const map = new Map((payload?.rows ?? []).map((row: any) => [String(row.ticker).toUpperCase(), row]));
+
+  const patch = (row: any) => {
+    if (String(row?.valuationStatus ?? "UNAVAILABLE") !== "UNAVAILABLE") return row;
+    const fallback: any = map.get(String(row?.ticker ?? "").toUpperCase());
+    const valuation = fallback?.valuation;
+    if (!valuation?.targetPrice || !(Number(valuation.targetPrice) > 0)) return row;
+    const currentPrice = Number(row?.currentPrice) > 0 ? Number(row.currentPrice) : Number(fallback?.currentPrice) || null;
+    const targetPrice = Number(valuation.targetPrice);
+    const gap = currentPrice && currentPrice > 0 ? (targetPrice / currentPrice - 1) * 100 : null;
+    return {
+      ...row,
+      currentPrice,
+      targetPrice,
+      expectedReturnPct: gap,
+      valuationStatus: gap != null && Math.abs(gap) < .5 ? "NO_EDGE" : "VALID",
+      valuationSource: "THOMAS_FUNDAMENTAL_RANGE",
+      valuationConfidence: valuation.confidence,
+      valuationAnchors: valuation.anchors,
+      valuationNote: `${valuation.method} Bear $${Number(valuation.bearPrice).toFixed(2)} · Base $${targetPrice.toFixed(2)} · Bull $${Number(valuation.bullPrice).toFixed(2)} · ${valuation.confidence} confidence.`,
+    };
+  };
+
+  return {
+    ...review,
+    existing: (review?.existing ?? []).map(patch),
+    newIdeas: (review?.newIdeas ?? []).map(patch),
+  };
+}
+
+export default function ActiveFundDecisionView({
+  lang,
+  committeeMeeting = null,
+  embedded = false,
+}: {
+  lang: AppLang;
+  committeeMeeting?: CommitteeMeetingAuthority | null;
+  embedded?: boolean;
+}) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [authoritySource, setAuthoritySource] = useState<string | null>(null);
+  const lastAutoMeeting = useRef<string | null>(null);
 
-  async function run() {
+  async function run(authorityOverride?: CommitteeSnapshot) {
     setLoading(true);
     setError(null);
     try {
-      const authority = await committeeSnapshot();
+      const authority = authorityOverride ?? await committeeSnapshot(committeeMeeting);
       setAuthoritySource(authority.source);
       const response = await fetch(`/api/active-fund?t=${Date.now()}`, {
         method: "POST",
@@ -82,7 +149,7 @@ export default function ActiveFundDecisionView({ lang }: { lang: AppLang }) {
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || "Review failed");
-      setData(json);
+      setData(await enrichValuationGaps(json));
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -90,15 +157,29 @@ export default function ActiveFundDecisionView({ lang }: { lang: AppLang }) {
     }
   }
 
-  return <div className="card ai-card" style={{ marginTop: 18 }}>
-    <h3 className="sub">🧠 {tr(lang, "Portfolio Decision Layer", "ชั้นตัดสินใจและจัดสรรพอร์ต")}</h3>
+  useEffect(() => {
+    const authority = suppliedMeeting(committeeMeeting);
+    if (!embedded || !authority?.meetingId || lastAutoMeeting.current === authority.meetingId) return;
+    lastAutoMeeting.current = authority.meetingId;
+    void run(authority);
+  }, [committeeMeeting?.meetingId, embedded]);
+
+  const Wrapper = embedded ? "section" : "div";
+  return <Wrapper className="card ai-card" style={embedded ? undefined : { marginTop: 18 }} data-portfolio-underwriting={embedded ? "same-cio-meeting" : "standalone"}>
+    {embedded
+      ? <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <div><span className="tag">02 · PORTFOLIO UNDERWRITING</span><h3 className="sub" style={{ margin: "8px 0 0" }}>🧠 {tr(lang, "Allocation, valuation & cash-pool check", "วิเคราะห์จัดสรรพอร์ต Valuation และ Cash Pool")}</h3></div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><span className="tag">{committeeMeeting?.meetingId ?? "—"}</span><button className="btn ghost sm" type="button" onClick={() => void run()} disabled={loading}>{loading ? "…" : tr(lang, "Refresh underwriting", "อัปเดตการวิเคราะห์")}</button></div>
+        </div>
+      : <><h3 className="sub">🧠 {tr(lang, "Portfolio Decision Layer", "ชั้นตัดสินใจและจัดสรรพอร์ต")}</h3><button className="btn" onClick={() => void run()} disabled={loading}>{loading ? tr(lang, "Checking Committee + building cash-pool plan…", "กำลังตรวจ Committee และสร้างแผน Cash Pool…") : tr(lang, "🏛 Run Governed Portfolio Review", "🏛 วิเคราะห์พอร์ตตามมติ Committee")}</button></>}
+
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
-        "SELL/TRIM proceeds are pooled into the Cash Buffer first. The Cash Floor is restored before any new risk purchase, and an ADD/INITIATE is allowed only when the current Committee carried it through all authority gates.",
-        "เงินจาก SELL/TRIM จะรวมเข้า Cash Buffer ก่อน ระบบเติม Cash Floor ให้ครบก่อนการลงทุนใหม่ และ ADD/INITIATE จะใช้เงินจริงได้ต่อเมื่อ Committee รอบปัจจุบันอนุมัติผ่าน Authority Gate ครบเท่านั้น")}
+        "This is part of the same CIO meeting. SELL/TRIM proceeds pool into Cash Buffer first; the Cash Floor is protected; ADD/INITIATE can use capital only when this meeting carried the action. Thomas uses DCF/multiples first and a filing-based fundamental range when the primary anchors are unavailable.",
+        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน เงิน SELL/TRIM รวมเข้า Cash Buffer ก่อน ต้องรักษา Cash Floor และ ADD/INITIATE ใช้เงินจริงได้เฉพาะรายการที่การประชุมรอบนี้อนุมัติ ส่วน Thomas จะใช้ DCF/Multiples ก่อน และใช้ Fundamental Range จากงบการเงินเมื่อ Anchor หลักยังไม่พร้อม")}
     </p>
-    <button className="btn" onClick={run} disabled={loading}>{loading ? tr(lang, "Checking Committee + building cash-pool plan…", "กำลังตรวจ Committee และสร้างแผน Cash Pool…") : tr(lang, "🏛 Run Governed Portfolio Review", "🏛 วิเคราะห์พอร์ตตามมติ Committee")}</button>
-    {authoritySource && <span className="tag" style={{ marginLeft: 10 }}>{authoritySource}</span>}
+    {authoritySource && <span className="tag">{authoritySource}</span>}
+    {loading && !data && <div className="notice" style={{ marginTop: 12 }}><span className="spinner" /> {tr(lang, "Building the portfolio underwriting package…", "กำลังสร้างชุดวิเคราะห์พอร์ตของการประชุมเดียวกัน…")}</div>}
     {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
 
     {data && <>
@@ -109,16 +190,16 @@ export default function ActiveFundDecisionView({ lang }: { lang: AppLang }) {
         <Metric label={tr(lang, "New names", "หุ้นใหม่นอกพอร์ต")} value={data.discovery?.uniqueNew ?? 0} />
       </div>
 
-      <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
-      <FundingSummary liquidity={data.liquidity} lang={lang} />
       <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />
-      <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings", "หุ้นที่ถืออยู่")} lang={lang} />
-      <IdeaTable rows={data.newIdeas ?? []} title={tr(lang, "New opportunities", "โอกาสใหม่")} lang={lang} />
+      <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
+      {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
+      <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — valuation & momentum", "หุ้นที่ถืออยู่ — Valuation และ Momentum")} lang={lang} />
+      <IdeaTable rows={data.newIdeas ?? []} title={tr(lang, "New opportunities — valuation & research", "โอกาสใหม่ — Valuation และ Research")} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
-      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Decision-support only. No broker order is sent automatically.", "ใช้เพื่อสนับสนุนการตัดสินใจเท่านั้น ระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
+      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation fallback is decision-support evidence; it never overrides a Committee VETO/DEFER and no broker order is sent automatically.", "Fundamental Valuation fallback เป็นหลักฐานประกอบการตัดสินใจเท่านั้น ไม่สามารถข้าม Committee VETO/DEFER และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
     </>}
-  </div>;
+  </Wrapper>;
 }
 
 function CashPoolPlan({ plan, lang }: { plan: any; lang: AppLang }) {
@@ -138,39 +219,21 @@ function CashPoolPlan({ plan, lang }: { plan: any; lang: AppLang }) {
       <Metric label={tr(lang, "Committee meeting", "รอบ Committee")} value={plan.committeeMeetingId || "—"} />
     </div>
     <div className="notice" style={{ marginTop: 10 }}><strong>{tr(lang, "Capital flow", "ลำดับเงิน")}: </strong>{lang === "th" ? plan.ruleTh : plan.rule}</div>
-    {(plan.blockedBuys ?? []).length > 0 && <div className="err" style={{ marginTop: 10 }}>
-      <strong>{tr(lang, "Blocked purchases stay at $0:", "รายการซื้อที่ถูกบล็อกจะเป็น $0:")}</strong>
-      {(plan.blockedBuys ?? []).map((x: any) => <div key={x.ticker} style={{ marginTop: 6 }}><strong>{x.ticker}</strong> — {lang === "th" ? x.reasonTh : x.reason}</div>)}
-    </div>}
+    {(plan.blockedBuys ?? []).length > 0 && <div className="err" style={{ marginTop: 10 }}><strong>{tr(lang, "Blocked purchases stay at $0:", "รายการซื้อที่ถูกบล็อกจะเป็น $0:")}</strong>{(plan.blockedBuys ?? []).map((x: any) => <div key={x.ticker} style={{ marginTop: 6 }}><strong>{x.ticker}</strong> — {lang === "th" ? x.reasonTh : x.reason}</div>)}</div>}
   </div>;
 }
 
 function FundingSummary({ liquidity, lang }: { liquidity: any; lang: AppLang }) {
   if (!liquidity) return null;
-  return <div className="card" style={{ marginTop: 14, background: "rgba(8,20,35,.55)" }}>
-    <h3 className="sub">🛡️ {tr(lang, "Current Cash Buffer composition", "องค์ประกอบ Cash Buffer ปัจจุบัน")}</h3>
-    <div className="grid cols-4">
-      <Metric label="USD cash" value={money(liquidity.cashBalance ?? 0)} />
-      <Metric label={tr(lang, "Dividend cash", "เงินปันผลพร้อมใช้")} value={money(liquidity.dividendAvailable ?? 0)} />
-      <Metric label={tr(lang, "Current excess", "ส่วนเกินปัจจุบัน")} value={money(liquidity.deployableUsd ?? 0)} />
-      <Metric label={tr(lang, "Cash floor", "Cash Floor")} value={`${liquidity.targetPct ?? 0}%`} />
-    </div>
-    <div className="table-wrap" style={{ marginTop: 10 }}><table className="tbl"><thead><tr><th>{tr(lang, "Reserve", "สินทรัพย์สำรอง")}</th><th className="num">{tr(lang, "Value", "มูลค่า")}</th></tr></thead><tbody>{(liquidity.positions ?? []).map((x: any) => <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td className="num">{money(x.marketValue)}</td></tr>)}{!(liquidity.positions ?? []).length && <tr><td colSpan={2} className="muted">—</td></tr>}</tbody></table></div>
-  </div>;
+  return <div className="card" style={{ marginTop: 14, background: "rgba(8,20,35,.55)" }}><h3 className="sub">🛡️ {tr(lang, "Current Cash Buffer composition", "องค์ประกอบ Cash Buffer ปัจจุบัน")}</h3><div className="grid cols-4"><Metric label="USD cash" value={money(liquidity.cashBalance ?? 0)} /><Metric label={tr(lang, "Dividend cash", "เงินปันผลพร้อมใช้")} value={money(liquidity.dividendAvailable ?? 0)} /><Metric label={tr(lang, "Current excess", "ส่วนเกินปัจจุบัน")} value={money(liquidity.deployableUsd ?? 0)} /><Metric label={tr(lang, "Cash floor", "Cash Floor")} value={`${liquidity.targetPct ?? 0}%`} /></div><div className="table-wrap" style={{ marginTop: 10 }}><table className="tbl"><thead><tr><th>{tr(lang, "Reserve", "สินทรัพย์สำรอง")}</th><th className="num">{tr(lang, "Value", "มูลค่า")}</th></tr></thead><tbody>{(liquidity.positions ?? []).map((x: any) => <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td className="num">{money(x.marketValue)}</td></tr>)}{!(liquidity.positions ?? []).length && <tr><td colSpan={2} className="muted">—</td></tr>}</tbody></table></div></div>;
 }
 
 function ExecutionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
-  return <><h3 className="sub">📋 {tr(lang, "Portfolio Action Sheet", "Portfolio Action Sheet")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Decision", "มติรอบนี้")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th className="num">{tr(lang, "Approx. shares", "หุ้นโดยประมาณ")}</th><th>{tr(lang, "Funding / destination", "แหล่งเงิน / ปลายทาง")}</th><th>{tr(lang, "Note", "เหตุผล")}</th></tr></thead><tbody>
-    {rows.map((x: any, i: number) => <tr key={`${x.ticker}-${i}`}><td><strong>{x.ticker}</strong></td><td><strong>{lang === "th" ? x.instructionTh : x.instruction}</strong></td><td className="num">{Number(x.amountUsd) > 0 ? money(x.amountUsd) : "—"}</td><td className="num">{x.sharesApprox == null ? "—" : Number(x.sharesApprox).toFixed(3)}</td><td style={{ fontSize: 11.5 }}>{fundingText(x, lang)}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.noteTh : x.note}</td></tr>)}
-    {!rows.length && <tr><td colSpan={6} className="muted">{tr(lang, "No action rows returned.", "ยังไม่มีรายการมติพอร์ตในรอบนี้")}</td></tr>}
-  </tbody></table></div></>;
+  return <><h3 className="sub">📋 {tr(lang, "Portfolio Action Sheet", "Portfolio Action Sheet")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Decision", "มติรอบนี้")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th className="num">{tr(lang, "Approx. shares", "หุ้นโดยประมาณ")}</th><th>{tr(lang, "Funding / destination", "แหล่งเงิน / ปลายทาง")}</th><th>{tr(lang, "Note", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={`${x.ticker}-${i}`}><td><strong>{x.ticker}</strong></td><td><strong>{lang === "th" ? x.instructionTh : x.instruction}</strong></td><td className="num">{Number(x.amountUsd) > 0 ? money(x.amountUsd) : "—"}</td><td className="num">{x.sharesApprox == null ? "—" : Number(x.sharesApprox).toFixed(3)}</td><td style={{ fontSize: 11.5 }}>{fundingText(x, lang)}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.noteTh : x.note}</td></tr>)}{!rows.length && <tr><td colSpan={6} className="muted">{tr(lang, "No action rows returned.", "ยังไม่มีรายการมติพอร์ตในรอบนี้")}</td></tr>}</tbody></table></div></>;
 }
 
 function IdeaTable({ rows, title, lang }: { rows: any[]; title: string; lang: AppLang }) {
-  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "State", "สถานะ")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">{tr(lang, "Target", "ราคาเป้าหมาย")}</th><th className="num">{tr(lang, "vs spot", "เทียบ Spot")}</th><th>{tr(lang, "Valuation", "Valuation")}</th><th className="num">Momentum</th><th>{tr(lang, "Thesis", "Thesis")}</th></tr></thead><tbody>
-    {rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num">{view.target}</td><td className={`num ${view.className}`}>{view.upside}</td><td style={{ fontSize: 11 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}</span>{view.warning ? <><br/><span className="neg">{view.warning}</span></> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}
-    {!rows.length && <tr><td colSpan={8} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}
-  </tbody></table></div></>;
+  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "State", "สถานะ")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">{tr(lang, "Target", "ราคาเป้าหมาย")}</th><th className="num">{tr(lang, "vs spot", "เทียบ Spot")}</th><th>{tr(lang, "Valuation", "Valuation")}</th><th className="num">Momentum</th><th>{tr(lang, "Thesis", "Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td style={{ fontSize: 11, minWidth: 190 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}{x.valuationConfidence ? ` · ${x.valuationConfidence}` : ""}</span>{x.valuationNote ? <small style={{ display: "block", marginTop: 5, lineHeight: 1.4 }}>{x.valuationNote}</small> : null}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 4 }}>{view.warning}</small> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={8} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}</tbody></table></div></>;
 }
 
 function ReplacementTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
@@ -188,16 +251,17 @@ function valuationView(x: any, lang: AppLang) {
   const status = String(x.valuationStatus ?? "UNAVAILABLE");
   const price = Number(x.currentPrice);
   const target = Number(x.targetPrice);
-  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "N/A", upside: "N/A", className: "muted", status: tr(lang, "UNAVAILABLE", "ประเมินไม่ได้"), warning: tr(lang, "Spot fallback suppressed", "ไม่ใช้ Spot แทน Fair Value") };
+  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "No synthetic spot target is shown.", "ไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
   const gap = (target / price - 1) * 100;
   if (status === "NO_EDGE" || Math.abs(gap) < .5) return { target: money(target), upside: "≈0%", className: "muted", status: tr(lang, "NO EDGE", "ไม่มี Valuation Edge"), warning: "" };
-  return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALID", "ใช้งานได้"), warning: "" };
+  return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALUED", "มี Fair Value") , warning: "" };
 }
 
 function sourceText(source: string, lang: AppLang) {
-  if (source === "THOMAS_MULTI_ANCHOR") return tr(lang, "Thomas multi-anchor", "Thomas Multi-Anchor");
+  if (source === "THOMAS_MULTI_ANCHOR") return tr(lang, "Thomas DCF / multiple anchors", "Thomas DCF / Multiple Anchors");
+  if (source === "THOMAS_FUNDAMENTAL_RANGE") return tr(lang, "Thomas filing-based fundamental range", "Thomas Fundamental Range จากงบการเงิน");
   if (source === "RESEARCH_OS_TARGET") return tr(lang, "Research OS target", "เป้าหมายจาก Research OS");
-  return tr(lang, "No defensible target", "ยังไม่มี Fair Value ที่เชื่อถือได้");
+  return tr(lang, "No defensible target yet", "ยังไม่มี Fair Value ที่เชื่อถือได้");
 }
 
 function priceText(value: any) { const n = Number(value); return Number.isFinite(n) && n > 0 ? money(n) : "—"; }
