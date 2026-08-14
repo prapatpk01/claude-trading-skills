@@ -36,7 +36,7 @@ export type InvestmentResearchProposal = {
   };
 };
 
-function balancedUniverse(limit = 180) {
+function balancedUniverse(limit = 240) {
   const output: string[] = [];
   const seen = new Set<string>();
   for (let row = 0; output.length < limit; row++) {
@@ -80,7 +80,7 @@ function rotatingDetailedUniverse(universe: string[], limit: number) {
 
 export async function runInvestmentResearchOS(options: { exclude?: Iterable<string>; topN?: number; universeLimit?: number } = {}) {
   const excluded = new Set(Array.from(options.exclude ?? [], value => String(value).toUpperCase()));
-  const broadUniverse = balancedUniverse(180).filter(ticker => !excluded.has(ticker) && !RESERVES.has(ticker));
+  const broadUniverse = balancedUniverse(240).filter(ticker => !excluded.has(ticker) && !RESERVES.has(ticker));
   const detailedLimit = Math.max(16, Math.min(40, options.universeLimit ?? 40));
   const universe = rotatingDetailedUniverse(broadUniverse, detailedLimit);
   const result = await runFactorDiscovery("multifactor", universe, universe.length);
@@ -134,6 +134,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     rejected: result.candidates.length - eligible.length,
     warnings: result.warnings,
     models: MODE_ORDER,
-    methodology: `Sentinel Research OS Phase 1 maintains a broad US pool of ${broadUniverse.length} names and rotates a ${universe.length}-name institutional deep-dive through every factor lens each cycle. It ranks by multi-engine consensus and positive valuation upside; Swing timing remains a separate tactical lens.`,
+    rotationCoverageCycles: Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, universe.length))),
+    methodology: `Sentinel Research OS V21 maintains a broad US pool of ${broadUniverse.length} names and rotates a ${universe.length}-name institutional deep-dive through every factor lens each cycle. At the current cadence the full pool is revisited in roughly ${Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, universe.length)))} rotations. It ranks by multi-engine consensus and positive valuation upside; Swing timing remains a separate tactical lens.`,
   };
 }
