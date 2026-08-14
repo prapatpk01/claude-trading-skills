@@ -22,6 +22,7 @@ export const RESERVE_RULES: Record<string, ReserveRule> = {
 };
 
 const finite = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 };
@@ -78,8 +79,6 @@ async function marketRegime() {
   if (vixLast != null) score += vixLast < 18 ? 5 : vixLast > 25 ? -10 : 0;
   score = Math.max(0, Math.min(100, score));
 
-  // Single source of truth: regime thresholds and minimum Cash Buffer live in
-  // constitution.ts. This engine measures the score but does not invent policy.
   const band = regimeBandFor(score);
   const classification = band.name.toUpperCase().replaceAll("-", "_");
   return {
@@ -117,13 +116,25 @@ export async function buildCashBufferSnapshot() {
   const quotes = new Map(quotePairs);
 
   const missingPrices: string[] = [];
+  const provisionalPrices: string[] = [];
   let securitiesValue = 0;
   let reserveMarketValue = 0;
   let reserveLiquidityValue = 0;
   const reserveHoldings: Array<Record<string, unknown>> = [];
+
   for (const holding of holdings) {
-    const price = finite(quotes.get(holding.ticker)?.price);
-    if (price == null || price <= 0) { missingPrices.push(holding.ticker); continue; }
+    const livePrice = finite(quotes.get(holding.ticker)?.price);
+    const costBasis = finite(holding.avg_cost);
+    const hasLivePrice = livePrice != null && livePrice > 0;
+    const fallbackPrice = costBasis != null && costBasis > 0 ? costBasis : null;
+    const price = hasLivePrice ? livePrice : fallbackPrice;
+
+    if (!hasLivePrice) missingPrices.push(holding.ticker);
+    if (!hasLivePrice && fallbackPrice != null) provisionalPrices.push(holding.ticker);
+    // If neither market price nor broker cost basis exists, keep the gap named
+    // but do not manufacture a value for the position.
+    if (price == null || price <= 0) continue;
+
     const value = holding.shares * price;
     securitiesValue += value;
     const rule = RESERVE_RULES[holding.ticker];
@@ -131,12 +142,26 @@ export async function buildCashBufferSnapshot() {
       const liquidityValue = value * rule.haircut;
       reserveMarketValue += value;
       reserveLiquidityValue += liquidityValue;
-      reserveHoldings.push({ ticker: holding.ticker, shares: holding.shares, price, marketValue: value, liquidityValue, haircut: rule.haircut, tier: rule.tier, label: rule.label });
+      reserveHoldings.push({
+        ticker: holding.ticker,
+        shares: holding.shares,
+        price,
+        priceSource: hasLivePrice ? "LIVE_MARKET" : "BROKER_COST_BASIS_PROVISIONAL",
+        marketValue: value,
+        liquidityValue,
+        haircut: rule.haircut,
+        tier: rule.tier,
+        label: rule.label,
+      });
     }
   }
 
   const verified = missingPrices.length === 0;
-  const totalNav = verified ? securitiesValue : null;
+  // A temporary quote outage must degrade confidence, not erase the fund. If a
+  // live quote is missing, broker cost basis provides a conservative provisional
+  // mark and the missing ticker remains explicitly flagged. This prevents a
+  // single failed quote from propagating null → 0 into the CIO meeting.
+  const totalNav = holdings.length > 0 && securitiesValue > 0 ? securitiesValue : null;
   const liquidCash = cash.investmentCash + cash.dividendAvailable;
   const totalReserveAssets = liquidCash + reserveMarketValue;
   const haircutAdjustedReserveAssets = liquidCash + reserveLiquidityValue;
@@ -149,9 +174,6 @@ export async function buildCashBufferSnapshot() {
   const deployableCash = gapValue != null ? Math.max(0, gapValue) : null;
   const overfundedThresholdPct = regime.targetPct + OVERFUNDED_MARGIN_PCT;
 
-  // The constitution specifies a minimum cash floor, not a symmetric target.
-  // Any value below the floor is UNDERFUNDED. The +2pt band is only a buffer
-  // above the floor before we label liquidity as genuinely OVERFUNDED.
   const posture = bufferPct == null
     ? "UNVERIFIED"
     : bufferPct < regime.targetPct
@@ -162,9 +184,11 @@ export async function buildCashBufferSnapshot() {
   const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
   return {
-    version: "v8.9",
+    version: "v9.0",
     verified,
+    valuationMode: verified ? "LIVE_MARKET" : provisionalPrices.length ? "PROVISIONAL_COST_BASIS_FALLBACK" : "INCOMPLETE",
     missingPrices,
+    provisionalPrices,
     holdingsSource: ledgerRead.origin,
     unbackedPositions: ledgerRead.unbacked,
     shareMismatches: ledgerRead.shareMismatches,
@@ -179,7 +203,7 @@ export async function buildCashBufferSnapshot() {
     dividendWithdrawn: cash.dividendWithdrawn,
     realizedInvestmentProfit: cash.realizedInvestmentProfit,
     liquidCash,
-    securitiesValue: verified ? securitiesValue : null,
+    securitiesValue,
     totalNav,
     reserveMarketValue,
     reserveLiquidityValue,
@@ -206,6 +230,7 @@ export async function buildCashBufferSnapshot() {
       reserveTickers: Object.keys(RESERVE_RULES),
       dividendWithholdingRate: 0.15,
       overfundedMarginPct: OVERFUNDED_MARGIN_PCT,
+      provisionalPricingRule: "Live market price first. If unavailable, broker cost basis may be used only as a clearly flagged provisional NAV mark; it never becomes a fair-value target.",
       principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. The regime cash percentage is a hard minimum floor from the fund constitution; only the overfunded classification uses an additional margin above that floor.",
     },
   };
