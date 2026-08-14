@@ -35,6 +35,11 @@ function cagrNewestFirst(values: number[]) {
   return (Math.pow(newest / oldest, 1 / years) - 1) * 100;
 }
 
+function average(values: Array<number | null>, fallback: number) {
+  const usable = values.filter((value): value is number => value != null && Number.isFinite(value));
+  return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : fallback;
+}
+
 function weightedAverage(anchors: FundamentalValuationAnchor[]) {
   const totalWeight = anchors.reduce((sum, anchor) => sum + anchor.weight, 0);
   return totalWeight > 0
@@ -71,11 +76,7 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
     .find((value) => value != null && Number.isFinite(value)) ?? null;
   const revenueGrowthPct = quarterGrowthPct ?? cagrNewestFirst(annualRevenue);
   const epsGrowthPct = cagrNewestFirst(annualEps);
-  const growthPct = clamp(
-    [revenueGrowthPct, epsGrowthPct].filter((value): value is number => value != null && Number.isFinite(value)).reduce((sum, value, _, all) => sum + value / all.length, 8),
-    -10,
-    45,
-  );
+  const growthPct = clamp(average([revenueGrowthPct, epsGrowthPct], 8), -10, 45);
 
   const revenue = finite(data.ttm?.revenue) ?? finite(overview?.revenueTTM) ?? annualRevenue[0] ?? null;
   const operatingIncome = finite(data.ttm?.operatingIncome) ?? finite(data.financials.income[0]?.operatingIncome);
