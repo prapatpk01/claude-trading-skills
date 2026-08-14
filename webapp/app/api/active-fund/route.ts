@@ -14,6 +14,11 @@ const cleanTickers = (value: unknown, limit: number) =>
     ? Array.from(new Set(value.map((x: any) => String(x).trim().toUpperCase()).filter((x: string) => /^[A-Z.\-]{1,10}$/.test(x)))).slice(0, limit)
     : [];
 
+const finiteOrNull = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
 function cleanCommittee(value: unknown): CommitteeSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as any;
@@ -22,6 +27,8 @@ function cleanCommittee(value: unknown): CommitteeSnapshot | null {
         .map((motion: any) => ({
           ticker: String(motion?.ticker ?? "").trim().toUpperCase(),
           kind: String(motion?.kind ?? ""),
+          sizeUsd: finiteOrNull(motion?.sizeUsd),
+          approxShares: finiteOrNull(motion?.approxShares),
           outcome: String(motion?.outcome ?? ""),
           outcomeReason: motion?.outcomeReason == null ? null : String(motion.outcomeReason),
           veto: motion?.veto && typeof motion.veto === "object"
