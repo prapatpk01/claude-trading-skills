@@ -13,6 +13,7 @@ import { pctReturn } from "@/lib/indicators";
 import { sma } from "@/lib/indicators";
 import { assessRegime } from "@/lib/team/governance";
 import { scoreMomentumV3 } from "@/lib/team/scoring";
+import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
 import { assessValuation } from "@/lib/team/positionValuation";
 import { assessPositionZone } from "@/lib/team/risk";
 import { classifySleeve } from "@/lib/team/portfolio";
@@ -150,7 +151,18 @@ function technicalEvidence(candles: Candle[], benchmark: Candle[]) {
   if (candles.length < 60 || benchmark.length < 60) return null;
   const beta = computeBeta(candles, benchmark);
   const score = scoreMomentumV3({ candles, benchmark, beta });
-  return { total: score.total, signal: score.signal, hardBlocks: score.hardBlocks.map((block: any) => block.reason ?? String(block)), dataQualityPct: Math.round(score.dataQualityScore) };
+  const execution = computePortfolioTechnicalOverlay(candles);
+  const executionAllowsAdd = execution?.action === "ADD";
+  const total = executionAllowsAdd ? score.total : Math.min(score.total, 64);
+  const signal = executionAllowsAdd
+    ? score.signal
+    : `WATCH (HOLDINGS ${execution?.action ?? "GATE UNAVAILABLE"})`;
+  return {
+    total,
+    signal,
+    hardBlocks: score.hardBlocks.map((block: any) => block.reason ?? String(block)),
+    dataQualityPct: Math.round(score.dataQualityScore),
+  };
 }
 
 function yieldFromEvents(events: { date: string; amount: number }[], price: number | null): number | null {
@@ -279,7 +291,9 @@ export async function GET(req: NextRequest) {
       const beta = benchmark.length && g.candles.length ? computeBeta(g.candles, benchmark) : null;
 
       // Maya's model needs both series; without them the seat abstains rather
-      // than scoring a name off a partial history.
+      // than scoring a name off a partial history. The final admission score is
+      // capped below ADD whenever the exact Holdings execution overlay is not ADD,
+      // so the raw CIO motion can never contradict the execution layer.
       const momentum =
         g.candles.length >= 60 && benchmark.length >= 60
           ? (() => {
