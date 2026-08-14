@@ -177,8 +177,8 @@ export default function ActiveFundDecisionView({
 
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
-        "This is part of the same CIO meeting. The Committee motion and exact approved size are the execution authority. Valuation uses the full research path first, then Thomas multi-anchor/fundamental valuation, with Yahoo price-history regression only as the last non-spot fallback.",
-        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน โดยมติ Committee และขนาดเงินที่อนุมัติเป็นแหล่งอ้างอิงการซื้อขายเพียงชุดเดียว ส่วน Valuation จะใช้ Full Research ก่อน ตามด้วย Thomas Multi-Anchor/Fundamental และใช้ Yahoo Price History Regression เป็น fallback สุดท้ายโดยไม่ใช้ Spot สร้าง Target ปลอม")}
+        "This is part of the same CIO meeting. The Committee motion and exact approved size are the execution authority. Valuation uses the full research path first, then quality-guarded Thomas multi-anchor/fundamental valuation, then Yahoo Finance analyst consensus; Yahoo price-history regression is the final non-spot fallback.",
+        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน โดยมติ Committee และขนาดเงินที่อนุมัติเป็นแหล่งอ้างอิงการซื้อขายเพียงชุดเดียว ส่วน Valuation จะใช้ Full Research ก่อน ตามด้วย Thomas Multi-Anchor/Fundamental ที่ผ่าน Quality Guard จากนั้นใช้ Yahoo Finance Analyst Consensus และใช้ Yahoo Price History Regression เป็น fallback สุดท้ายโดยไม่ใช้ Spot สร้าง Target ปลอม")}
     </p>
     {authoritySource && <span className="tag">{authoritySource}</span>}
     {loading && !data && <div className="notice" style={{ marginTop: 12 }}><span className="spinner" /> {tr(lang, "Building the portfolio underwriting package…", "กำลังสร้างชุดวิเคราะห์พอร์ตของการประชุมเดียวกัน…")}</div>}
@@ -257,7 +257,7 @@ function valuationView(x: any, lang: AppLang) {
   const status = String(x.valuationStatus ?? "UNAVAILABLE");
   const price = Number(x.currentPrice);
   const target = Number(x.targetPrice);
-  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "All institutional and Yahoo-history fallback anchors were exhausted; no synthetic spot target is shown.", "ลองครบทั้ง Institutional และ Yahoo History fallback แล้ว จึงไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
+  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "Institutional, filing, Yahoo analyst consensus and Yahoo-history fallbacks were exhausted; no synthetic spot target is shown.", "ลองครบทั้ง Institutional, Filing, Yahoo Analyst Consensus และ Yahoo History แล้ว จึงไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
   const gap = (target / price - 1) * 100;
   if (status === "NO_EDGE" || Math.abs(gap) < .5) return { target: money(target), upside: "≈0%", className: "muted", status: tr(lang, "NO EDGE", "ไม่มี Valuation Edge"), warning: "" };
   return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALUED", "มี Fair Value"), warning: "" };
@@ -267,6 +267,7 @@ function sourceText(source: string, lang: AppLang) {
   if (source === "THOMAS_MULTI_ANCHOR") return tr(lang, "Thomas DCF / multiple anchors", "Thomas DCF / Multiple Anchors");
   if (source === "THOMAS_PORTFOLIO_MULTI_ANCHOR") return tr(lang, "Thomas institutional multi-anchor", "Thomas Institutional Multi-Anchor");
   if (source === "THOMAS_FUNDAMENTAL_RANGE") return tr(lang, "Thomas filing-based fundamental range", "Thomas Fundamental Range จากงบการเงิน");
+  if (source === "YAHOO_ANALYST_CONSENSUS") return tr(lang, "Yahoo Finance analyst consensus", "Yahoo Finance Analyst Consensus");
   if (source === "YAHOO_TREND_FALLBACK") return tr(lang, "Yahoo Finance history fallback", "Yahoo Finance History Fallback");
   if (source === "RESEARCH_OS_TARGET") return tr(lang, "Research OS target", "เป้าหมายจาก Research OS");
   return tr(lang, "No defensible target yet", "ยังไม่มี Fair Value ที่เชื่อถือได้");
