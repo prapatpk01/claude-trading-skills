@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
 import { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
-import { runActiveFundV2 } from "@/lib/activeFundV2";
+import { runActivePortfolioIntelligenceV21 } from "@/lib/activePortfolioIntelligenceV21";
 import { applyCommitteeCashPool, type CommitteeSnapshot } from "@/lib/activeFundGovernance";
 import { dailyCandles } from "@/lib/marketData";
 import { computePortfolioTechnicalOverlay, type PortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
@@ -180,7 +180,7 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
   if (!(totalNav > 0)) throw new Error("Verified or provisional Fund NAV is required before active rotation review.");
 
   const technicalPromise = loadHoldingTechnicalOverlays(holdingsRead.rows);
-  const activeFundPromise = runActiveFundV2({
+  const activeFundPromise = runActivePortfolioIntelligenceV21({
     positions: holdingsRead.rows.map(row => ({ ticker: row.ticker, shares: Number(row.shares), avgCost: Number(row.avg_cost) })),
     watchlistTickers,
     cash: {
