@@ -177,14 +177,21 @@ export default function ActiveFundDecisionView({
 
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
-        "This is part of the same CIO meeting. The Committee motion and exact approved size are the execution authority. Valuation uses the full research path first, then quality-guarded Thomas multi-anchor/fundamental valuation, then Yahoo Finance analyst consensus; Yahoo price-history regression is the final non-spot fallback.",
-        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน โดยมติ Committee และขนาดเงินที่อนุมัติเป็นแหล่งอ้างอิงการซื้อขายเพียงชุดเดียว ส่วน Valuation จะใช้ Full Research ก่อน ตามด้วย Thomas Multi-Anchor/Fundamental ที่ผ่าน Quality Guard จากนั้นใช้ Yahoo Finance Analyst Consensus และใช้ Yahoo Price History Regression เป็น fallback สุดท้ายโดยไม่ใช้ Spot สร้าง Target ปลอม")}
+        "This is part of the same CIO meeting. Committee authority still controls sizing, while the Holdings Sentinel X/MCDX technical overlay is now the execution gate for existing-position ADDs. Fair Value is valuation evidence; T1/T2/S1 are separate technical execution levels and are never treated as the same target.",
+        "ส่วนนี้อยู่ใน CIO Meeting เดียวกัน โดย Committee ยังเป็นผู้กำหนดขนาดรายการ แต่ ADD ในหุ้นที่ถืออยู่ต้องผ่าน Technical Gate ชุดเดียวกับ Holdings (Sentinel X/MCDX) ด้วย Fair Value คือหลักฐานด้าน Valuation ส่วน T1/T2/S1 คือระดับ Technical Execution คนละความหมายและจะไม่ถูกใช้แทนกัน")}
     </p>
     {authoritySource && <span className="tag">{authoritySource}</span>}
     {loading && !data && <div className="notice" style={{ marginTop: 12 }}><span className="spinner" /> {tr(lang, "Building the portfolio underwriting package…", "กำลังสร้างชุดวิเคราะห์พอร์ตของการประชุมเดียวกัน…")}</div>}
     {error && <div className="err" style={{ marginTop: 12 }}>⚠ {error}</div>}
 
     {data && <>
+      {(data.technicalSignalAlignment?.blockedAdds ?? []).length > 0 && <div className="notice" style={{ marginTop: 12 }}>
+        <strong>{tr(lang, "Technical ADD conflict blocked", "บล็อก ADD ที่ขัดกับ Technical แล้ว")}</strong><br/>
+        {tr(lang,
+          `No current holding may be added while Holdings says TRIM / HOLD / EXIT REVIEW. Blocked this cycle: ${(data.technicalSignalAlignment.blockedAdds ?? []).join(", ")}.`,
+          `หุ้นที่ถืออยู่จะเพิ่มน้ำหนักไม่ได้ถ้า Holdings ยังเป็น TRIM / HOLD / EXIT REVIEW รายการที่ถูกบล็อกรอบนี้: ${(data.technicalSignalAlignment.blockedAdds ?? []).join(", ")}.`)}
+      </div>}
+
       <div className="grid cols-4" style={{ marginTop: 14 }}>
         <Metric label={tr(lang, "US universe", "จักรวาลหุ้น US")} value={data.discovery?.broadUniverse ?? 0} />
         <Metric label={tr(lang, "Deep analyzed", "วิเคราะห์เชิงลึก")} value={data.discovery?.detailedAnalyzed ?? 0} />
@@ -195,11 +202,11 @@ export default function ActiveFundDecisionView({
       <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />
       <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
       {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
-      <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — valuation & momentum", "หุ้นที่ถืออยู่ — Valuation และ Momentum")} lang={lang} />
+      <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} />
       <IdeaTable rows={data.newIdeas ?? []} title={tr(lang, "New opportunities — valuation & research", "โอกาสใหม่ — Valuation และ Research")} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
-      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
+      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority or the Holdings technical execution gate, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee หรือ Holdings Technical Execution Gate และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
     </>}
   </Wrapper>;
 }
@@ -235,15 +242,27 @@ function FundingSummary({ liquidity, lang }: { liquidity: any; lang: AppLang }) 
 }
 
 function ExecutionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
-  return <><h3 className="sub">📋 {tr(lang, "Portfolio Action Sheet", "Portfolio Action Sheet")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Decision", "มติรอบนี้")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th className="num">{tr(lang, "Approx. shares", "หุ้นโดยประมาณ")}</th><th>{tr(lang, "Funding / destination", "แหล่งเงิน / ปลายทาง")}</th><th>{tr(lang, "Note", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={`${x.ticker}-${i}`}><td><strong>{x.ticker}</strong></td><td><strong>{lang === "th" ? x.instructionTh : x.instruction}</strong></td><td className="num">{Number(x.amountUsd) > 0 ? money(x.amountUsd) : "—"}</td><td className="num">{x.sharesApprox == null ? "—" : Number(x.sharesApprox).toFixed(3)}</td><td style={{ fontSize: 11.5 }}>{fundingText(x, lang)}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.noteTh : x.note}</td></tr>)}{!rows.length && <tr><td colSpan={6} className="muted">{tr(lang, "No action rows returned.", "ยังไม่มีรายการมติพอร์ตในรอบนี้")}</td></tr>}</tbody></table></div></>;
+  return <><h3 className="sub">📋 {tr(lang, "Portfolio Action Sheet", "Portfolio Action Sheet")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Decision", "มติรอบนี้")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th className="num">{tr(lang, "Approx. shares", "หุ้นโดยประมาณ")}</th><th>{tr(lang, "Funding / destination", "แหล่งเงิน / ปลายทาง")}</th><th>{tr(lang, "Note", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={`${x.ticker}-${i}`}><td><strong>{x.ticker}</strong></td><td><strong>{lang === "th" ? x.instructionTh : x.instruction}</strong></td><td>{technicalGateCell(x, lang)}</td><td className="num">{Number(x.amountUsd) > 0 ? money(x.amountUsd) : "—"}</td><td className="num">{x.sharesApprox == null ? "—" : Number(x.sharesApprox).toFixed(3)}</td><td style={{ fontSize: 11.5 }}>{fundingText(x, lang)}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.noteTh : x.note}</td></tr>)}{!rows.length && <tr><td colSpan={7} className="muted">{tr(lang, "No action rows returned.", "ยังไม่มีรายการมติพอร์ตในรอบนี้")}</td></tr>}</tbody></table></div></>;
 }
 
 function IdeaTable({ rows, title, lang }: { rows: any[]; title: string; lang: AppLang }) {
-  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "State", "สถานะ")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">{tr(lang, "Target", "ราคาเป้าหมาย")}</th><th className="num">{tr(lang, "vs spot", "เทียบ Spot")}</th><th>{tr(lang, "Valuation", "Valuation")}</th><th className="num">Momentum</th><th>{tr(lang, "Thesis", "Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td style={{ fontSize: 11, minWidth: 190 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}{x.valuationConfidence ? ` · ${x.valuationConfidence}` : ""}</span>{x.valuationNote ? <small style={{ display: "block", marginTop: 5, lineHeight: 1.4 }}>{x.valuationNote}</small> : null}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 4 }}>{view.warning}</small> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={8} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}</tbody></table></div></>;
+  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">{tr(lang, "Fair Value", "Fair Value")}</th><th className="num">{tr(lang, "Valuation gap", "Valuation Gap")}</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th>{tr(lang, "Valuation", "Valuation")}</th><th className="num">Momentum</th><th>{tr(lang, "Thesis", "Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td style={{ fontSize: 11, minWidth: 190 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}{x.valuationConfidence ? ` · ${x.valuationConfidence}` : ""}</span>{x.valuationNote ? <small style={{ display: "block", marginTop: 5, lineHeight: 1.4 }}>{x.valuationNote}</small> : null}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 4 }}>{view.warning}</small> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={10} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}</tbody></table></div></>;
 }
 
 function ReplacementTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
   return <><h3 className="sub">🔄 {tr(lang, "Replacement Alpha — ranking only, cash still pools first", "Replacement Alpha — ใช้จัดอันดับ แต่เงินต้องรวม Cash Pool ก่อน")}</h3>{rows.length ? <div className="table-wrap"><table className="tbl"><thead><tr><th>{tr(lang, "Funding pool", "แหล่งเงินรวม")}</th><th>{tr(lang, "Destination", "ปลายทาง")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th>{tr(lang, "Reason", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={i}><td><strong>{x.from}</strong>{x.sourceHolding ? <small style={{ display: "block", color: "var(--muted)" }}>{tr(lang, "weak-link contributor", "หุ้น Weak Link")}: {x.sourceHolding}</small> : null}</td><td><strong>{x.to}</strong></td><td className="num">{money(x.rotateUsd)} · {x.rotatePct}% NAV</td><td style={{ fontSize: 11.5 }}>{x.reason}</td></tr>)}</tbody></table></div> : <div className="notice">{tr(lang, "No Committee-approved rotation this cycle. Sale proceeds remain in the Cash Buffer Pool.", "รอบนี้ไม่มี Rotation ที่ Committee อนุมัติ เงินจากการขายจึงพักใน Cash Buffer Pool")}</div>}</>;
+}
+
+function technicalGateCell(x: any, lang: AppLang) {
+  const decision = String(x?.technicalDecision ?? "").trim();
+  if (!decision) return <span className="muted">—</span>;
+  const cls = decision === "ADD" ? "pos" : decision === "TRIM" || decision === "EXIT REVIEW" ? "neg" : "";
+  return <div style={{ minWidth: 125 }}><strong className={cls}>{decision}</strong>{x.technicalConfidence != null ? <small className="muted" style={{ display: "block", marginTop: 3 }}>{tr(lang, "Confidence", "ความมั่นใจ")} {Number(x.technicalConfidence).toFixed(0)}%</small> : null}</div>;
+}
+
+function executionLevelsCell(x: any, lang: AppLang) {
+  if (x?.technicalTarget1 == null && x?.technicalTarget2 == null && x?.technicalSupport1 == null) return <span className="muted">—</span>;
+  return <div style={{ minWidth: 145, lineHeight: 1.5 }}><span style={{ display: "block" }}>T1 <strong>{priceText(x.technicalTarget1)}</strong></span><span style={{ display: "block" }}>T2 <strong>{x.technicalTarget2 == null ? tr(lang, "Conditional", "มีเงื่อนไข") : priceText(x.technicalTarget2)}</strong></span><span style={{ display: "block" }}>S1 <strong>{priceText(x.technicalSupport1)}</strong></span>{x.technicalRoomAtr != null ? <small className="muted">Room {Number(x.technicalRoomAtr).toFixed(2)} ATR</small> : null}</div>;
 }
 
 function fundingText(plan: any, lang: AppLang) {
