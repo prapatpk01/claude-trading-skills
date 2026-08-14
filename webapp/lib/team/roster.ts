@@ -9,18 +9,18 @@ export interface Member {
 }
 
 export const ROSTER: Record<string, Member> = {
-  james: { name: "James Hartwell", role: "CIO / Executive Chair", desk: "Executive Management", owns: "Final APPROVE / DEFER / REJECT resolution" },
+  james: { name: "James Hartwell", role: "CIO / Executive Chair", desk: "Executive Management", owns: "Final APPROVE / DEFER / REJECT resolution and next-dollar CIO plan" },
   miriam: { name: "Miriam Osei", role: "CRO / Executive Risk", desk: "Executive Management", owns: "Independent risk PASS / CONDITIONAL / VETO" },
-  sofia: { name: "Sofia Reyes", role: "Head of Investment Research", desk: "Investment Team", owns: "Investment-team mandate, thesis quality and signed investment proposal" },
-  daniel: { name: "Daniel Cho", role: "Macro & Market Strategist", desk: "Investment Team", owns: "Regime score, cash buffer, rotation" },
+  sofia: { name: "Sofia Reyes", role: "Head of Investment Research", desk: "Investment Team", owns: "Investment-team mandate, thesis quality, broad opportunity hunt and signed investment proposal" },
+  daniel: { name: "Daniel Cho", role: "Macro & Market Strategist", desk: "Investment Team", owns: "Regime score, cash buffer, sector rotation" },
   marcus: { name: "Marcus Webb", role: "Financial Modeling Analyst", desk: "Investment Team", owns: "Earnings trend, margins, forecasts and revision momentum" },
   thomas: { name: "Thomas Eriksson", role: "Head of Valuation", desk: "Investment Team", owns: "DCF, comps, fair-value range and margin of safety" },
   // Aisha owns dated catalysts; Maya owns the scanner, tape and entry structure.
   aisha: { name: "Aisha Fontaine", role: "Catalyst & Event Analyst", desk: "Investment Team", owns: "Catalyst scoring, event calendar, PEAD and invalidation triggers" },
   maya: { name: "Maya Chen", role: "Momentum & Market Structure Analyst", desk: "Investment Team", owns: "New-idea scanner, relative strength, structure and entry layer" },
-  priya: { name: "Priya Nair", role: "Quantitative Strategist", desk: "Investment Team", owns: "Expected return, robustness, win-rate tracking and factor attribution" },
+  priya: { name: "Priya Nair", role: "Quantitative Strategist / Portfolio Intelligence", desk: "Investment Team", owns: "Expected return, robustness, factor attribution, next-dollar ranking and replacement-alpha comparison" },
   leo: { name: "Leo Tanaka", role: "Live Market Intelligence Analyst", desk: "Investment Team", owns: "Live feed, news, price changes and decision-change alerts" },
-  lena: { name: "Lena Müller", role: "Head of Asset Management", desk: "Asset Management Team", owns: "Signed portfolio plan, funding map and rebalance sequencing" },
+  lena: { name: "Lena Müller", role: "Head of Asset Management / Portfolio Optimizer", desk: "Asset Management Team", owns: "Signed portfolio plan, funding map, rebalance sequencing and replacement implementation" },
   kai: { name: "Kai Tanaka", role: "Portfolio Risk & Construction Analyst", desk: "Asset Management Team", owns: "Sizing, concentration, correlation and stress limits" },
   ryan: { name: "Ryan Blackwood", role: "Execution & Trading Operations", desk: "Asset Management Team", owns: "Order mechanics, liquidity, staging and slippage" },
   nina: { name: "Nina Okonkwo", role: "Portfolio Data & Control Lead", desk: "Asset Management Team", owns: "Ledger, cash reconciliation, cost basis, source quality and lineage" },
