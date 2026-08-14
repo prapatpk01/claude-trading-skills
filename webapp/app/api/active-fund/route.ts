@@ -102,6 +102,10 @@ async function loadHoldingTechnicalOverlays(rows: { ticker: string }[]) {
   return new Map<string, PortfolioTechnicalOverlay | null>(pairs);
 }
 
+function priceLevel(value: number | null | undefined, fallback: string) {
+  return value == null ? fallback : `$${value.toFixed(2)}`;
+}
+
 function technicalGateCommittee(committee: CommitteeSnapshot | null, overlays: Map<string, PortfolioTechnicalOverlay | null>) {
   if (!committee) return { committee: null as CommitteeSnapshot | null, blockedAdds: [] as string[] };
   const blockedAdds: string[] = [];
@@ -115,7 +119,7 @@ function technicalGateCommittee(committee: CommitteeSnapshot | null, overlays: M
 
     const technicalState = overlay?.action ?? "UNAVAILABLE";
     const reason = overlay
-      ? `Holdings technical execution gate is ${technicalState} (${overlay.confidence}% confidence), not ADD. T1 ${overlay.target1 == null ? "n/a" : `$${overlay.target1.toFixed(2)}`}, T2 ${overlay.target2 == null ? "conditional" : `$${overlay.target2.toFixed(2)}`}, S1 ${overlay.support1 == null ? "n/a" : `$${overlay.support1.toFixed(2)`}. Re-run the CIO meeting after the technical gate changes before adding risk.`
+      ? `Holdings technical execution gate is ${technicalState} (${overlay.confidence}% confidence), not ADD. T1 ${priceLevel(overlay.target1, "n/a")}, T2 ${priceLevel(overlay.target2, "conditional")}, S1 ${priceLevel(overlay.support1, "n/a")}. Re-run the CIO meeting after the technical gate changes before adding risk.`
       : "Holdings technical execution gate is unavailable, so an ADD cannot be treated as executable. Re-run the CIO meeting after the Holdings technical overlay is measurable.";
     blockedAdds.push(`${ticker}: ${technicalState}`);
     return {
