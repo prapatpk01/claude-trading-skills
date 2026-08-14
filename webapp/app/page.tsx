@@ -17,11 +17,22 @@ import "./sentinel-v8-ui.css";
 
 export type AppLang = "en" | "th";
 
+const CIO_FROZEN_MEETING_KEY = "sentinel:cio:frozen-meeting:v20";
+
 export default function Home() {
   const [section, setSection] = useState<InstitutionalSection>("home");
   const [lang, setLang] = useState<AppLang>("en");
   const [portfolioRefresh, setPortfolioRefresh] = useState(0);
-  const navigate = (id: string) => { setSection(id as InstitutionalSection); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const navigate = (id: string) => {
+    const next = id as InstitutionalSection;
+    // A recorded meeting is an audit snapshot, not a live portfolio source.
+    // Clear it *before* mounting the CIO workspace so a trade/reconciliation in
+    // Holdings (for example a full exit) cannot resurrect an old motion when
+    // the user returns to the Command Center.
+    if (next === "command") window.localStorage.removeItem(CIO_FROZEN_MEETING_KEY);
+    setSection(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const refreshPortfolio = () => setPortfolioRefresh((value) => value + 1);
   return (
     <div className="sentinel-shell sentinel-v12" data-sentinel-version="20.0" data-architecture="decision-execution-command-center" data-source-of-truth="portfolio-ledger">
