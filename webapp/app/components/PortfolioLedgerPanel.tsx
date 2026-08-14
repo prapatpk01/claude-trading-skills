@@ -65,7 +65,7 @@ export default function PortfolioLedgerPanel({ refreshKey = 0, lang = "en" }: { 
     try {
       const [integrityResponse, ledgerResponse] = await Promise.all([
         fetch("/api/portfolio/integrity", { cache: "no-store" }),
-        fetch("/api/portfolio/transactions?limit=100", { cache: "no-store" }),
+        fetch("/api/portfolio/transactions?limit=20", { cache: "no-store" }),
       ]);
       const [integrityJson, ledgerJson] = await Promise.all([
         integrityResponse.json().catch(() => ({})),
@@ -118,8 +118,8 @@ export default function PortfolioLedgerPanel({ refreshKey = 0, lang = "en" }: { 
           <h2 className="section" style={{ margin: 0 }}>{lang === "th" ? "🧾 สมุดธุรกรรมและการตรวจพอร์ต" : "🧾 Ledger & Portfolio Integrity"}</h2>
           <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
             {lang === "th"
-              ? "ตรวจความสอดคล้องระหว่างสถานะถือครอง ธุรกรรม และกำไรขาดทุนที่รับรู้จากฐานข้อมูลจริง"
-              : "Reconciles holdings, atomic trade ledger and realized P/L from the production database."}
+              ? "แสดง 20 รายการซื้อขายล่าสุด พร้อมตรวจความสอดคล้องระหว่าง Holdings, Ledger และกำไรขาดทุนจากฐานข้อมูลจริง"
+              : "Shows the latest 20 trades and reconciles holdings, the atomic trade ledger and realized P/L from the production database."}
           </p>
         </div>
         <button className="btn ghost sm" onClick={load} disabled={loading}>
@@ -136,7 +136,7 @@ export default function PortfolioLedgerPanel({ refreshKey = 0, lang = "en" }: { 
           <div className="sub">{integrity?.checkedAt ? new Date(integrity.checkedAt).toLocaleString() : "—"}</div>
         </div>
         <div className="metric">
-          <div className="label">{lang === "th" ? "รายการใน Ledger" : "Ledger entries"}</div>
+          <div className="label">{lang === "th" ? "20 รายการล่าสุด" : "Latest ledger entries"}</div>
           <div className="value" style={{ fontSize: 20 }}>{ledger?.count ?? 0}</div>
           <div className="sub">{totals.buys} BUY · {totals.sells} SELL</div>
         </div>
@@ -145,7 +145,7 @@ export default function PortfolioLedgerPanel({ refreshKey = 0, lang = "en" }: { 
           <div className={cls("value", (ledger?.realizedPnl ?? 0) >= 0 ? "pos" : "neg")} style={{ fontSize: 20 }}>
             {money(ledger?.realizedPnl ?? 0)}
           </div>
-          <div className="sub">{lang === "th" ? "เฉพาะธุรกรรมตั้งแต่ v8.2" : "transactions recorded since v8.2"}</div>
+          <div className="sub">{lang === "th" ? "เฉพาะ 20 รายการที่แสดง" : "for the 20 displayed transactions"}</div>
         </div>
         <div className="metric">
           <div className="label">{lang === "th" ? "ปัญหาที่ตรวจพบ" : "Audit issues"}</div>
