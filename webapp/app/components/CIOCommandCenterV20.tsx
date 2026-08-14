@@ -218,7 +218,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       outcomeReason: motion.outcomeReason,
     }));
 
-  return <div className={`workspace-stack ${styles.command}`} data-cio-version="20.1" data-workspace="decision-execution-command-center" data-source-of-truth="committee-meeting">
+  return <div className={`workspace-stack ${styles.command}`} data-cio-version="20.0" data-workspace="decision-execution-command-center" data-source-of-truth="committee-meeting">
     <section className={`card ${styles.hero}`}>
       <div>
         <span className="tag">SENTINEL CIO V20.1 · ONE FUND → ONE MEETING → ONE ACTION LIST</span>
