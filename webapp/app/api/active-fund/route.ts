@@ -15,6 +15,7 @@ const cleanTickers = (value: unknown, limit: number) =>
     : [];
 
 const finiteOrNull = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -52,6 +53,31 @@ function cleanCommittee(value: unknown): CommitteeSnapshot | null {
   };
 }
 
+function committeeForCurrentBook(committee: CommitteeSnapshot | null, heldTickers: Set<string>) {
+  if (!committee) return { committee: null as CommitteeSnapshot | null, ignored: [] as string[] };
+  const motions = Array.isArray(committee.motions) ? committee.motions : [];
+  const kept: typeof motions = [];
+  const ignored: string[] = [];
+
+  for (const motion of motions) {
+    const ticker = String(motion.ticker ?? "").trim().toUpperCase();
+    const kind = String(motion.kind ?? "").trim().toUpperCase();
+    const isHeld = heldTickers.has(ticker);
+    // Existing-position motions are invalid as soon as the live ledger says the
+    // line is closed. This prevents a recorded pre-sale meeting from recreating
+    // a sold-out name in the fund Action Sheet. Conversely, a NEW BUY is no
+    // longer a new-position motion once the name is already held.
+    const valid = kind === "NEW BUY" ? !isHeld : ["ADD", "HOLD", "TRIM", "EXIT", "RAISE CASH"].includes(kind) ? isHeld : true;
+    if (valid) kept.push(motion);
+    else ignored.push(`${kind || "MOTION"} ${ticker}`.trim());
+  }
+
+  return {
+    committee: { ...committee, motions: kept },
+    ignored,
+  };
+}
+
 async function buildReview(extraCandidates: string[] = [], committee: CommitteeSnapshot | null = null) {
   const sb = getSupabase();
   if (!sb) throw new Error("Supabase portfolio source is unavailable.");
@@ -62,13 +88,15 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
     sb.from("watchlist").select("ticker,stage").then((r: any) => r, () => ({ data: [], error: null })),
   ]);
 
+  const heldTickers = new Set(holdingsRead.rows.map((row) => String(row.ticker).trim().toUpperCase()));
+  const committeeSnapshot = committeeForCurrentBook(committee, heldTickers);
   const watchlistTickers = Array.from(new Set([
     ...((watch.data ?? []).map((row: any) => String(row.ticker ?? "").trim().toUpperCase())),
     ...extraCandidates,
   ].filter((ticker: string) => /^[A-Z.\-]{1,10}$/.test(ticker))));
 
   const totalNav = Number(cash.totalNav ?? 0);
-  if (!(totalNav > 0)) throw new Error("Verified Fund NAV is required before active rotation review.");
+  if (!(totalNav > 0)) throw new Error("Verified or provisional Fund NAV is required before active rotation review.");
 
   const raw = await runActiveFundV2({
     positions: holdingsRead.rows.map(row => ({ ticker: row.ticker, shares: Number(row.shares), avgCost: Number(row.avg_cost) })),
@@ -85,20 +113,23 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
     },
   });
 
-  const result = applyCommitteeCashPool(raw, committee);
+  const result = applyCommitteeCashPool(raw, committeeSnapshot.committee);
   return {
     ...result,
     sourceOfTruth: holdingsRead.origin,
     reconciliationNote: holdingsRead.note,
     watchlistCount: watchlistTickers.length,
+    ignoredStaleCommitteeMotions: committeeSnapshot.ignored,
+    navVerification: {
+      verified: Boolean(cash.verified),
+      valuationMode: String(cash.valuationMode ?? (cash.verified ? "LIVE_MARKET" : "UNVERIFIED")),
+      missingPrices: Array.isArray(cash.missingPrices) ? cash.missingPrices : [],
+    },
   };
 }
 
 export async function GET() {
   try {
-    // GET intentionally carries no authority snapshot. Governance therefore
-    // blocks risk-increasing actions and the response can still be used for
-    // research/diagnostics without ever looking like an executable BUY sheet.
     return NextResponse.json(await buildReview(), { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Active fund review failed" }, { status: 500, headers: { "Cache-Control": "no-store" } });
