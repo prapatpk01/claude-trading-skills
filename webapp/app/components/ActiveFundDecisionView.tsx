@@ -61,6 +61,8 @@ function compactCommittee(snapshot: CommitteeSnapshot) {
     motions: snapshot.motions.map((motion: any) => ({
       ticker: motion?.ticker,
       kind: motion?.kind,
+      sizeUsd: Number.isFinite(Number(motion?.sizeUsd)) ? Number(motion.sizeUsd) : null,
+      approxShares: Number.isFinite(Number(motion?.approxShares)) ? Number(motion.approxShares) : null,
       outcome: motion?.outcome,
       outcomeReason: motion?.outcomeReason,
       veto: motion?.veto ?? null,
@@ -106,7 +108,7 @@ async function enrichValuationGaps(review: any) {
       targetPrice,
       expectedReturnPct: gap,
       valuationStatus: gap != null && Math.abs(gap) < .5 ? "NO_EDGE" : "VALID",
-      valuationSource: "THOMAS_FUNDAMENTAL_RANGE",
+      valuationSource: valuation.source ?? "THOMAS_FUNDAMENTAL_RANGE",
       valuationConfidence: valuation.confidence,
       valuationAnchors: valuation.anchors,
       valuationNote: `${valuation.method} Bear $${Number(valuation.bearPrice).toFixed(2)} · Base $${targetPrice.toFixed(2)} · Bull $${Number(valuation.bullPrice).toFixed(2)} · ${valuation.confidence} confidence.`,
@@ -175,8 +177,8 @@ export default function ActiveFundDecisionView({
 
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
-        "This is part of the same CIO meeting. SELL/TRIM proceeds pool into Cash Buffer first; the Cash Floor is protected; ADD/INITIATE can use capital only when this meeting carried the action. Thomas uses DCF/multiples first and a filing-based fundamental range when the primary anchors are unavailable.",
-        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน เงิน SELL/TRIM รวมเข้า Cash Buffer ก่อน ต้องรักษา Cash Floor และ ADD/INITIATE ใช้เงินจริงได้เฉพาะรายการที่การประชุมรอบนี้อนุมัติ ส่วน Thomas จะใช้ DCF/Multiples ก่อน และใช้ Fundamental Range จากงบการเงินเมื่อ Anchor หลักยังไม่พร้อม")}
+        "This is part of the same CIO meeting. The Committee motion and exact approved size are the execution authority. Valuation uses the full research path first, then Thomas multi-anchor/fundamental valuation, with Yahoo price-history regression only as the last non-spot fallback.",
+        "ส่วนนี้เป็นขั้นหนึ่งของ CIO Meeting เดียวกัน โดยมติ Committee และขนาดเงินที่อนุมัติเป็นแหล่งอ้างอิงการซื้อขายเพียงชุดเดียว ส่วน Valuation จะใช้ Full Research ก่อน ตามด้วย Thomas Multi-Anchor/Fundamental และใช้ Yahoo Price History Regression เป็น fallback สุดท้ายโดยไม่ใช้ Spot สร้าง Target ปลอม")}
     </p>
     {authoritySource && <span className="tag">{authoritySource}</span>}
     {loading && !data && <div className="notice" style={{ marginTop: 12 }}><span className="spinner" /> {tr(lang, "Building the portfolio underwriting package…", "กำลังสร้างชุดวิเคราะห์พอร์ตของการประชุมเดียวกัน…")}</div>}
@@ -197,7 +199,7 @@ export default function ActiveFundDecisionView({
       <IdeaTable rows={data.newIdeas ?? []} title={tr(lang, "New opportunities — valuation & research", "โอกาสใหม่ — Valuation และ Research")} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
-      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation fallback is decision-support evidence; it never overrides a Committee VETO/DEFER and no broker order is sent automatically.", "Fundamental Valuation fallback เป็นหลักฐานประกอบการตัดสินใจเท่านั้น ไม่สามารถข้าม Committee VETO/DEFER และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
+      <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
     </>}
   </Wrapper>;
 }
@@ -205,16 +207,20 @@ export default function ActiveFundDecisionView({
 function CashPoolPlan({ plan, lang }: { plan: any; lang: AppLang }) {
   if (!plan) return null;
   return <div className="card" style={{ marginTop: 14, borderTop: "2px solid var(--accent)" }}>
-    <h3 className="sub">💵 {tr(lang, "Cash Buffer Pool — one source of funds", "Cash Buffer Pool — รวมเงินก่อนจัดสรร")}</h3>
+    <h3 className="sub">💵 {tr(lang, "Cash Buffer Pool — Committee-authorized flow", "Cash Buffer Pool — กระแสเงินตามมติ Committee")}</h3>
     <div className="grid cols-4">
-      <Metric label={tr(lang, "Buffer before trims", "Buffer ก่อนขาย")} value={money(plan.bufferBeforeUsd ?? 0)} />
-      <Metric label={tr(lang, "TRIM/EXIT proceeds", "เงินจาก TRIM/EXIT")} value={money(plan.saleProceedsUsd ?? 0)} />
+      <Metric label={tr(lang, "Buffer before Committee sales", "Buffer ก่อนรายการขาย Committee")} value={money(plan.bufferBeforeUsd ?? 0)} />
+      <Metric label={tr(lang, "Cash-floor repair sales", "ขายเพื่อเติม Cash Floor")} value={money(plan.cashFloorRepairSalesUsd ?? plan.floorRepairUsd ?? 0)} />
+      <Metric label={tr(lang, "Other Committee TRIM/EXIT", "TRIM/EXIT อื่นที่ Committee อนุมัติ")} value={money(plan.otherCommitteeSalesUsd ?? 0)} />
       <Metric label={tr(lang, "Required floor", "Cash Floor ที่ต้องมี")} value={money(plan.floorUsd ?? 0)} />
-      <Metric label={tr(lang, "Deployable after trims", "ส่วนเกินหลังขาย")} value={money(plan.deployableAfterSalesUsd ?? 0)} />
     </div>
     <div className="grid cols-4" style={{ marginTop: 10 }}>
+      <Metric label={tr(lang, "Total authorized sales", "ยอดขายที่อนุมัติรวม")} value={money(plan.saleProceedsUsd ?? 0)} />
+      <Metric label={tr(lang, "Deployable after authorized sales", "ส่วนเกินหลังรายการที่อนุมัติ")} value={money(plan.deployableAfterSalesUsd ?? 0)} />
       <Metric label={tr(lang, "Approved purchases", "ซื้อที่ Committee อนุมัติ")} value={money(plan.approvedPurchasesUsd ?? 0)} />
       <Metric label={tr(lang, "Buffer remaining", "Cash Buffer คงเหลือ")} value={money(plan.remainingBufferUsd ?? 0)} />
+    </div>
+    <div className="grid cols-4" style={{ marginTop: 10 }}>
       <Metric label={tr(lang, "Deployable remaining", "ส่วนเกินที่ยังเหลือ")} value={money(plan.remainingDeployableUsd ?? 0)} />
       <Metric label={tr(lang, "Committee meeting", "รอบ Committee")} value={plan.committeeMeetingId || "—"} />
     </div>
@@ -251,15 +257,17 @@ function valuationView(x: any, lang: AppLang) {
   const status = String(x.valuationStatus ?? "UNAVAILABLE");
   const price = Number(x.currentPrice);
   const target = Number(x.targetPrice);
-  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "No synthetic spot target is shown.", "ไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
+  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "All institutional and Yahoo-history fallback anchors were exhausted; no synthetic spot target is shown.", "ลองครบทั้ง Institutional และ Yahoo History fallback แล้ว จึงไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
   const gap = (target / price - 1) * 100;
   if (status === "NO_EDGE" || Math.abs(gap) < .5) return { target: money(target), upside: "≈0%", className: "muted", status: tr(lang, "NO EDGE", "ไม่มี Valuation Edge"), warning: "" };
-  return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALUED", "มี Fair Value") , warning: "" };
+  return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALUED", "มี Fair Value"), warning: "" };
 }
 
 function sourceText(source: string, lang: AppLang) {
   if (source === "THOMAS_MULTI_ANCHOR") return tr(lang, "Thomas DCF / multiple anchors", "Thomas DCF / Multiple Anchors");
+  if (source === "THOMAS_PORTFOLIO_MULTI_ANCHOR") return tr(lang, "Thomas institutional multi-anchor", "Thomas Institutional Multi-Anchor");
   if (source === "THOMAS_FUNDAMENTAL_RANGE") return tr(lang, "Thomas filing-based fundamental range", "Thomas Fundamental Range จากงบการเงิน");
+  if (source === "YAHOO_TREND_FALLBACK") return tr(lang, "Yahoo Finance history fallback", "Yahoo Finance History Fallback");
   if (source === "RESEARCH_OS_TARGET") return tr(lang, "Research OS target", "เป้าหมายจาก Research OS");
   return tr(lang, "No defensible target yet", "ยังไม่มี Fair Value ที่เชื่อถือได้");
 }
