@@ -38,10 +38,9 @@ const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 /**
  * Active-momentum lifecycle used by Sentinel Research OS V23.
  *
- * It deliberately separates "good company" from "good point in the price cycle".
- * The fund wants accumulation / early markup first, can still participate in a
- * healthy expansion, and stops chasing once the move is mature, weakening or
- * close to a defensible fair-value ceiling.
+ * Raw RS/volume inputs are preferred. When a downstream portfolio view only has
+ * the already-computed Momentum and Institutional scores, those aggregate scores
+ * are accepted as lower-resolution proxies instead of hiding the lifecycle stage.
  */
 export function classifyMomentumLifecycle(input: MomentumLifecycleInput): MomentumLifecycleRead {
   const momentum = finite(input.momentum) ?? 0;
@@ -54,11 +53,14 @@ export function classifyMomentumLifecycle(input: MomentumLifecycleInput): Moment
   const valuationGap = finite(input.valuationGapPct);
 
   const aboveEma20 = input.aboveEma20 !== false;
-  const maFanning = input.maFanning === true;
-  const accumulationFlow = institutional >= 60 && (volumeRatio ?? 0) >= 0.95 && (upDown ?? 0) >= 1;
-  const relativeLeadership = (rs30 ?? 0) >= 1;
-  const positiveTape = (return3m ?? -99) > -3 && aboveEma20;
-  const expansion = momentum >= 72 && institutional >= 62 && relativeLeadership && maFanning && (return3m ?? 0) >= 7;
+  const maFanning = input.maFanning === true || (input.maFanning == null && momentum >= 74);
+  const accumulationFlow = institutional >= 60
+    && (volumeRatio == null ? institutional >= 64 : volumeRatio >= 0.95)
+    && (upDown == null ? institutional >= 64 : upDown >= 1);
+  const relativeLeadership = rs30 == null ? momentum >= 62 : rs30 >= 1;
+  const positiveTape = return3m == null ? momentum >= 62 : return3m > -3;
+  const expansionReturn = return3m == null ? momentum >= 78 : return3m >= 7;
+  const expansion = momentum >= 72 && institutional >= 62 && relativeLeadership && maFanning && expansionReturn;
   const matureMove = (return3m ?? 0) >= 35 || (return1m ?? 0) >= 18 || momentum >= 90;
   const nearFairValue = valuationGap != null && valuationGap <= 5;
   const weakening = momentum < 52 || (rs30 != null && rs30 < 0.97) || (return3m != null && return3m < -5) || input.aboveEma20 === false;
@@ -67,7 +69,7 @@ export function classifyMomentumLifecycle(input: MomentumLifecycleInput): Moment
   if (weakening) stage = "WEAKENING";
   else if (matureMove || nearFairValue) stage = "MATURE";
   else if (expansion) stage = "MOMENTUM_EXPANSION";
-  else if (momentum >= 62 && institutional >= 58 && relativeLeadership && positiveTape) stage = "EARLY_MARKUP";
+  else if (momentum >= 62 && institutional >= 58 && relativeLeadership && positiveTape && aboveEma20) stage = "EARLY_MARKUP";
   else if (accumulationFlow && momentum >= 50 && momentum < 72 && (return3m ?? 0) < 18) stage = "ACCUMULATION";
 
   const stageBonus: Record<MomentumLifecycleStage, number> = {
