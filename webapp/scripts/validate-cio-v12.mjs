@@ -157,6 +157,9 @@ requireTokens("app/components/ActiveFundDecisionView.tsx", [
   "RESEARCH INCOMPLETE",
   "lifecycleStage",
   "valuationGapPct",
+  "searchBasisTh",
+  "investmentHorizonTh",
+  "reviewCadenceTh",
 ]);
 
 requireTokens("lib/activeFundV2.ts", [
@@ -166,6 +169,9 @@ requireTokens("lib/activeFundV2.ts", [
   "Accumulation Confirmed",
   "Fair Value is mandatory",
   "valuation gap of 0% or less",
+  "FUND_HOLDING_POLICY",
+  "searchBasis",
+  "investmentHorizon",
 ]);
 
 requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
@@ -175,6 +181,9 @@ requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
   "MOMENTUM_EXPANSION",
   "RESEARCH INCOMPLETE",
   "Valuation Gap",
+  "240 liquid US equities",
+  "4–16 weeks",
+  "six hours",
 ]);
 
 requireTokens("lib/team/constitution.ts", [

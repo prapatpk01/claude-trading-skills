@@ -2,6 +2,7 @@ import { buildAnalysis } from "./analyze";
 import { buildMacroOutlook, type MacroOutlook } from "./macroOutlook";
 import { runInvestmentResearchOS, type InvestmentResearchProposal } from "./research/investmentDiscovery";
 import { classifyMomentumLifecycle, type MomentumLifecycleStage } from "./research/momentumLifecycle";
+import { FUND_HOLDING_POLICY, researchMandate } from "./research/researchMandates";
 
 export type FundAction = "INITIATE" | "ADD" | "LET WINNER RUN" | "HOLD" | "TRIM PROFIT REVIEW" | "TRIM REVIEW" | "EXIT REVIEW" | "WATCH" | "RESEARCH INCOMPLETE";
 export type OpportunityDecisionType = "INITIATE FROM LIQUIDITY" | "ROTATE / REPLACE" | "WATCH WITH TRIGGER" | "RESEARCH INCOMPLETE" | "REJECT";
@@ -58,6 +59,12 @@ export interface ActiveFundIdea {
   lifecycleStage: MomentumLifecycleStage;
   lifecycleScore: number;
   lifecycleEvidence: string[];
+  searchBasis: string;
+  searchBasisTh: string;
+  investmentHorizon: string;
+  investmentHorizonTh: string;
+  reviewCadence: string;
+  reviewCadenceTh: string;
   researchStatus: "COMPLETE" | "INCOMPLETE";
   valuationGapPct: number | null;
   valuationStatus: ValuationStatus;
@@ -111,7 +118,8 @@ export interface ActiveFundV2Result {
   discovery: {
     broadUniverse: number; detailedAnalyzed: number; qualified: number; watchlist: number;
     uniqueNew: number; incomplete: number; models: number; methodology: string;
-    engines: { id: string; name: string; role: string; searches: string; qualified: number }[];
+    engines: { id: string; name: string; role: string; searches: string; qualified: number; searchBasis?: string; searchBasisTh?: string; investmentHorizon?: string; investmentHorizonTh?: string }[];
+    holdingPolicy: typeof FUND_HOLDING_POLICY;
   };
   newIdeas: ActiveFundIdea[];
   researchIncomplete: ActiveFundIdea[];
@@ -264,6 +272,12 @@ function fromProposal(proposal: InvestmentResearchProposal, nav: number, macro: 
     lifecycleStage: proposal.lifecycleStage,
     lifecycleScore: proposal.lifecycleScore,
     lifecycleEvidence: proposal.lifecycleEvidence,
+    searchBasis: proposal.searchBasis,
+    searchBasisTh: proposal.searchBasisTh,
+    investmentHorizon: proposal.investmentHorizon,
+    investmentHorizonTh: proposal.investmentHorizonTh,
+    reviewCadence: proposal.reviewCadence,
+    reviewCadenceTh: proposal.reviewCadenceTh,
     researchStatus: "COMPLETE",
     valuationGapPct: round1(gap),
     valuationStatus: Math.abs(gap) < .5 ? "NO_EDGE" : "VALID",
@@ -287,6 +301,7 @@ function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): Active
   const approved = committee === "APPROVE" && expected != null && expected >= 8 && score >= 64 && complete && lifecycle.entryEligible;
   const weight = approved ? targetWeight(score, macro) : 0;
   const rawThesis = a?.thesis?.find?.((x: any) => x.label === "Base")?.narrative ?? "Watchlist candidate awaiting a stronger edge.";
+  const mandate = researchMandate("WATCHLIST_REUNDERWRITE");
   return {
     ticker: cleanTicker(a?.ticker ?? ""), source: ["Watchlist / Thomas Research"], held: false,
     action: !complete ? "RESEARCH INCOMPLETE" : approved ? "INITIATE" : "WATCH", conviction: Math.round(conviction), confidence: String(c.confidence ?? "LOW"),
@@ -305,6 +320,7 @@ function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): Active
     lifecycleStage: lifecycle.stage,
     lifecycleScore: lifecycle.score,
     lifecycleEvidence: lifecycle.evidence,
+    ...mandate,
     researchStatus: complete ? "COMPLETE" : "INCOMPLETE",
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: null,
@@ -340,6 +356,7 @@ function fromExistingAnalysis(a: any, position: ExistingPositionInput, nav: numb
   const weight = action === "ADD" ? targetWeight(score, macro) : 0;
   const marketValue = price != null ? price * position.shares : position.avgCost * position.shares;
   const rawThesis = a?.thesis?.find?.((x: any) => x.label === "Base")?.narrative ?? "Current holding under active review.";
+  const mandate = researchMandate("PORTFOLIO_MONITOR");
   return {
     ticker: position.ticker, source: ["Current portfolio / Thomas"], held: true, action,
     conviction: Math.round(conviction), confidence: String(c.confidence ?? "LOW"), expectedReturnPct: expected,
@@ -360,6 +377,7 @@ function fromExistingAnalysis(a: any, position: ExistingPositionInput, nav: numb
     lifecycleStage: lifecycle.stage,
     lifecycleScore: lifecycle.score,
     lifecycleEvidence: lifecycle.evidence,
+    ...mandate,
     researchStatus: valuation.status === "UNAVAILABLE" ? "INCOMPLETE" : "COMPLETE",
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: position.shares,
@@ -599,7 +617,7 @@ export async function runActiveFundV2(input: {
     discovery: {
       broadUniverse: phase1.universeSize, detailedAnalyzed: phase1.analyzed, qualified: phase1.qualified ?? phase1.proposals.length,
       watchlist: input.watchlistTickers.length, uniqueNew: newIdeas.filter(idea => idea.action === "INITIATE").length, incomplete: researchIncomplete.length,
-      models: phase1.models.length, engines: phase1.engineStats ?? [], methodology: phase1.methodology,
+      models: phase1.models.length, engines: phase1.engineStats ?? [], methodology: phase1.methodology, holdingPolicy: FUND_HOLDING_POLICY,
     },
     newIdeas, researchIncomplete, existing, portfolioWinners, weakLinks, opportunityDecisions, executionPlans, replacements,
     capitalPlan: {

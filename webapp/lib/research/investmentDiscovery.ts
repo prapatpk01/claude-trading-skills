@@ -1,6 +1,7 @@
 import { ENGINE_UNIVERSES, FACTOR_UNIVERSE, runFactorDiscovery, type FactorMode, type ResearchCandidate } from "@/lib/factorDiscovery";
 import { buildTradePlan } from "@/lib/researchEnginePolicies";
 import { classifyMomentumLifecycle, type MomentumLifecycleRead, type MomentumLifecycleStage } from "@/lib/research/momentumLifecycle";
+import { researchMandate } from "@/lib/research/researchMandates";
 
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
 const EXPANDED_US_UNIVERSE = [
@@ -51,6 +52,9 @@ export type InvestmentResearchProposal = {
   lifecycleReason: string;
   preferredEntryStage: boolean;
   selectionReason: string;
+  searchBasis: string; searchBasisTh: string;
+  investmentHorizon: string; investmentHorizonTh: string;
+  reviewCadence: string; reviewCadenceTh: string;
   primaryEngine: string; discoveryEngines: string[];
   lifecycleEvidence: string[];
   valuationSource: string; valuationGapPct: number; researchStatus: "COMPLETE";
@@ -194,6 +198,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     if (price == null || target == null || plan.entryLow == null || plan.entryHigh == null || plan.stopLoss == null) return [];
     const models = Array.from(new Set([engine.mode, ...(candidate.engines ?? [])]));
     const expected = candidate.expectedReturnPct ?? ((target / price) - 1) * 100;
+    const mandate = researchMandate(engine.id);
     return [{
       ticker: candidate.ticker,
       setupType: `ACTIVE MOMENTUM · ${engine.label.toUpperCase()} · ${lifecycle.stage.replaceAll("_", " ")}`,
@@ -218,6 +223,12 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       lifecycleReason: lifecycle.reason,
       preferredEntryStage: lifecycle.preferredEntry,
       selectionReason: `${engine.label} selected ${candidate.ticker}; lifecycle ${lifecycle.stage}, momentum ${candidate.momentum}/100, accumulation proxy ${candidate.institutional}/100, expected valuation room ${expected.toFixed(1)}%.`,
+      searchBasis: mandate.searchBasis,
+      searchBasisTh: mandate.searchBasisTh,
+      investmentHorizon: mandate.investmentHorizon,
+      investmentHorizonTh: mandate.investmentHorizonTh,
+      reviewCadence: mandate.reviewCadence,
+      reviewCadenceTh: mandate.reviewCadenceTh,
       primaryEngine: engine.label,
       discoveryEngines: models.map(model => model.toUpperCase()),
       lifecycleEvidence: lifecycle.evidence,
@@ -261,8 +272,8 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     warnings,
     models: RESEARCH_ENGINES.map(engine => engine.label),
     engineReports,
-    engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose })),
-    engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle })),
+    engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose, ...researchMandate(engine.id) })),
+    engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle, ...researchMandate(report.id) })),
     rotationCoverageCycles: Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, analyzed))),
     methodology: `Sentinel Research OS V23 runs ${RESEARCH_ENGINES.length} independent engines with separate universes and evidence. The Active Momentum lifecycle prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION with Momentum ≥65. MATURE, WEAKENING, BROKEN and valuation-incomplete names are not new-buy candidates. A defensible Fair Value gap of at least 8% is mandatory before Committee review.`,
   };
