@@ -164,7 +164,8 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
   const perEngine = Math.max(4, Math.floor(detailedLimit / RESEARCH_ENGINES.length));
   const batches = buildEngineUniverses(broadUniverse, perEngine);
 
-  // Two engine workers at a time: independent searches without exploding the market-data concurrency budget.
+  // Phase 1 factor consensus remains an audit concept, but V23 now earns it from
+  // separate discovery engines rather than one multifactor search with labels added later.
   const results = await mapLimit(batches, 2, async ({ engine, tickers }) => {
     const result = await runFactorDiscovery(engine.mode, tickers, tickers.length);
     return { engine, tickers, result };
@@ -177,8 +178,6 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     for (const candidate of run.result.candidates) all.push({ engine: run.engine, candidate, lifecycle: lifecycleFor(candidate) });
   }
 
-  // New risk must have an active-momentum entry stage. Quality/growth/value can rank a name,
-  // but they cannot override a mature or weakening price cycle.
   const eligible = all
     .filter(({ candidate, lifecycle }) => candidate.passed && lifecycle.preferredEntry && candidate.price != null && candidate.price > 0)
     .filter(({ candidate }) => candidate.targetPrice != null && candidate.targetPrice > candidate.price! && (candidate.expectedReturnPct ?? -Infinity) >= 5)
@@ -205,7 +204,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       riskReward: plan.rewardRisk ?? Math.max(0, (target - price) / Math.max(.01, price - plan.stopLoss)),
       expectedReturnPct: expected,
       thesis: candidate.thesis,
-      catalyst: `${engine.label}: ${engine.purpose} Lifecycle ${lifecycle.stage}; ${lifecycle.reason}`,
+      catalyst: `Phase 1 factor consensus: ${models.join(", ")}. ${engine.label}: ${engine.purpose} Lifecycle ${lifecycle.stage}; ${lifecycle.reason}`,
       unmeasured: candidate.failedGates ?? [],
       sourceModels: models,
       sourceKind: "RESEARCH_OS_PHASE_1" as const,
@@ -254,6 +253,6 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     models: RESEARCH_ENGINES.map(engine => engine.label),
     engineReports,
     rotationCoverageCycles: Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, analyzed))),
-    methodology: `Sentinel Research OS V23 is an active-momentum lifecycle process, not one multifactor scan. ${RESEARCH_ENGINES.length} independent engines search separate rotating US-stock batches, then the CIO rank prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION. MATURE/WEAKENING names are not new-buy candidates. Fair value must leave at least 5% room for a proposal; technical execution and Committee authority still decide whether it can be bought. Exit discipline: momentum weakening, thesis change, hard risk block, or fair-value room largely exhausted.`,
+    methodology: `Sentinel Research OS V23 preserves Phase 1 factor consensus but builds it from ${RESEARCH_ENGINES.length} independent engines. The active-momentum lifecycle rank prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION. MATURE/WEAKENING names are not new-buy candidates. Fair value must leave at least 5% room for a proposal; technical execution and Committee authority still decide whether it can be bought. Exit discipline: momentum weakening, thesis change, hard risk block, or fair-value room largely exhausted.`,
   };
 }
