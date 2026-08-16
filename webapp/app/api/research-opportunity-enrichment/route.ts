@@ -8,6 +8,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+type OpportunityInput = {
+  ticker: string;
+  momentum: number | null;
+  institutional: number | null;
+  currentPrice: number | null;
+  targetPrice: number | null;
+  source: unknown;
+};
+
 const cleanTicker = (value: unknown) => String(value ?? "").trim().toUpperCase();
 const finite = (value: unknown): number | null => {
   const n = typeof value === "number" ? value : Number(value);
@@ -100,22 +109,25 @@ function researchEngine(source: unknown) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const incoming = Array.isArray(body?.rows) ? body.rows : [];
-    const rows = incoming
-      .map((row: any) => ({
-        ticker: cleanTicker(row?.ticker),
-        momentum: finite(row?.momentum),
-        institutional: finite(row?.factors?.institutional),
-        currentPrice: finite(row?.currentPrice),
-        targetPrice: finite(row?.targetPrice),
-        source: row?.source,
-      }))
-      .filter((row: any) => /^[A-Z.\-]{1,10}$/.test(row.ticker))
+    const incoming: unknown[] = Array.isArray(body?.rows) ? body.rows : [];
+    const rows: OpportunityInput[] = incoming
+      .map((raw): OpportunityInput => {
+        const row = raw && typeof raw === "object" ? raw as Record<string, any> : {};
+        return {
+          ticker: cleanTicker(row.ticker),
+          momentum: finite(row.momentum),
+          institutional: finite(row.factors?.institutional),
+          currentPrice: finite(row.currentPrice),
+          targetPrice: finite(row.targetPrice),
+          source: row.source,
+        };
+      })
+      .filter((row: OpportunityInput) => /^[A-Z.\-]{1,10}$/.test(row.ticker))
       .slice(0, 24);
     if (!rows.length) return NextResponse.json({ rows: [] }, { headers: { "Cache-Control": "no-store" } });
 
     const benchmark = await dailyCandles("SPY", 120).catch(() => [] as Candle[]);
-    const enriched = await mapLimit(rows, 5, async row => {
+    const enriched = await mapLimit<OpportunityInput, Record<string, unknown>>(rows, 5, async (row) => {
       const candles = await dailyCandles(row.ticker, 260).catch(() => [] as Candle[]);
       const overlay = computePortfolioTechnicalOverlay(candles);
       const closes = candles.map(candle => candle.close).filter(value => value > 0);
