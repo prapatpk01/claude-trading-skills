@@ -20,12 +20,14 @@ function normalizeValuation(candidate:Candidate){
  const price=finitePositive(candidate?.price);
  const targetPrice=finitePositive(candidate?.targetPrice);
  const expectedReturnPct=price!=null&&targetPrice!=null?((targetPrice/price)-1)*100:null;
- const valuationFailures:string[]=[];
+  const valuationFailures:string[]=[];
  if(price==null)valuationFailures.push("Current price unavailable");
  if(targetPrice==null)valuationFailures.push("Target price unavailable");
  if(price!=null&&targetPrice!=null&&targetPrice<=price)valuationFailures.push("Target price is not above spot");
- if(expectedReturnPct!=null&&expectedReturnPct<8)valuationFailures.push("Expected upside below 8%");
- return {...candidate,price,targetPrice,expectedReturnPct,valuationValid:valuationFailures.length===0,valuationFailures};
+  if(expectedReturnPct!=null&&expectedReturnPct<8)valuationFailures.push("Expected upside below 8%");
+ const inherited=Array.isArray(candidate?.valuationFailures)?candidate.valuationFailures:[];
+ const combined=[...new Set([...inherited,...valuationFailures])];
+ return {...candidate,price,targetPrice,expectedReturnPct,valuationValid:Boolean(candidate?.valuationReady)&&combined.length===0,valuationFailures:combined};
 }
 
 function scoreKey(mode:PublicMode){
@@ -71,35 +73,37 @@ export async function GET(req:NextRequest){
   const asOf=new Date().toISOString();
   const candidates=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate));
   const factorQualified=candidates.filter((candidate:Candidate)=>candidate.passed);
-  const valuationEligible=factorQualified.filter((candidate:Candidate)=>candidate.valuationValid);
-  const valuationRequired=mode==="thematic"||mode==="multifactor"||mode==="value";
+  const momentumEligible=factorQualified.filter((candidate:Candidate)=>Boolean(candidate?.lifecycle?.entryEligible)&&Number(candidate?.momentum??0)>=62);
+  const valuationEligible=momentumEligible.filter((candidate:Candidate)=>candidate.valuationValid);
+  const valuationRequired=true;
   const key=scoreKey(mode);
-  const ranked=(valuationRequired?valuationEligible:factorQualified).sort((left:Candidate,right:Candidate)=>(finiteNumber(right[key])??-Infinity)-(finiteNumber(left[key])??-Infinity));
-  const picks=mode==="thematic"?thematicAllocation(candidates):ranked.slice(0,top).map((candidate:Candidate,index:number)=>({...candidate,allocationRank:index+1,status:"COMMITTEE_READY"}));
+  const ranked=valuationEligible.sort((left:Candidate,right:Candidate)=>(finiteNumber(right[key])??-Infinity)-(finiteNumber(left[key])??-Infinity));
+  const picks=mode==="thematic"?thematicAllocation(valuationEligible):ranked.slice(0,top).map((candidate:Candidate,index:number)=>({...candidate,allocationRank:index+1,status:"COMMITTEE_READY"}));
   const selectedTickers=new Set(picks.map((candidate:Candidate)=>candidate.ticker));
-  const rejectedCandidates=(valuationRequired?candidates.filter((candidate:Candidate)=>!candidate.passed||!candidate.valuationValid):candidates.filter((candidate:Candidate)=>!candidate.passed)).map((candidate:Candidate)=>({...candidate,status:"REJECTED",rejectionReasons:[...(candidate.failedGates??[]),...(valuationRequired?candidate.valuationFailures??[]:[])]}));
+  const rejectedCandidates=candidates.filter((candidate:Candidate)=>!candidate.passed||!candidate?.lifecycle?.entryEligible||!candidate.valuationValid).map((candidate:Candidate)=>({...candidate,status:candidate.passed&&candidate?.lifecycle?.entryEligible&&!candidate.valuationValid?"RESEARCH_INCOMPLETE":"REJECTED",rejectionReasons:[...(candidate.failedGates??[]),...(!candidate?.lifecycle?.entryEligible?[`Momentum lifecycle ${candidate?.lifecycle?.stage??"UNCONFIRMED"} is not entry eligible`]:[]),...(candidate.valuationFailures??[])]}));
   const rankedCandidates=candidates.map((candidate:Candidate)=>{
    if(selectedTickers.has(candidate.ticker))return{...candidate,...picks.find((pick:Candidate)=>pick.ticker===candidate.ticker)};
    if(!candidate.passed)return{...candidate,status:"REJECTED"};
-   if(valuationRequired&&!candidate.valuationValid)return{...candidate,status:"VALUATION_REJECTED"};
+   if(!candidate?.lifecycle?.entryEligible)return{...candidate,status:"MOMENTUM_STAGE_REJECTED"};
+   if(!candidate.valuationValid)return{...candidate,status:"RESEARCH_INCOMPLETE"};
    if(mode==="thematic")return{...candidate,status:"ELIGIBLE_NOT_SELECTED"};
    return{...candidate,status:"QUALIFIED_NOT_SELECTED"};
   });
-  const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,valuation:valuationRequired?valuationEligible:factorQualified,selected:picks,rejected:rejectedCandidates};
+  const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,momentum:momentumEligible,valuation:valuationEligible,selected:picks,rejected:rejectedCandidates};
   const source=explicit.length?"explicit":sectorUniverse.length?`sector:${sector}`:mode==="thematic"?`theme:${themeConfig.label} · benchmark ${themeConfig.benchmark}`:`engine:${mode}`;
   const totalWeight=picks.reduce((sum:number,candidate:Candidate)=>sum+(finiteNumber(candidate.portfolioWeightPct)??0),0);
-  const pipeline=valuationRequired?{universe:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length}:{universe:universe.length,analyzed:candidates.length,qualified:factorQualified.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
+  const pipeline={universe:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,momentumEligible:momentumEligible.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
   const performanceContracts=picks.map((candidate:Candidate)=>createPerformanceContract(mode as ResearchEngineMode,candidate,asOf));
   return NextResponse.json({
-   ...result,version:"12.2-independent-research-engines",asOf,mode,rankingMode:engineMode,sector,
+   ...result,version:"23.0-independent-active-momentum-engines",asOf,mode,rankingMode:engineMode,sector,
    engine:engineProfile(mode as ResearchEngineMode),
    theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
    universeSource:source,universeTickers:universe,pipeline,stageCandidates,candidates:rankedCandidates,picks,rejectedCandidates,
    performanceContracts,
    stats:{...result.stats,qualified:factorQualified.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
    portfolio:mode==="thematic"?{construction:"AI conviction-weighted five-stock thematic sleeve",holdings:picks.length,targetHoldings:"Exactly 5 securities when at least 5 pass factor and valuation gates",totalWeightPct:Math.round(totalWeight*10)/10,maxPositionPct:30,minPositionPct:12,minimumExpectedReturnPct:8,status:picks.length===5?"BUILT":picks.length?"PARTIAL":"NO_ELIGIBLE_SECURITIES",horizon:"1–3 months"}:null,
-   policy:{researchOnly:true,automaticTrading:false,valuationGateRequired:mode==="thematic",explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true},
-   methodology:mode==="thematic"?"The theme defines an independent universe. The engine ranks factor-qualified and valuation-eligible stocks, selects five names, assigns conviction weights totaling 100%, and creates 1–3 month entry, target and stop plans with a performance contract for every pick.":mode==="momentum"?"The Momentum engine independently ranks liquid stocks for a 2–4 week window. It returns five names with relative strength, trend, volume participation, modeled upside of at least 10%, entry zones, targets, stops and outcome-tracking contracts.":mode==="dividend"?"The Dividend engine uses its own income universe and gates. It evaluates yield, payout safety, free-cash-flow coverage and distribution durability. ETFs, REITs and BDCs are not rejected by corporate payout or FCF rules that do not apply to their structure.":"The selected factor engine owns its universe, qualification, ranking and performance state.",
+   policy:{researchOnly:true,automaticTrading:false,activeMomentumGateRequired:true,valuationGateRequired:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true},
+   methodology:`${engineProfile(mode as ResearchEngineMode).objective} This engine owns its universe and factor gate independently. Sentinel then applies the common Active Momentum gate (ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION) and the mandatory defensible Fair Value gap before any name can become Committee Ready.`,
   },{headers:{"Cache-Control":"no-store"}});
  }catch(error:unknown){
   const message=error instanceof Error?error.message:"Alpha discovery failed";

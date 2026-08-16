@@ -3,7 +3,6 @@ import { buildTradePlan } from "@/lib/researchEnginePolicies";
 import { classifyMomentumLifecycle, type MomentumLifecycleRead, type MomentumLifecycleStage } from "@/lib/research/momentumLifecycle";
 
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
-
 const EXPANDED_US_UNIVERSE = [
   "AAPL", "ACN", "ADI", "AMAT", "KLAC", "LRCX", "MCHP", "MPWR", "NXPI", "SNPS", "CDNS", "FTNT", "ZS", "MDB", "TEAM", "HUBS",
   "DIS", "SPOT", "RBLX", "TTWO", "EA", "T", "VZ", "BKNG", "ABNB", "RCL", "CCL", "NKE", "SBUX", "TGT", "ROST", "TJX", "ORLY", "AZO", "CVNA",
@@ -52,6 +51,9 @@ export type InvestmentResearchProposal = {
   lifecycleReason: string;
   preferredEntryStage: boolean;
   selectionReason: string;
+  primaryEngine: string; discoveryEngines: string[];
+  lifecycleEvidence: string[];
+  valuationSource: string; valuationGapPct: number; researchStatus: "COMPLETE";
   factors: {
     momentum: number; growth: number; quality: number; value: number;
     dividend: number; institutional: number; ai: number; composite: number;
@@ -151,6 +153,7 @@ function rank(row: EngineCandidate) {
     MOMENTUM_EXPANSION: 24,
     MATURE: -18,
     WEAKENING: -45,
+    BROKEN: -60,
     UNCONFIRMED: -12,
   };
   const primaryFactor = Number((c as any)[row.engine.mode] ?? c.composite) || 0;
@@ -179,8 +182,8 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
   }
 
   const eligible = all
-    .filter(({ candidate, lifecycle }) => candidate.passed && lifecycle.preferredEntry && candidate.price != null && candidate.price > 0)
-    .filter(({ candidate }) => candidate.targetPrice != null && candidate.targetPrice > candidate.price! && (candidate.expectedReturnPct ?? -Infinity) >= 5)
+    .filter(({ candidate, lifecycle }) => candidate.passed && lifecycle.preferredEntry && candidate.momentum >= 65 && candidate.price != null && candidate.price > 0)
+    .filter(({ candidate }) => candidate.valuationReady && candidate.targetPrice != null && candidate.targetPrice > candidate.price! && (candidate.expectedReturnPct ?? -Infinity) >= 8)
     .sort((left, right) => rank(right) - rank(left))
     .slice(0, options.topN ?? 10);
 
@@ -215,6 +218,12 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       lifecycleReason: lifecycle.reason,
       preferredEntryStage: lifecycle.preferredEntry,
       selectionReason: `${engine.label} selected ${candidate.ticker}; lifecycle ${lifecycle.stage}, momentum ${candidate.momentum}/100, accumulation proxy ${candidate.institutional}/100, expected valuation room ${expected.toFixed(1)}%.`,
+      primaryEngine: engine.label,
+      discoveryEngines: models.map(model => model.toUpperCase()),
+      lifecycleEvidence: lifecycle.evidence,
+      valuationSource: candidate.valuationSource,
+      valuationGapPct: expected,
+      researchStatus: "COMPLETE" as const,
       factors: {
         momentum: candidate.momentum,
         growth: candidate.growth,
@@ -252,7 +261,9 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     warnings,
     models: RESEARCH_ENGINES.map(engine => engine.label),
     engineReports,
+    engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose })),
+    engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle })),
     rotationCoverageCycles: Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, analyzed))),
-    methodology: `Sentinel Research OS V23 preserves Phase 1 factor consensus but builds it from ${RESEARCH_ENGINES.length} independent engines. The active-momentum lifecycle rank prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION. MATURE/WEAKENING names are not new-buy candidates. Fair value must leave at least 5% room for a proposal; technical execution and Committee authority still decide whether it can be bought. Exit discipline: momentum weakening, thesis change, hard risk block, or fair-value room largely exhausted.`,
+    methodology: `Sentinel Research OS V23 runs ${RESEARCH_ENGINES.length} independent engines with separate universes and evidence. The Active Momentum lifecycle prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION with Momentum ≥65. MATURE, WEAKENING, BROKEN and valuation-incomplete names are not new-buy candidates. A defensible Fair Value gap of at least 8% is mandatory before Committee review.`,
   };
 }

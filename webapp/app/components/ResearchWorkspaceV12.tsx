@@ -5,30 +5,32 @@ import type {AppLang} from "../page";
 import SwingScanPanel from "./SwingScanPanel";
 
 type Mode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"thematic"|"multifactor";
-type StageId="universe"|"analyzed"|"qualified"|"valuation"|"selected"|"rejected";
+type StageId="universe"|"analyzed"|"qualified"|"momentum"|"valuation"|"selected"|"rejected";
 type SortKey="score"|"upside"|"ticker";
 type Candidate={
  ticker:string;name?:string;sector?:string;price?:number|null;targetPrice?:number|null;expectedReturnPct?:number|null;
  composite?:number;momentum?:number;growth?:number;quality?:number;value?:number;dividend?:number;institutional?:number;ai?:number;
  portfolioWeightPct?:number;allocationRank?:number;passed?:boolean;status?:string;failedGates?:string[];valuationFailures?:string[];
  rejectionReasons?:string[];reasons?:string[];thesis?:string;dataQuality?:string;engines?:string[];consensusCount?:number;
+ lifecycle?:{stage:string;score:number;entryEligible:boolean;evidence:string[];risks:string[]};valuationReady?:boolean;valuationSource?:string;valuationNote?:string;
 };
 type Pipeline=Record<string,number>;
 type Result={
  mode:Mode;asOf?:string;theme?:{label:string;benchmark:string}|null;universeSource?:string;pipeline?:Pipeline;stats?:Record<string,number>;
  stageCandidates?:Partial<Record<StageId,Candidate[]>>;picks?:Candidate[];rejectedCandidates?:Candidate[];methodology?:string;
  portfolio?:{holdings:number;totalWeightPct:number;status:string}|null;warnings?:string[];
+ engine?:{id:string;title:string;objective:string;holdingPeriod:string;benchmark:string;performanceMetrics:string[]};
 };
 
 const MODES:{id:Mode;icon:string;en:string;th:string;noteEn:string;noteTh:string}[]=[
- {id:"multifactor",icon:"◈",en:"Multi-Factor",th:"หลายปัจจัย",noteEn:"Balanced institutional composite",noteTh:"จัดอันดับแบบสมดุลหลายมิติ"},
  {id:"momentum",icon:"🚀",en:"Momentum",th:"โมเมนตัม",noteEn:"Relative strength, trend and volume",noteTh:"แนวโน้ม ความแข็งแกร่ง และปริมาณซื้อขาย"},
+ {id:"institutional",icon:"🏛",en:"Accumulation",th:"การสะสม",noteEn:"Early accumulation and institutional flow",noteTh:"ช่วงเริ่มสะสมและกระแสเงินสถาบัน"},
  {id:"growth",icon:"📈",en:"Growth",th:"เติบโต",noteEn:"Revenue, earnings and margin expansion",noteTh:"รายได้ กำไร และมาร์จิ้นเติบโต"},
  {id:"quality",icon:"⭐",en:"Quality",th:"คุณภาพ",noteEn:"ROE, free cash flow and balance sheet",noteTh:"ROE กระแสเงินสด และงบดุล"},
  {id:"value",icon:"💎",en:"Value",th:"มูลค่า",noteEn:"Upside and valuation discipline",noteTh:"ส่วนเผื่อความปลอดภัยและราคาเหมาะสม"},
  {id:"dividend",icon:"💵",en:"Dividend",th:"ปันผล",noteEn:"Yield, payout and durability",noteTh:"ผลตอบแทน ความปลอดภัย และความยั่งยืน"},
- {id:"institutional",icon:"🏛",en:"Institutional",th:"สถาบัน",noteEn:"Accumulation proxy from price and volume",noteTh:"สัญญาณสะสมจากราคาและปริมาณซื้อขาย"},
  {id:"ai",icon:"🧠",en:"AI / Innovation",th:"AI / นวัตกรรม",noteEn:"AI infrastructure and software",noteTh:"โครงสร้างพื้นฐานและซอฟต์แวร์ AI"},
+ {id:"multifactor",icon:"◈",en:"Cross-Engine",th:"ยืนยันหลาย Engine",noteEn:"Confirmation across independent engines",noteTh:"ยืนยันร่วมจาก Engine อิสระ"},
  {id:"thematic",icon:"🔥",en:"Thematic Portfolio",th:"พอร์ตตามธีม",noteEn:"Build a weighted 5–8 stock sleeve",noteTh:"สร้างพอร์ต 5–8 หุ้นพร้อมน้ำหนัก"},
 ];
 const THEMES=[["biotech","Biotech"],["regional-banks","Regional Banks"],["aerospace-defense","Aerospace & Defence"],["semiconductors","Semiconductors"],["cloud-software","Cloud & Software"],["cybersecurity","Cybersecurity"],["ai-infrastructure","AI Infrastructure"],["energy-transition","Energy Transition"]] as const;
@@ -69,7 +71,7 @@ async function referToCommittee(candidate:Candidate,engine:string){
 }
 
 export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onNavigate:(id:string)=>void}){
- const[mode,setMode]=useState<Mode>("multifactor");
+ const[mode,setMode]=useState<Mode>("momentum");
  const[sector,setSector]=useState("All");
  const[theme,setTheme]=useState("regional-banks");
  const[tickers,setTickers]=useState("");
@@ -109,6 +111,7 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   if(result.mode==="thematic"||result.mode==="multifactor"||result.mode==="value")return[
    ...common,
    {id:"qualified" as StageId,label:tr(lang,"Factor Qualified","ผ่าน Factor"),value:pipeline.factorQualified??0,note:tr(lang,"Multi-factor gate","ผ่านเกณฑ์หลายปัจจัย")},
+   {id:"momentum" as StageId,label:tr(lang,"Momentum Stage","ผ่าน Momentum Stage"),value:pipeline.momentumEligible??0,note:tr(lang,"Accumulation → Markup","สะสม → กำลังวิ่ง")},
    {id:"valuation" as StageId,label:tr(lang,"Valuation Eligible","ผ่าน Valuation"),value:pipeline.valuationEligible??0,note:tr(lang,"Target above spot + ≥8% upside","เป้าหมายสูงกว่าราคาและ Upside ≥8%")},
    {id:"selected" as StageId,label:tr(lang,result.mode==="thematic"?"Portfolio Selected":"Committee Ready",result.mode==="thematic"?"เลือกเข้าพอร์ต":"พร้อมเข้าประชุม"),value:pipeline.selected??0,note:tr(lang,result.mode==="thematic"?"Weighted to 100%":"Positive valuation shortlist",result.mode==="thematic"?"จัดน้ำหนักรวม 100%":"Shortlist ที่ Valuation เป็นบวก")},
    {id:"rejected" as StageId,label:tr(lang,"Rejected","ไม่ผ่าน"),value:pipeline.rejected??0,note:tr(lang,"Reasons documented","มีเหตุผลครบ")},
@@ -116,6 +119,8 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   return[
    ...common,
    {id:"qualified" as StageId,label:tr(lang,"Qualified","ผ่านเกณฑ์"),value:pipeline.qualified??0,note:tr(lang,"Engine-specific gate","เกณฑ์เฉพาะ Engine")},
+   {id:"momentum" as StageId,label:tr(lang,"Momentum Stage","ผ่าน Momentum Stage"),value:pipeline.momentumEligible??0,note:tr(lang,"Accumulation → Markup","สะสม → กำลังวิ่ง")},
+   {id:"valuation" as StageId,label:tr(lang,"Valuation Complete","Valuation ครบ"),value:pipeline.valuationEligible??0,note:tr(lang,"Fair Value gap ≥8%","Fair Value Gap ≥8%")},
    {id:"selected" as StageId,label:tr(lang,"Committee Ready","พร้อมเข้าประชุม"),value:pipeline.selected??0,note:tr(lang,"Top ranked shortlist","Shortlist อันดับสูงสุด")},
    {id:"rejected" as StageId,label:tr(lang,"Rejected","ไม่ผ่าน"),value:pipeline.rejected??0,note:tr(lang,"Failed gates retained","เก็บเหตุผลที่ไม่ผ่าน")},
   ];
@@ -154,11 +159,11 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   });
  }
 
- return <div className="research-v12" data-research-version="12.3">
+ return <div className="research-v12" data-research-version="23.0">
   <section className="card research-hero" style={{borderTop:"2px solid var(--accent)"}}>
    <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
-    <div><span className="tag">SENTINEL RESEARCH OS · PHASE 1</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Institutional Research Pipeline","ระบบวิจัยการลงทุนระดับสถาบัน")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"One auditable evidence chain from universe to Stock Analysis. Each stage has its own candidates and every rejection keeps an explicit reason.","กระบวนการเดียวตั้งแต่ Universe จนส่งต่อ Stock Analysis แต่ละขั้นมีรายชื่อหุ้นของตัวเองและทุกหุ้นที่ไม่ผ่านมีเหตุผลตรวจสอบได้")}</p></div>
-    <div className="notice" style={{maxWidth:390}}>{tr(lang,"Phase 1 is the Investment Team's primary discovery system. Every factor model contributes evidence; the Swing model below is a separate tactical timing lens. Research can rank and add to Watchlist, but cannot trade or change Holdings.","Phase 1 คือระบบค้นหาหลักของทีม Investment โดยทุกโมเดล Factor ส่งหลักฐานร่วมกัน ส่วน Swing ด้านล่างเป็นมุมมองจับจังหวะ Tactical เท่านั้น Research จัดอันดับและเพิ่ม Watchlist ได้ แต่ซื้อขายหรือแก้ Holdings ไม่ได้")}</div>
+    <div><span className="tag">ACTIVE MOMENTUM RESEARCH OS · V23</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Independent discovery engines","ระบบค้นหาหุ้นแบบแยก Engine")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"Each engine owns its universe and method. The fund then buys only the accumulation-to-markup part of the momentum cycle and only with a defensible Fair Value gap.","แต่ละ Engine มี Universe และวิธีค้นหาของตัวเอง จากนั้นกองทุนจะเลือกเฉพาะช่วง Accumulation ถึง Markup และต้องมี Fair Value Gap ที่เชื่อถือได้")}</p></div>
+    <div className="notice" style={{maxWidth:420}}><strong>{tr(lang,"Fund mandate","แนวทางกองทุน")}:</strong> {tr(lang,"Find leadership early, enter after accumulation confirms, let markup run, and review the sale when momentum weakens, the thesis changes, or price reaches Fair Value.","ค้นหาผู้นำให้เร็ว เข้าเมื่อการสะสมยืนยัน ปล่อยกำไรช่วง Markup และทบทวนขายเมื่อ Momentum อ่อนแรง Thesis เปลี่ยน หรือราคาเข้าใกล้ Fair Value")}</div>
    </div>
    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:9,marginTop:16}}>
     {MODES.map(item=><button type="button" key={item.id} className={`btn ${mode===item.id?"":"ghost"}`} style={{textAlign:"left",minHeight:78}} onClick={()=>{setMode(item.id);setResult(null);setError(null)}}><strong>{item.icon} {lang==="th"?item.th:item.en}</strong><small style={{display:"block",opacity:.7,marginTop:6}}>{lang==="th"?item.noteTh:item.noteEn}</small></button>)}
@@ -174,12 +179,13 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
 
   <SwingScanPanel lang={lang}/>
 
-  {result&&<>
+   {result&&<>
    <section className="card">
     <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",alignItems:"center"}}>
      <div><h3 className="sub" style={{margin:0}}>{result.mode==="thematic"?`${tr(lang,"THEMATIC PORTFOLIO","พอร์ตตามธีม")} · ${result.theme?.label??""}`:`${String(result.mode).toUpperCase()} RESEARCH`}</h3><p className="muted" style={{margin:"6px 0 0"}}>{result.universeSource} · {result.asOf?new Date(result.asOf).toLocaleString():"—"}</p></div>
      <span className="tag">SINGLE PIPELINE STATE</span>
     </div>
+    {result.engine&&<div className="card" style={{margin:"14px 0 0",borderLeft:"3px solid var(--accent)"}}><span className="tag">{result.engine.id}</span><h4 className="sub" style={{margin:"9px 0 5px"}}>{result.engine.title}</h4><p className="muted" style={{margin:0,lineHeight:1.6}}>{result.engine.objective}</p><small style={{display:"block",marginTop:8}}>{tr(lang,"Holding period","ระยะถือ")} {result.engine.holdingPeriod} · Benchmark {result.engine.benchmark}</small></div>}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:10,marginTop:16}}>
      {stages.map(stage=><button key={stage.id} type="button" className={`metric ${activeStage===stage.id?"active":""}`} onClick={()=>setActiveStage(stage.id)} style={{textAlign:"left",cursor:"pointer",minHeight:92}}><span>{stage.label}</span><strong>{stage.value}</strong><small className="muted">{stage.note}</small></button>)}
     </div>
@@ -237,6 +243,8 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
  const[refer,setRefer]=useState<"idle"|"sending"|"error">("idle");
  const[referError,setReferError]=useState("");
  const rejectionReasons=[...(candidate.rejectionReasons??[]),...(candidate.failedGates??[]),...(candidate.valuationFailures??[])].filter((value,index,array)=>array.indexOf(value)===index);
+ const valuationGap=candidate.price&&candidate.targetPrice?((candidate.targetPrice/candidate.price)-1)*100:null;
+ const committeeEligible=Boolean(candidate.passed&&candidate.valuationReady&&candidate.lifecycle?.entryEligible&&valuationGap!=null&&valuationGap>=8);
  const factors=[
   ["Momentum",candidate.momentum],["Growth",candidate.growth],["Quality",candidate.quality],["Value",candidate.value],
   ["Dividend",candidate.dividend],["Institutional",candidate.institutional],["AI",candidate.ai],["Composite",candidate.composite],
@@ -244,7 +252,7 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
  async function addWatchlist(){
   setState("saving");setWatchError("");
   try{
-   const response=await fetch("/api/watchlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker:candidate.ticker,source:"Research OS v12 Phase 1",reason:candidate.thesis??candidate.reasons?.join(" · "),target_price:candidate.targetPrice})});
+   const response=await fetch("/api/watchlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker:candidate.ticker,source:"Active Momentum Research V23",reason:candidate.thesis??candidate.reasons?.join(" · "),target_price:candidate.targetPrice})});
    const body=await response.json().catch(()=>({}));
    if(!response.ok)throw new Error(body?.error??`Watchlist save failed (${response.status})`);
    setState("saved");
@@ -260,20 +268,22 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
    <div><span className="tag">#{rank} · {candidate.sector??"Unknown"} · {candidate.status??(rejected?"REJECTED":"CANDIDATE")}</span><h3 style={{margin:"10px 0 4px"}}>{candidate.ticker} · {candidate.name??candidate.ticker}</h3><p className="muted" style={{maxWidth:780}}>{candidate.thesis??"Institutional research candidate."}</p></div>
    <div className="badge-score">{candidate.composite??0}<span>/100</span><small style={{display:"block"}}>{rejected?"REJECTED":candidate.portfolioWeightPct!=null?`${candidate.portfolioWeightPct.toFixed(1)}% WEIGHT`:"RESEARCH"}</small></div>
   </div>
-  <div className="grid cols-4" style={{marginTop:12}}><Metric label="Price" value={money(candidate.price)}/><Metric label="Target" value={money(candidate.targetPrice)}/><Metric label="Expected Return" value={pct(candidate.expectedReturnPct)}/><Metric label="Data Quality" value={candidate.dataQuality??"—"}/></div>
+  <div className="grid cols-4" style={{marginTop:12}}><Metric label="Price" value={money(candidate.price)}/><Metric label="Fair Value" value={money(candidate.targetPrice)}/><Metric label="Valuation Gap" value={pct(valuationGap)}/><Metric label="Momentum Stage" value={`${candidate.lifecycle?.stage??"UNCONFIRMED"} · ${candidate.lifecycle?.score??"—"}/100`}/></div>
+  <div className="notice" style={{marginTop:9}}><strong>{tr(lang,"Discovery engine evidence","หลักฐานจาก Engine")}:</strong> {(candidate.engines??[]).length?(candidate.engines??[]).map(value=>value.toUpperCase()).join(" · "):engine}<br/><small>{(candidate.lifecycle?.evidence??[]).join(" · ")||tr(lang,"Momentum lifecycle evidence unavailable","ยังไม่มีหลักฐาน Momentum Lifecycle")}</small></div>
   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(105px,1fr))",gap:8,marginTop:9}}>{factors.map(([label,value])=><Metric key={String(label)} label={String(label)} value={Number.isFinite(Number(value))?`${Number(value)}/100`:"—"}/>)}</div>
   {!!candidate.reasons?.length&&<div className="notice" style={{marginTop:12}}><strong>{tr(lang,"Why it passed","เหตุผลที่ผ่าน")}</strong><div style={{marginTop:6}}>{candidate.reasons.join(" · ")}</div></div>}
   {rejected&&<div className="err" style={{marginTop:12}}><strong>{tr(lang,"Failed gates","เกณฑ์ที่ไม่ผ่าน")}</strong><div style={{marginTop:6}}>{rejectionReasons.length?rejectionReasons.join(" · "):tr(lang,"No explicit rejection reason was returned.","ระบบไม่ได้ส่งเหตุผลกลับมา")}</div></div>}
-  {!rejected&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12,alignItems:"center"}}>
+  {!candidate.valuationReady&&<div className="err" style={{marginTop:12}}><strong>RESEARCH INCOMPLETE</strong><div style={{marginTop:6}}>{tr(lang,"No defensible Fair Value / Valuation Gap. This name cannot be referred for allocation.","ยังไม่มี Fair Value / Valuation Gap ที่เชื่อถือได้ หุ้นนี้จึงส่งเข้าการจัดสรรเงินไม่ได้")}</div></div>}
+  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12,alignItems:"center"}}>
    <button type="button" className="btn" onClick={onAnalyze}>{tr(lang,"Open in Stock Analysis","เปิดใน Stock Analysis")}</button>
-   <button type="button" className="btn" onClick={refer2committee} disabled={referred||refer==="sending"}>
+   {committeeEligible&&<button type="button" className="btn" onClick={refer2committee} disabled={referred||refer==="sending"}>
     {referred?tr(lang,"✓ Referred to committee","✓ ส่งเข้าที่ประชุมแล้ว"):refer==="sending"?tr(lang,"Referring…","กำลังส่ง…"):tr(lang,"Refer to committee","ส่งเข้าที่ประชุม")}
-   </button>
+   </button>}
    <button type="button" className="btn ghost" onClick={addWatchlist} disabled={state==="saving"||state==="saved"}>{state==="saved"?tr(lang,"Added to Watchlist","เพิ่ม Watchlist แล้ว"):state==="saving"?tr(lang,"Saving…","กำลังบันทึก…"):tr(lang,"Add to Watchlist","เพิ่ม Watchlist")}</button>
    {state==="error"&&<span className="neg" style={{maxWidth:520}}>{watchError}</span>}
    {refer==="error"&&<span className="neg">{referError}</span>}
-  </div>}
-  {!rejected&&candidate.price==null&&<p className="muted" style={{marginTop:8,fontSize:12}}>{tr(lang,"No price was measured for this name, so a referral carries no reference price and the committee cannot check how far it has drifted.","ไม่มีราคาที่วัดได้สำหรับหุ้นตัวนี้ การส่งเข้าที่ประชุมจะไม่มีราคาอ้างอิง และที่ประชุมจะตรวจการเคลื่อนของราคาไม่ได้")}</p>}
+  </div>
+  {!committeeEligible&&!rejected&&<p className="muted" style={{marginTop:8,fontSize:12}}>{tr(lang,"Committee referral unlocks only after the engine, Momentum Stage and Fair Value Gap ≥8% gates all pass.","ปุ่มส่งเข้าที่ประชุมจะเปิดเมื่อผ่านทั้งเกณฑ์ Engine, Momentum Stage และ Fair Value Gap ≥8%")}</p>}
  </article>
 }
 function Metric({label,value}:{label:string;value:string}){return <div className="metric"><span>{label}</span><strong>{value}</strong></div>}

@@ -123,13 +123,13 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "unavailable",
   "runDeskScan",
   "runInvestmentResearchOS",
-  "Sentinel Research OS Phase 1",
+  "Active Momentum Research V23",
   "proposals",
-  "Swing model supplies tactical timing only",
+  "lifecycle and Fair Value gates",
 ]);
 
 requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
-requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "balancedUniverse", "sourceModels", "Phase 1 factor consensus", "ENGINE_UNIVERSES"]);
+requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "balancedUniverse", "sourceModels", "RESEARCH_ENGINES", "buildEngineUniverses", "engineReports", "lifecycleStage", "valuationGapPct", "ENGINE_UNIVERSES"]);
 requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
 forbidTokens("app/api/committee/swing-scan/route.ts", [
   ["runSwingScan(", "the scan must go through lib/research/deskScan.ts so the meeting and the page agree"],
@@ -145,6 +145,36 @@ requireTokens("app/components/ResearchWorkspaceV12.tsx", [
   "source:engine",
   "body?.error",
   "watchError",
+  "ACTIVE MOMENTUM RESEARCH OS · V23",
+  "Momentum Stage",
+  "Valuation Complete",
+]);
+
+requireTokens("app/components/ActiveFundDecisionView.tsx", [
+  "DiscoveryEnginePanel",
+  "DiscoveryIdeaTable",
+  "IncompleteResearchTable",
+  "RESEARCH INCOMPLETE",
+  "lifecycleStage",
+  "valuationGapPct",
+]);
+
+requireTokens("lib/activeFundV2.ts", [
+  "active-momentum-fund-v23",
+  "RESEARCH INCOMPLETE",
+  "classifyMomentumLifecycle",
+  "Accumulation Confirmed",
+  "Fair Value is mandatory",
+  "valuation gap of 0% or less",
+]);
+
+requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
+  "Active Momentum",
+  "ACCUMULATION",
+  "EARLY_MARKUP",
+  "MOMENTUM_EXPANSION",
+  "RESEARCH INCOMPLETE",
+  "Valuation Gap",
 ]);
 
 requireTokens("lib/team/constitution.ts", [

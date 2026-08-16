@@ -91,7 +91,7 @@ async function enrichValuationGaps(review: any) {
   // New opportunities are enriched first. The old implementation stopped at 12
   // total names, so lower-ranked opportunities such as OKE/DDOG could stay blank
   // after existing holdings consumed the batch.
-  const all = [...(review?.newIdeas ?? []), ...(review?.existing ?? [])];
+  const all = [...(review?.newIdeas ?? []), ...(review?.researchIncomplete ?? []), ...(review?.existing ?? [])];
   const tickers = Array.from(new Set(all
     .filter((row: any) => String(row?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE")
     .map((row: any) => String(row?.ticker ?? "").trim().toUpperCase())
@@ -121,7 +121,10 @@ async function enrichValuationGaps(review: any) {
       currentPrice,
       targetPrice,
       expectedReturnPct: gap,
+      valuationGapPct: gap,
       valuationStatus: gap != null && Math.abs(gap) < .5 ? "NO_EDGE" : "VALID",
+      researchStatus: "COMPLETE",
+      action: row?.action === "RESEARCH INCOMPLETE" ? "WATCH" : row?.action,
       valuationSource: valuation.source ?? "THOMAS_FUNDAMENTAL_RANGE",
       valuationConfidence: valuation.confidence,
       valuationAnchors: valuation.anchors,
@@ -130,10 +133,20 @@ async function enrichValuationGaps(review: any) {
     };
   };
 
+  const patchedNew = (review?.newIdeas ?? []).map(patch);
+  const patchedIncomplete = (review?.researchIncomplete ?? []).map(patch).map((row: any) => ({
+    ...row,
+    researchStatus: "INCOMPLETE",
+    action: "RESEARCH INCOMPLETE",
+    valuationNote: row?.valuationStatus === "UNAVAILABLE"
+      ? row?.valuationNote
+      : `${row?.valuationNote ?? "Fair Value fallback completed."} Governed research must be rerun before allocation.`,
+  }));
   return {
     ...review,
     existing: (review?.existing ?? []).map(patch),
-    newIdeas: (review?.newIdeas ?? []).map(patch),
+    newIdeas: patchedNew,
+    researchIncomplete: patchedIncomplete,
   };
 }
 
@@ -208,7 +221,7 @@ export default function ActiveFundDecisionView({
           <div><span className="tag">02 · PORTFOLIO UNDERWRITING</span><h3 className="sub" style={{ margin: "8px 0 0" }}>🧠 {tr(lang, "Allocation, valuation & cash-pool check", "วิเคราะห์จัดสรรพอร์ต Valuation และ Cash Pool")}</h3></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><span className="tag">{committeeMeeting?.meetingId ?? "—"}</span><button className="btn ghost sm" type="button" onClick={() => void run()} disabled={loading}>{loading ? "…" : tr(lang, "Refresh underwriting", "อัปเดตการวิเคราะห์")}</button></div>
         </div>
-      : <><h3 className="sub">🧠 {tr(lang, "Portfolio Decision Layer", "ชั้นตัดสินใจและจัดสรรพอร์ต")}</h3><button className="btn" onClick={() => void run()} disabled={loading}>{loading ? tr(lang, "Checking Committee + building cash-pool plan…", "กำลังตรวจ Committee และสร้างแผน Cash Pool…") : tr(lang, "🏛 Run Governed Portfolio Review", "🏛 วิเคราะห์พอร์ตตามมติ Committee")}</button></>}
+      : <><h3 className="sub">🧠 {tr(lang, "Portfolio Decision Layer", "ชั้นตัดสินใจและจัดสรรพอร์ต")}</h3><button className="btn" type="button" onClick={() => void run()} disabled={loading}>{loading ? tr(lang, "Checking Committee + building cash-pool plan…", "กำลังตรวจ Committee และสร้างแผน Cash Pool…") : tr(lang, "🏛 Run Governed Portfolio Review", "🏛 วิเคราะห์พอร์ตตามมติ Committee")}</button></>}
 
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
@@ -231,19 +244,17 @@ export default function ActiveFundDecisionView({
         <Metric label={tr(lang, "US universe", "จักรวาลหุ้น US")} value={data.discovery?.broadUniverse ?? 0} />
         <Metric label={tr(lang, "Deep analyzed", "วิเคราะห์เชิงลึก")} value={data.discovery?.detailedAnalyzed ?? 0} />
         <Metric label={tr(lang, "Research engines", "Research Engines")} value={data.discovery?.models ?? 0} />
-        <Metric label={tr(lang, "New names", "หุ้นใหม่นอกพอร์ต")} value={data.discovery?.uniqueNew ?? 0} />
+        <Metric label={tr(lang, "Investment ready", "พร้อมพิจารณาลงทุน")} value={data.discovery?.uniqueNew ?? 0} />
+        <Metric label={tr(lang, "Research incomplete", "ข้อมูลยังไม่ครบ")} value={data.researchIncomplete?.length ?? data.discovery?.incomplete ?? 0} />
       </div>
 
-      <div className="notice" style={{ marginTop: 12, lineHeight: 1.65 }}>
-        <strong>Research OS V23 · Active Momentum Lifecycle</strong><br/>
-        {data.researchOpportunityMethodology ?? data.discovery?.methodology ?? tr(lang, "Separate engines search for accumulation and early momentum leadership.", "แยก Engine ค้นหา Accumulation และ Momentum Leadership ช่วงต้น")}
-      </div>
-
+      <DiscoveryEnginePanel discovery={data.discovery} lang={lang} />
       <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />
       <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
       {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
       <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} />
       <OpportunityTable rows={data.newIdeas ?? []} lang={lang} />
+      <IncompleteResearchTable rows={data.researchIncomplete ?? []} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
       <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority or the Holdings technical execution gate, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee หรือ Holdings Technical Execution Gate และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
@@ -283,6 +294,33 @@ function FundingSummary({ liquidity, lang }: { liquidity: any; lang: AppLang }) 
 
 function ExecutionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
   return <><h3 className="sub">📋 {tr(lang, "Portfolio Action Sheet", "Portfolio Action Sheet")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Decision", "มติรอบนี้")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th className="num">{tr(lang, "Approx. shares", "หุ้นโดยประมาณ")}</th><th>{tr(lang, "Funding / destination", "แหล่งเงิน / ปลายทาง")}</th><th>{tr(lang, "Note", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={`${x.ticker}-${i}`}><td><strong>{x.ticker}</strong></td><td><strong>{lang === "th" ? x.instructionTh : x.instruction}</strong></td><td>{technicalGateCell(x, lang)}</td><td className="num">{Number(x.amountUsd) > 0 ? money(x.amountUsd) : "—"}</td><td className="num">{x.sharesApprox == null ? "—" : Number(x.sharesApprox).toFixed(3)}</td><td style={{ fontSize: 11.5 }}>{fundingText(x, lang)}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.noteTh : x.note}</td></tr>)}{!rows.length && <tr><td colSpan={7} className="muted">{tr(lang, "No action rows returned.", "ยังไม่มีรายการมติพอร์ตในรอบนี้")}</td></tr>}</tbody></table></div></>;
+}
+
+function DiscoveryEnginePanel({ discovery, lang }: { discovery: any; lang: AppLang }) {
+  const engines = Array.isArray(discovery?.engines) ? discovery.engines : [];
+  return <section className="card" style={{ marginTop: 14, borderTop: "2px solid var(--accent)" }} data-active-momentum-engines="23">
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+      <div><span className="tag">ACTIVE MOMENTUM RESEARCH V23</span><h3 className="sub" style={{ margin: "9px 0 5px" }}>{tr(lang, "How the fund finds new stocks", "กองทุนค้นหาหุ้นใหม่อย่างไร")}</h3><p className="muted" style={{ margin: 0, maxWidth: 820, lineHeight: 1.6 }}>{discovery?.methodology}</p></div>
+      <span className="tag">{discovery?.broadUniverse ?? 0} US → {discovery?.detailedAnalyzed ?? 0} deep dives</span>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(205px,1fr))", gap: 9, marginTop: 14 }}>
+      {engines.map((engine: any) => <div className="metric" key={engine.id} style={{ minHeight: 118 }}>
+        <span>{engine.role}</span><strong style={{ fontSize: 14, marginTop: 7 }}>{engine.name}</strong>
+        <small className="muted" style={{ display: "block", marginTop: 7, lineHeight: 1.45 }}>{engine.searches}</small>
+        <small style={{ display: "block", marginTop: 8 }}>{tr(lang, "Qualified", "ผ่าน Engine")} · {engine.qualified ?? 0}</small>
+      </div>)}
+    </div>
+    <div className="notice" style={{ marginTop: 12 }}><strong>{tr(lang, "Mandatory path", "เส้นทางบังคับ")}:</strong> Independent Engine → ACCUMULATION, EARLY_MARKUP or MOMENTUM_EXPANSION → defensible Fair Value gap ≥8% → Committee → Technical Execution → Human Approval.</div>
+  </section>;
+}
+
+function DiscoveryIdeaTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
+  return <><h3 className="sub">🚀 {tr(lang, "Active Momentum opportunities — engine, lifecycle & fair value", "โอกาสใหม่แบบ Active Momentum — Engine, Stage และ Fair Value")}</h3><p className="muted" style={{ fontSize: 11.5 }}>{tr(lang, "Only valuation-complete names appear here. Research-incomplete names are isolated below and receive no capital.", "ส่วนนี้แสดงเฉพาะหุ้นที่ Valuation ครบ หุ้นที่ข้อมูลไม่ครบจะแยกไว้ด้านล่างและไม่ได้รับการจัดสรรเงิน")}</p><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Discovery engine", "Engine ที่ค้นพบ")}</th><th>{tr(lang, "Momentum lifecycle", "ช่วง Momentum")}</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th className="num">Momentum</th><th>{tr(lang, "Why it surfaced", "เหตุผลที่ค้นพบ")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td style={{ minWidth: 170 }}><strong>{x.primaryEngine ?? "—"}</strong><small className="muted" style={{ display: "block", marginTop: 4, lineHeight: 1.4 }}>{(x.discoveryEngines ?? x.source ?? []).join(" · ")}</small></td><td style={{ minWidth: 150 }}><strong>{x.lifecycleStage ?? "UNCONFIRMED"}</strong><small className="muted" style={{ display: "block", marginTop: 4 }}>{x.lifecycleScore ?? "—"}/100</small></td><td>{x.action ?? "—"}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ minWidth: 230, fontSize: 11, lineHeight: 1.5 }}>{(x.lifecycleEvidence ?? []).slice(0, 4).join(" · ") || x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={9} className="muted">{tr(lang, "No stock currently clears Momentum Stage and Fair Value together.", "รอบนี้ยังไม่มีหุ้นที่ผ่านทั้ง Momentum Stage และ Fair Value พร้อมกัน")}</td></tr>}</tbody></table></div></>;
+}
+
+function IncompleteResearchTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
+  if (!rows.length) return null;
+  return <><h3 className="sub">🧩 {tr(lang, "Research incomplete — excluded from allocation", "Research Incomplete — ไม่เข้าสู่การจัดสรรเงิน")}</h3><div className="notice" style={{ marginBottom: 10 }}>{tr(lang, "These names may have interesting momentum, but required evidence or the governed rerun is still incomplete. They receive no capital.", "หุ้นเหล่านี้อาจมี Momentum ที่น่าสนใจ แต่หลักฐานหรือการรันระบบตาม Governance ยังไม่ครบ จึงไม่ได้รับการจัดสรรเงิน")}</div><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Discovery engine", "Engine ที่ค้นพบ")}</th><th>{tr(lang, "Lifecycle", "Momentum Stage")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th>{tr(lang, "Missing evidence", "ข้อมูลที่ขาด")}</th><th>{tr(lang, "Next action", "งานถัดไป")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); const valued = view.target !== "PENDING" && view.target !== "—"; return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.primaryEngine ?? "—"}</td><td>{x.lifecycleStage ?? "UNCONFIRMED"}</td><td className="num">{priceText(x.currentPrice)}</td><td className="num">{view.target}</td><td className={`num ${view.className}`}>{view.upside}</td><td className={valued ? "" : "neg"}>{valued ? tr(lang, "Governed research rerun pending", "รอรัน Governed Research ใหม่") : tr(lang, "Defensible Fair Value / Valuation Gap", "Fair Value / Valuation Gap ที่เชื่อถือได้")}</td><td style={{ fontSize: 11.5 }}>{valued ? tr(lang, "Rerun the Active Momentum lifecycle, valuation and committee gates.", "รัน Active Momentum Lifecycle, Valuation และ Committee Gate ใหม่") : tr(lang, "Complete filing, DCF, comparables or analyst-consensus valuation, then rerun the lifecycle gate.", "ทำ Valuation จากงบ DCF Comparable หรือ Analyst Consensus ให้ครบ แล้วรัน Lifecycle Gate ใหม่")}</td></tr>; })}</tbody></table></div></>;
 }
 
 function IdeaTable({ rows, title, lang }: { rows: any[]; title: string; lang: AppLang }) {

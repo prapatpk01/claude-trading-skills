@@ -216,11 +216,11 @@ export async function GET(req: NextRequest) {
     const tradeContext = buildTradeContext(recentTrades, asOf);
     const recentSales = new Set([...tradeContext.entries()].filter(([, value]) => value.daysSinceSell != null && value.daysSinceSell < 30).map(([ticker]) => ticker));
     const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...recentSales]);
-    // Phase 1 is the Investment Team's broad sourcing engine. Start it early so
-    // all factor lenses run while the rest of the meeting evidence is gathered.
+    // Active Momentum Research V23 is the Investment Team's broad sourcing layer.
+    // Start it early so independent engines run while meeting evidence is gathered.
     const phase1ResearchPromise = Promise.race([
       runInvestmentResearchOS({ exclude: discoveryHeld, topN: 6, universeLimit: 32 }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Phase 1 exceeded its meeting time budget")), 42_000)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Active Momentum Research exceeded its meeting time budget")), 42_000)),
     ]);
 
     // ── benchmark first: the regime, beta and momentum all lean on it ──
@@ -528,9 +528,8 @@ export async function GET(req: NextRequest) {
       unavailable.push(`research desk scan (${e?.message ?? "unavailable"})`);
     }
 
-    // Phase 1 is independent of the tactical swing filter. A durable growth,
-    // quality, value or dividend idea must not disappear because it is not a
-    // 7–15 day momentum setup today.
+    // Independent discovery engines may source a name, but the common Active
+    // Momentum lifecycle and defensible Fair Value gates decide investability.
     try {
       const phase1 = await phase1ResearchPromise;
       researchOS = {
@@ -564,7 +563,7 @@ export async function GET(req: NextRequest) {
           ageDays: 0,
           referencePrice: proposal.price,
           priceDriftPct: 0,
-          dataQuality: `${proposal.sourceModels.length}/7 factor models qualified`,
+          dataQuality: `${proposal.discoveryEngines.length}/8 discovery engines qualified; lifecycle ${proposal.lifecycleStage}`,
           technical: technicalEvidence(candles, benchmark),
           recentTrade: tradeContext.get(proposal.ticker) ?? null,
         };
@@ -573,7 +572,7 @@ export async function GET(req: NextRequest) {
       const phase1Tickers = new Set(phase1Proposals.map(proposal => proposal.ticker));
       proposals = [...phase1Proposals, ...proposals.filter(proposal => !phase1Tickers.has(proposal.ticker))].slice(0, 10);
     } catch (e: any) {
-      unavailable.push(`Sentinel Research OS Phase 1 (${e?.message ?? "unavailable"})`);
+      unavailable.push(`Active Momentum Research V23 (${e?.message ?? "unavailable"})`);
     }
 
     // ── Priya's record: the fund's own closed decisions ──
@@ -608,7 +607,7 @@ export async function GET(req: NextRequest) {
         // Stage 1 evidence, kept beside the regime rather than folded into it.
         sentiment,
         newsPulse,
-        // Phase 1 factor discovery plus the tactical swing timing lens.
+        // Active Momentum Research V23 plus the tactical swing timing lens.
         proposals,
         scan: {
           regime: scanRegime,
@@ -617,14 +616,14 @@ export async function GET(req: NextRequest) {
           warnings: scanWarnings,
           researchOS,
           note: proposals.length
-            ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Phase 1 analyzed ${researchOS.analyzed}/${researchOS.universeSize} names across ${researchOS.models.length || 0} factor lenses; the tactical swing lens scanned ${scanUniverseSize}.`
-            : `No name cleared the combined Investment process. Phase 1 and the tactical swing lens retain every rejection reason rather than force a weak idea.`,
+            ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Active Momentum Research analyzed ${researchOS.analyzed}/${researchOS.universeSize} names across ${researchOS.models.length || 0} independent engines, then required an eligible lifecycle stage and defensible Fair Value; the tactical swing lens scanned ${scanUniverseSize}.`
+            : `No name cleared the combined Investment process. Active Momentum Research and the tactical swing lens retain every rejection reason rather than force a weak idea.`,
         },
         // The five stages of the fund's meeting, and whether each has its
         // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
           { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.regime} ${regime.score}/100; macro, fundamentals, valuation, catalysts, momentum and quant evidence assembled.` : "Investment Team cannot present without a market-regime read." },
-          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Phase 1 uses every factor lens; the Swing model supplies tactical timing only. ${proposals.length} combined model proposal(s) are shown in the opportunity list.` : `Phase 1 and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
+          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Independent discovery engines source ideas; the Active Momentum lifecycle and Fair Value gates determine whether capital may be allocated. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : `Active Momentum Research and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
           { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
           { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
           { n: 5, name: "Broker reconciliation and minutes", owner: "Fund owner", ready: false, detail: "Record actual broker activity in Holdings first. The checklist then matches ticker, side and approximate size; the owner confirms or rejects each line without creating a duplicate trade." },
