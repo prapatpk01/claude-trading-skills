@@ -4,7 +4,7 @@ import path from "node:path";
 const outDir = process.argv[2];
 if (!outDir) { console.error("usage: node scripts/test-research-v23.mjs <compiled-dir>"); process.exit(2); }
 const require_ = createRequire(import.meta.url);
-const { classifyMomentumLifecycle } = require_(path.resolve(outDir, "research/momentumLifecycle.js"));
+const { classifyMomentumLifecycle } = require_(path.resolve(outDir, "momentumLifecycle.js"));
 
 let passed = 0, failed = 0;
 function ok(name, condition, detail = "") {
