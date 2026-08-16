@@ -46,6 +46,9 @@ jobs:
       - name: Runtime safety audit
         run: npm run audit:safety
 
+      - name: Decision Authority V22 three-round simulation
+        run: npm run test:authority-v22
+
       - name: TypeScript check
         run: npm run typecheck
 

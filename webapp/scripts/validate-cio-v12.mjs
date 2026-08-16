@@ -3,7 +3,7 @@
 // These assert that the meeting is wired to the engine and that the governance
 // language a reader relies on is actually present — not that any particular
 // number appears, which is the engine's business and is covered by
-// scripts/test-committee.mjs.
+// scripts/test-committee.mjs and scripts/test-authority-v22.mjs.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -50,7 +50,25 @@ forbidTokens("app/components/CIOCommandCenterV20.tsx", [
   ["summary?.winRate\\b", "the performance summary key is winRatePct"],
 ]);
 
+// V22 preserves the prior committee engine byte-for-byte in committeeLegacy.ts
+// and keeps committee.ts as a small governance wrapper. Validate both layers.
 requireTokens("lib/team/committee.ts", [
+  "export * from \"./committeeLegacy\"",
+  "runLegacyCommitteeMeeting",
+  "applyDecisionAuthorityV22",
+  "export function runCommitteeMeeting",
+]);
+requireTokens("lib/team/authorityV22.ts", [
+  "Chief Investment Underwriter",
+  "Portfolio Capital Allocator",
+  "Forward Risk Officer",
+  "Chief Portfolio Decision Maker",
+  "CONDITIONAL",
+  "WAIT FOR TRIGGER",
+  "HOLD CASH/SGOV",
+  "applyDecisionAuthorityV22",
+]);
+requireTokens("lib/team/committeeLegacy.ts", [
   "export function runCommitteeMeeting",
   "MIN_COVERAGE_PCT",
   "HARD_CAP_PCT",
@@ -84,10 +102,12 @@ for (const file of [
 }
 
 requireTokens("app/api/portfolio/optimizer/route.ts", ["fundingSource", "proceedsDestination", "converting them to USD cannot close this gap"]);
-forbidTokens("lib/team/committee.ts", [
-  ["fetch(", "the meeting engine must not touch the network"],
-  ["Date.now()", "the engine must use the asOf it is given, not the clock"],
-]);
+for (const file of ["lib/team/committee.ts", "lib/team/committeeLegacy.ts", "lib/team/authorityV22.ts"]) {
+  forbidTokens(file, [
+    ["fetch(", "the meeting engine must not touch the network"],
+    ["Date.now()", "the engine must use the asOf it is given, not the clock"],
+  ]);
+}
 
 requireTokens("app/api/committee/meeting/route.ts", [
   "runCommitteeMeeting",
@@ -132,7 +152,7 @@ requireTokens("lib/team/constitution.ts", [
   "HARD_RULES", "TRIM_REQUIRES_REPLACEMENT", "WIN_RATE_DISCLOSURE",
   "permittedDeployFraction", "softBlockApplies", "zoneForWeight",
 ]);
-requireTokens("lib/team/committee.ts", [
+requireTokens("lib/team/committeeLegacy.ts", [
   "TRIM_REQUIRES_REPLACEMENT", "permittedDeployFraction", "winRatePresentation",
   "Rule #3", "Rule #2", "FUND_CONSTITUTION_VERSION",
   "buildDeskReports", "deskReports", "gaps",
