@@ -75,30 +75,44 @@ function compactCommittee(snapshot: CommitteeSnapshot) {
   };
 }
 
-async function enrichValuationGaps(review: any) {
-  const all = [...(review?.existing ?? []), ...(review?.newIdeas ?? [])];
-  const tickers = Array.from(new Set(all
-    .filter((row: any) => String(row?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE")
-    .map((row: any) => String(row?.ticker ?? "").trim().toUpperCase())
-    .filter((ticker: string) => ticker)))
-    .slice(0, 12);
-  if (!tickers.length) return review;
-
+async function valuationBatch(tickers: string[]) {
   const response = await fetch(`/api/valuation-fallback?t=${Date.now()}`, {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
     body: JSON.stringify({ tickers }),
   });
-  if (!response.ok) return review;
+  if (!response.ok) return [] as any[];
   const payload = await response.json().catch(() => ({ rows: [] }));
-  const map = new Map((payload?.rows ?? []).map((row: any) => [String(row.ticker).toUpperCase(), row]));
+  return Array.isArray(payload?.rows) ? payload.rows : [];
+}
+
+async function enrichValuationGaps(review: any) {
+  // New opportunities are enriched first. The old implementation stopped at 12
+  // total names, so lower-ranked opportunities such as OKE/DDOG could stay blank
+  // after existing holdings consumed the batch.
+  const all = [...(review?.newIdeas ?? []), ...(review?.existing ?? [])];
+  const tickers = Array.from(new Set(all
+    .filter((row: any) => String(row?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE")
+    .map((row: any) => String(row?.ticker ?? "").trim().toUpperCase())
+    .filter((ticker: string) => ticker)));
+  if (!tickers.length) return review;
+
+  const fallbackRows: any[] = [];
+  for (let i = 0; i < tickers.length; i += 12) fallbackRows.push(...await valuationBatch(tickers.slice(i, i + 12)));
+  const map = new Map(fallbackRows.map((row: any) => [String(row.ticker).toUpperCase(), row]));
 
   const patch = (row: any) => {
     if (String(row?.valuationStatus ?? "UNAVAILABLE") !== "UNAVAILABLE") return row;
     const fallback: any = map.get(String(row?.ticker ?? "").toUpperCase());
     const valuation = fallback?.valuation;
-    if (!valuation?.targetPrice || !(Number(valuation.targetPrice) > 0)) return row;
+    if (!valuation?.targetPrice || !(Number(valuation.targetPrice) > 0)) {
+      return {
+        ...row,
+        valuationFallbackTried: true,
+        valuationNote: row?.valuationNote || "Thomas + filing + Yahoo analyst/history fallbacks returned no defensible target. Keep as WATCH; do not manufacture fair value from spot.",
+      };
+    }
     const currentPrice = Number(row?.currentPrice) > 0 ? Number(row.currentPrice) : Number(fallback?.currentPrice) || null;
     const targetPrice = Number(valuation.targetPrice);
     const gap = currentPrice && currentPrice > 0 ? (targetPrice / currentPrice - 1) * 100 : null;
@@ -111,6 +125,7 @@ async function enrichValuationGaps(review: any) {
       valuationSource: valuation.source ?? "THOMAS_FUNDAMENTAL_RANGE",
       valuationConfidence: valuation.confidence,
       valuationAnchors: valuation.anchors,
+      valuationFallbackTried: true,
       valuationNote: `${valuation.method} Bear $${Number(valuation.bearPrice).toFixed(2)} · Base $${targetPrice.toFixed(2)} · Bull $${Number(valuation.bullPrice).toFixed(2)} · ${valuation.confidence} confidence.`,
     };
   };
@@ -119,6 +134,25 @@ async function enrichValuationGaps(review: any) {
     ...review,
     existing: (review?.existing ?? []).map(patch),
     newIdeas: (review?.newIdeas ?? []).map(patch),
+  };
+}
+
+async function enrichResearchOpportunities(review: any) {
+  const rows = (review?.newIdeas ?? []).slice(0, 24);
+  if (!rows.length) return review;
+  const response = await fetch(`/api/research-opportunity-enrichment?t=${Date.now()}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+    body: JSON.stringify({ rows }),
+  });
+  if (!response.ok) return review;
+  const payload = await response.json().catch(() => ({ rows: [] }));
+  const map = new Map((payload?.rows ?? []).map((row: any) => [String(row.ticker).toUpperCase(), row]));
+  return {
+    ...review,
+    researchOpportunityMethodology: payload?.methodology ?? null,
+    newIdeas: (review?.newIdeas ?? []).map((row: any) => ({ ...row, ...(map.get(String(row.ticker).toUpperCase()) ?? {}) })),
   };
 }
 
@@ -151,7 +185,8 @@ export default function ActiveFundDecisionView({
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || "Review failed");
-      setData(await enrichValuationGaps(json));
+      const valued = await enrichValuationGaps(json);
+      setData(await enrichResearchOpportunities(valued));
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -177,8 +212,8 @@ export default function ActiveFundDecisionView({
 
     <p className="muted" style={{ fontSize: 12, lineHeight: 1.65 }}>
       {tr(lang,
-        "This is part of the same CIO meeting. Committee authority still controls sizing, while the Holdings Sentinel X/MCDX technical overlay is now the execution gate for existing-position ADDs. Fair Value is valuation evidence; T1/T2/S1 are separate technical execution levels and are never treated as the same target.",
-        "ส่วนนี้อยู่ใน CIO Meeting เดียวกัน โดย Committee ยังเป็นผู้กำหนดขนาดรายการ แต่ ADD ในหุ้นที่ถืออยู่ต้องผ่าน Technical Gate ชุดเดียวกับ Holdings (Sentinel X/MCDX) ด้วย Fair Value คือหลักฐานด้าน Valuation ส่วน T1/T2/S1 คือระดับ Technical Execution คนละความหมายและจะไม่ถูกใช้แทนกัน")}
+        "This is part of the same CIO meeting. Research OS V23 now searches with separate engines and an Active Momentum Lifecycle. Committee authority controls sizing; the shared Holdings technical overlay controls execution. Fair Value and T1/T2/S1 remain separate valuation vs execution evidence.",
+        "ส่วนนี้อยู่ใน CIO Meeting เดียวกัน Research OS V23 แยก Engine ค้นหาหุ้นจริงและใช้ Active Momentum Lifecycle โดย Committee คุมขนาดรายการ ส่วน Technical Overlay ชุดเดียวกับ Holdings คุมจังหวะ Execution และ Fair Value แยกจาก T1/T2/S1 ชัดเจน")}
     </p>
     {authoritySource && <span className="tag">{authoritySource}</span>}
     {loading && !data && <div className="notice" style={{ marginTop: 12 }}><span className="spinner" /> {tr(lang, "Building the portfolio underwriting package…", "กำลังสร้างชุดวิเคราะห์พอร์ตของการประชุมเดียวกัน…")}</div>}
@@ -195,15 +230,20 @@ export default function ActiveFundDecisionView({
       <div className="grid cols-4" style={{ marginTop: 14 }}>
         <Metric label={tr(lang, "US universe", "จักรวาลหุ้น US")} value={data.discovery?.broadUniverse ?? 0} />
         <Metric label={tr(lang, "Deep analyzed", "วิเคราะห์เชิงลึก")} value={data.discovery?.detailedAnalyzed ?? 0} />
-        <Metric label={tr(lang, "Qualified", "ผ่าน Research")} value={data.discovery?.qualified ?? 0} />
+        <Metric label={tr(lang, "Research engines", "Research Engines")} value={data.discovery?.models ?? 0} />
         <Metric label={tr(lang, "New names", "หุ้นใหม่นอกพอร์ต")} value={data.discovery?.uniqueNew ?? 0} />
+      </div>
+
+      <div className="notice" style={{ marginTop: 12, lineHeight: 1.65 }}>
+        <strong>Research OS V23 · Active Momentum Lifecycle</strong><br/>
+        {data.researchOpportunityMethodology ?? data.discovery?.methodology ?? tr(lang, "Separate engines search for accumulation and early momentum leadership.", "แยก Engine ค้นหา Accumulation และ Momentum Leadership ช่วงต้น")}
       </div>
 
       <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />
       <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
       {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
       <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} />
-      <IdeaTable rows={data.newIdeas ?? []} title={tr(lang, "New opportunities — valuation & research", "โอกาสใหม่ — Valuation และ Research")} lang={lang} />
+      <OpportunityTable rows={data.newIdeas ?? []} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
       <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority or the Holdings technical execution gate, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee หรือ Holdings Technical Execution Gate และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
@@ -246,22 +286,41 @@ function ExecutionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
 }
 
 function IdeaTable({ rows, title, lang }: { rows: any[]; title: string; lang: AppLang }) {
-  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">{tr(lang, "Fair Value", "Fair Value")}</th><th className="num">{tr(lang, "Valuation gap", "Valuation Gap")}</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th>{tr(lang, "Valuation", "Valuation")}</th><th className="num">Momentum</th><th>{tr(lang, "Thesis", "Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td style={{ fontSize: 11, minWidth: 190 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}{x.valuationConfidence ? ` · ${x.valuationConfidence}` : ""}</span>{x.valuationNote ? <small style={{ display: "block", marginTop: 5, lineHeight: 1.4 }}>{x.valuationNote}</small> : null}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 4 }}>{view.warning}</small> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={10} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}</tbody></table></div></>;
+  return <><h3 className="sub">{title}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th>Valuation</th><th className="num">Momentum</th><th>Thesis</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "—"}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td style={{ fontSize: 11, minWidth: 190 }}><strong>{view.status}</strong><br/><span className="muted">{sourceText(x.valuationSource, lang)}{x.valuationConfidence ? ` · ${x.valuationConfidence}` : ""}</span>{x.valuationNote ? <small style={{ display: "block", marginTop: 5, lineHeight: 1.4 }}>{x.valuationNote}</small> : null}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 4 }}>{view.warning}</small> : null}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5 }}>{x.thesis}</td></tr>; })}{!rows.length && <tr><td colSpan={10} className="muted">{tr(lang, "No analyzed names returned.", "รอบนี้ยังไม่มีหลักทรัพย์ที่ผ่านการวิเคราะห์")}</td></tr>}</tbody></table></div></>;
+}
+
+function OpportunityTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
+  return <><h3 className="sub">🚀 {tr(lang, "New opportunities — engine, momentum lifecycle, valuation & execution", "โอกาสใหม่ — Engine, Momentum Lifecycle, Valuation และ Execution")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Research engine", "Research Engine")}</th><th>{tr(lang, "Momentum stage", "Momentum Stage")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th className="num">Momentum</th><th>{tr(lang, "Why selected / thesis", "เหตุผลที่ค้นพบ / Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong>{x.researchState ? <small className="muted" style={{ display: "block", marginTop: 4 }}>{x.researchState}</small> : null}</td><td>{x.action ?? "WATCH"}</td><td style={{ minWidth: 150 }}><strong>{x.researchEngine ?? researchEngineFromSource(x.source)}</strong><small className="muted" style={{ display: "block", marginTop: 4 }}>{Array.isArray(x.source) ? x.source.slice(1, 4).join(" · ") : ""}</small></td><td style={{ minWidth: 155 }}>{lifecycleCell(x, lang)}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td className="num">{x.momentum == null ? "PENDING" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5, minWidth: 220 }}><strong>{x.lifecycleReason ?? ""}</strong>{x.lifecycleReason ? <br/> : null}{x.thesis}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 5 }}>{view.warning}</small> : null}</td></tr>; })}{!rows.length && <tr><td colSpan={11} className="muted">{tr(lang, "No active-momentum opportunity survived the research engines this cycle.", "รอบนี้ยังไม่มีหุ้นที่ผ่าน Engine และ Active Momentum Lifecycle")}</td></tr>}</tbody></table></div></>;
 }
 
 function ReplacementTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
   return <><h3 className="sub">🔄 {tr(lang, "Replacement Alpha — ranking only, cash still pools first", "Replacement Alpha — ใช้จัดอันดับ แต่เงินต้องรวม Cash Pool ก่อน")}</h3>{rows.length ? <div className="table-wrap"><table className="tbl"><thead><tr><th>{tr(lang, "Funding pool", "แหล่งเงินรวม")}</th><th>{tr(lang, "Destination", "ปลายทาง")}</th><th className="num">{tr(lang, "Amount", "วงเงิน")}</th><th>{tr(lang, "Reason", "เหตุผล")}</th></tr></thead><tbody>{rows.map((x: any, i: number) => <tr key={i}><td><strong>{x.from}</strong>{x.sourceHolding ? <small style={{ display: "block", color: "var(--muted)" }}>{tr(lang, "weak-link contributor", "หุ้น Weak Link")}: {x.sourceHolding}</small> : null}</td><td><strong>{x.to}</strong></td><td className="num">{money(x.rotateUsd)} · {x.rotatePct}% NAV</td><td style={{ fontSize: 11.5 }}>{x.reason}</td></tr>)}</tbody></table></div> : <div className="notice">{tr(lang, "No Committee-approved rotation this cycle. Sale proceeds remain in the Cash Buffer Pool.", "รอบนี้ไม่มี Rotation ที่ Committee อนุมัติ เงินจากการขายจึงพักใน Cash Buffer Pool")}</div>}</>;
 }
 
+function researchEngineFromSource(source: unknown) {
+  const rows = Array.isArray(source) ? source.map(value => String(value).toUpperCase()) : [];
+  const map: Record<string, string> = { MOMENTUM: "Momentum Lifecycle", INSTITUTIONAL: "Institutional Accumulation", GROWTH: "Growth Acceleration", QUALITY: "Quality Leadership", VALUE: "Valuation Room-to-Run", AI: "Catalyst / AI Theme", DIVIDEND: "Income Momentum" };
+  for (const row of rows) for (const [key, label] of Object.entries(map)) if (row === key) return label;
+  return rows.some(row => row.includes("WATCHLIST")) ? "Watchlist Re-underwrite" : "Research OS / Multi-engine";
+}
+
+function lifecycleCell(x: any, lang: AppLang) {
+  const stage = String(x?.lifecycleStage ?? "UNCONFIRMED");
+  const good = ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(stage);
+  const bad = ["MATURE", "WEAKENING"].includes(stage);
+  const label = stage.replaceAll("_", " ");
+  return <div><strong className={good ? "pos" : bad ? "neg" : ""}>{label}</strong>{x.lifecycleScore != null ? <small className="muted" style={{ display: "block", marginTop: 3 }}>{tr(lang, "Lifecycle", "Lifecycle")} {Number(x.lifecycleScore).toFixed(0)}/100</small> : null}</div>;
+}
+
 function technicalGateCell(x: any, lang: AppLang) {
   const decision = String(x?.technicalDecision ?? "").trim();
-  if (!decision) return <span className="muted">—</span>;
+  if (!decision) return <span className="muted">PENDING</span>;
   const cls = decision === "ADD" ? "pos" : decision === "TRIM" || decision === "EXIT REVIEW" ? "neg" : "";
   return <div style={{ minWidth: 125 }}><strong className={cls}>{decision}</strong>{x.technicalConfidence != null ? <small className="muted" style={{ display: "block", marginTop: 3 }}>{tr(lang, "Confidence", "ความมั่นใจ")} {Number(x.technicalConfidence).toFixed(0)}%</small> : null}</div>;
 }
 
 function executionLevelsCell(x: any, lang: AppLang) {
-  if (x?.technicalTarget1 == null && x?.technicalTarget2 == null && x?.technicalSupport1 == null) return <span className="muted">—</span>;
+  if (x?.technicalTarget1 == null && x?.technicalTarget2 == null && x?.technicalSupport1 == null) return <span className="muted">WAIT GATE</span>;
   return <div style={{ minWidth: 145, lineHeight: 1.5 }}><span style={{ display: "block" }}>T1 <strong>{priceText(x.technicalTarget1)}</strong></span><span style={{ display: "block" }}>T2 <strong>{x.technicalTarget2 == null ? tr(lang, "Conditional", "มีเงื่อนไข") : priceText(x.technicalTarget2)}</strong></span><span style={{ display: "block" }}>S1 <strong>{priceText(x.technicalSupport1)}</strong></span>{x.technicalRoomAtr != null ? <small className="muted">Room {Number(x.technicalRoomAtr).toFixed(2)} ATR</small> : null}</div>;
 }
 
@@ -276,7 +335,7 @@ function valuationView(x: any, lang: AppLang) {
   const status = String(x.valuationStatus ?? "UNAVAILABLE");
   const price = Number(x.currentPrice);
   const target = Number(x.targetPrice);
-  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "—", upside: "—", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "Institutional, filing, Yahoo analyst consensus and Yahoo-history fallbacks were exhausted; no synthetic spot target is shown.", "ลองครบทั้ง Institutional, Filing, Yahoo Analyst Consensus และ Yahoo History แล้ว จึงไม่ใช้ราคาปัจจุบันสร้าง Target ปลอม") };
+  if (status === "UNAVAILABLE" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(target) || target <= 0) return { target: "PENDING", upside: "PENDING", className: "muted", status: tr(lang, "DATA GAP", "ข้อมูล Valuation ยังไม่พอ"), warning: tr(lang, "Thomas, filing and Yahoo analyst/history fallbacks were attempted. This name cannot become BUY-ready until a defensible target exists; spot is never used to invent fair value.", "ระบบลอง Thomas, Filing และ Yahoo Analyst/History แล้ว หุ้นนี้จะยังเป็น BUY-ready ไม่ได้จนกว่าจะมี Fair Value ที่เชื่อถือได้ และจะไม่ใช้ Spot สร้างราคาเป้าหมายปลอม") };
   const gap = (target / price - 1) * 100;
   if (status === "NO_EDGE" || Math.abs(gap) < .5) return { target: money(target), upside: "≈0%", className: "muted", status: tr(lang, "NO EDGE", "ไม่มี Valuation Edge"), warning: "" };
   return { target: money(target), upside: `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}%`, className: gap >= 0 ? "pos" : "neg", status: tr(lang, "VALUED", "มี Fair Value"), warning: "" };

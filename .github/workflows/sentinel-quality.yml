@@ -49,6 +49,9 @@ jobs:
       - name: Decision Authority V22 three-round simulation
         run: npm run test:authority-v22
 
+      - name: Research OS V23 lifecycle simulation
+        run: npm run test:research-v23
+
       - name: TypeScript check
         run: npm run typecheck
 
