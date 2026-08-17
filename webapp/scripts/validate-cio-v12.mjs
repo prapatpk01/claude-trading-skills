@@ -169,30 +169,33 @@ requireTokens("app/components/ActiveFundDecisionView.tsx", [
 ]);
 
 requireTokens("lib/activeFundV2.ts", [
-  "active-momentum-fund-v23",
+  "active-momentum-fund-v24",
   "RESEARCH INCOMPLETE",
   "classifyMomentumLifecycle",
   "Accumulation Confirmed",
   "Fair Value is mandatory",
-  "valuation gap of 0% or less",
+  "materially negative valuation room",
+  "AM marginal-alpha board",
+  "marketLeadership",
   "FUND_HOLDING_POLICY",
   "searchBasis",
   "investmentHorizon",
 ]);
 
-requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
+requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V24.md", [
   "Active Momentum",
+  "market regime",
+  "sector leadership",
   "ACCUMULATION",
   "EARLY_MARKUP",
   "MOMENTUM_EXPANSION",
   "RESEARCH INCOMPLETE",
-  "Valuation Gap",
-  "SEC EDGAR",
+  "Fair Value",
+  "listed-US master universe",
   "3-day",
-  "Research Queue",
-  "Thomas",
-  "4–16 weeks",
-  "Quarterly",
+  "marginal-alpha",
+  "Cash Floor",
+  "quarterly",
 ]);
 
 requireTokens("lib/team/constitution.ts", [
