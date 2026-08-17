@@ -34,6 +34,14 @@ const REITS = new Set(["O", "NNN", "OHI", "PLD", "AMT", "EQIX", "WELL", "SPG", "
 const memory = new Map<string, ThomasValuationSnapshot>();
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+
+function median(values: number[]) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
 
 function modelRoute(ticker: string): ThomasModelRoute {
   if (CASH.has(ticker)) return "CASH_EQUIVALENT";
@@ -53,6 +61,101 @@ function verdictForGap(gapPct: number, bandPct = 10) {
 
 function expiry(asOf: Date, days: number) {
   return new Date(asOf.getTime() + days * 86400000).toISOString();
+}
+
+/**
+ * ETF fallback when issuer NAV/holdings and a usable distribution history are
+ * unavailable from the live feeds. This is deliberately labelled a
+ * price-history proxy rather than fundamental NAV: it combines a log trend
+ * endpoint with 3- and 6-month median prices, then widens Bear/Bull by realised
+ * volatility. It gives the committee a transparent valuation gap without
+ * pretending an ETF has company EPS or analyst coverage.
+ */
+function etfHistorySnapshot(input: {
+  ticker: string;
+  candles: Candle[];
+  price: number;
+  asOf: Date;
+  ttlDays: number;
+}): ThomasValuationSnapshot | null {
+  const window = input.candles
+    .filter(candle => Number.isFinite(candle.close) && candle.close > 0)
+    .slice(-252);
+  if (window.length < 120 || !(input.price > 0)) return null;
+
+  const closes = window.map(candle => candle.close);
+  const median63 = median(closes.slice(-63));
+  const median126 = median(closes.slice(-126));
+  if (!(median63 && median126)) return null;
+
+  const logs = closes.map(Math.log);
+  const n = logs.length;
+  const sx = n * (n - 1) / 2;
+  const sxx = n * (n - 1) * (2 * n - 1) / 6;
+  const sy = logs.reduce((sum, value) => sum + value, 0);
+  const sxy = logs.reduce((sum, value, index) => sum + value * index, 0);
+  const denominator = n * sxx - sx * sx;
+  if (!denominator) return null;
+  const slope = (n * sxy - sx * sy) / denominator;
+  const intercept = (sy - slope * sx) / n;
+  const trendValue = Math.exp(intercept + slope * (n - 1));
+  if (!(trendValue > 0) || !Number.isFinite(trendValue)) return null;
+
+  const meanLog = sy / n;
+  let totalVariation = 0;
+  let residualVariation = 0;
+  for (let index = 0; index < n; index += 1) {
+    const fit = intercept + slope * index;
+    totalVariation += (logs[index] - meanLog) ** 2;
+    residualVariation += (logs[index] - fit) ** 2;
+  }
+  const r2 = totalVariation > 0 ? clamp(1 - residualVariation / totalVariation, 0, 1) : 0;
+
+  // The regression carries more weight when the ETF has a coherent trend;
+  // medians carry more weight in a range. Neither anchor is spot itself.
+  const trendWeight = 0.4 + r2 * 0.35;
+  const median63Weight = 0.4 - r2 * 0.2;
+  const median126Weight = 1 - trendWeight - median63Weight;
+  const rawFair = trendValue * trendWeight + median63 * median63Weight + median126 * median126Weight;
+  const ratio = rawFair / input.price;
+  if (!Number.isFinite(rawFair) || ratio < 0.6 || ratio > 1.6) return null;
+
+  const returns: number[] = [];
+  for (let index = 1; index < closes.length; index += 1) {
+    returns.push(Math.log(closes[index] / closes[index - 1]));
+  }
+  const meanReturn = returns.reduce((sum, value) => sum + value, 0) / Math.max(1, returns.length);
+  const variance = returns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) / Math.max(1, returns.length - 1);
+  const realisedVolPct = Math.sqrt(variance) * Math.sqrt(252) * 100;
+  const scenarioBandPct = clamp(realisedVolPct * 0.75, 8, 20);
+  const fair = round2(rawFair);
+  const gap = round2((fair / input.price - 1) * 100);
+
+  return {
+    ticker: input.ticker,
+    status: "COMPLETE",
+    modelRoute: "ETF_LOOK_THROUGH",
+    source: "THOMAS_ETF_PRICE_HISTORY_PROXY",
+    currentPrice: input.price,
+    fairValue: fair,
+    bearValue: round2(fair * (1 - scenarioBandPct / 100)),
+    bullValue: round2(fair * (1 + scenarioBandPct / 100)),
+    valuationGapPct: gap,
+    verdict: verdictForGap(gap, Math.max(8, scenarioBandPct * 0.6)),
+    confidence: "LOW",
+    anchors: [
+      {
+        method: "ETF price-history proxy",
+        fairValue: fair,
+        weight: 1,
+        detail: `${n} sessions; log-trend $${round2(trendValue).toFixed(2)} (R² ${r2.toFixed(2)}), 3M median $${round2(median63).toFixed(2)}, 6M median $${round2(median126).toFixed(2)}, realised volatility ${realisedVolPct.toFixed(1)}%.`,
+      },
+    ],
+    note: `Issuer NAV/holdings and distribution-yield anchors were unavailable. Thomas therefore uses a low-confidence ETF price-history proxy; Bear/Base/Bull are volatility-scaled and must not be presented as fundamental NAV.`,
+    warnings: ["ETF fair value is a price-history proxy until issuer NAV/holdings or a usable distribution history is available."],
+    asOf: input.asOf.toISOString(),
+    expiresAt: expiry(input.asOf, Math.min(input.ttlDays, 7)),
+  };
 }
 
 function valid(snapshot: ThomasValuationSnapshot | null | undefined, now = new Date()) {
@@ -137,6 +240,18 @@ export async function resolveThomasValuation(input: {
       valuationGapPct: gap, verdict: primary.verdict, confidence: primary.confidence.toUpperCase() as "HIGH" | "MEDIUM" | "LOW",
       anchors: primary.anchors, note: primary.note, warnings, asOf: asOf.toISOString(), expiresAt: expiry(asOf, input.ttlDays ?? 7),
     };
+  }
+
+  if (route === "ETF_LOOK_THROUGH") {
+    const fallback = etfHistorySnapshot({
+      ticker,
+      candles: input.candles,
+      price: input.price,
+      asOf,
+      ttlDays: input.ttlDays ?? 7,
+    });
+    if (fallback) return fallback;
+    warnings.push("ETF price-history proxy unavailable because fewer than 120 valid sessions or an implausible anchor was returned.");
   }
 
   // Analyst consensus is a governed secondary anchor, never a target derived
