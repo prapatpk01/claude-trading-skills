@@ -244,6 +244,8 @@ export async function GET(req: NextRequest) {
     if (!benchmark.length) unavailable.push("SPY benchmark history (Yahoo chart endpoint)");
 
     // ── the ledger's own numbers, not a second computation of them ──
+    // Keep this snapshot identical to /api/portfolio/cash-buffer by delegating
+    // both consumers to buildCashBufferSnapshot rather than fetching our own API.
     let buffer: any = null;
     try { buffer = await buildCashBufferSnapshot(); }
     catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }
