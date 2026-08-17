@@ -1,4 +1,4 @@
-import { getSupabase } from "@/lib/supabase";
+import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
 import { yahooCandles } from "@/lib/yahoo";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
@@ -46,6 +46,29 @@ function classifyCash(rows: Array<{ entry_type?: string | null; amount?: unknown
   const dividendNet = Math.max(0, dividendGrossCash - dividendTax);
   const dividendAvailable = Math.max(0, dividendNet - dividendWithdrawn);
   return { investmentCash, dividendGrossCash, dividendTax, dividendNet, dividendWithdrawn, dividendAvailable, realizedInvestmentProfit: dividendWithdrawn };
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, "0");
+}
+
+export function portfolioHoldingsRevision(rows: Holding[]) {
+  return stableHash(rows
+    .map((row) => `${row.ticker.toUpperCase()}:${Number(row.shares).toFixed(8)}:${Number(row.avg_cost).toFixed(8)}`)
+    .sort()
+    .join("|"));
+}
+
+function cashRevision(rows: Array<{ entry_type?: string | null; amount?: unknown; notes?: string | null }>) {
+  return stableHash(rows
+    .map((row) => `${String(row.entry_type ?? "")}:${(finite(row.amount) ?? 0).toFixed(8)}:${String(row.notes ?? "")}`)
+    .sort()
+    .join("|"));
 }
 
 const sma = (values: number[], length: number): number | null => {
@@ -190,6 +213,8 @@ export async function buildCashBufferSnapshot() {
     missingPrices,
     provisionalPrices,
     holdingsSource: ledgerRead.origin,
+    holdingsRevision: portfolioHoldingsRevision(holdings),
+    cashRevision: cashRevision(cashRows ?? []),
     unbackedPositions: ledgerRead.unbacked,
     shareMismatches: ledgerRead.shareMismatches,
     reconciliationNote: ledgerRead.note,
@@ -233,5 +258,120 @@ export async function buildCashBufferSnapshot() {
       provisionalPricingRule: "Live market price first. If unavailable, broker cost basis may be used only as a clearly flagged provisional NAV mark; it never becomes a fair-value target.",
       principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. The regime cash percentage is a hard minimum floor from the fund constitution; only the overfunded classification uses an additional margin above that floor.",
     },
+  };
+}
+
+type CashBufferSnapshot = Awaited<ReturnType<typeof buildCashBufferSnapshot>>;
+
+function applyFreshCash(
+  snapshot: CashBufferSnapshot,
+  rows: Array<{ entry_type?: string | null; amount?: unknown; notes?: string | null }>,
+) {
+  const cash = classifyCash(rows);
+  const liquidCash = cash.investmentCash + cash.dividendAvailable;
+  const totalReserveAssets = liquidCash + snapshot.reserveMarketValue;
+  const haircutAdjustedReserveAssets = liquidCash + snapshot.reserveLiquidityValue;
+  const totalNav = snapshot.totalNav;
+  const bufferPct = totalNav != null && totalNav > 0 ? (totalReserveAssets / totalNav) * 100 : null;
+  const targetValue = totalNav != null ? totalNav * snapshot.targetPct / 100 : null;
+  const gapValue = targetValue != null ? totalReserveAssets - targetValue : null;
+  const shortfallValue = gapValue != null ? Math.max(0, -gapValue) : null;
+  const deployableCash = gapValue != null ? Math.max(0, gapValue) : null;
+  const posture = bufferPct == null
+    ? "UNVERIFIED"
+    : bufferPct < snapshot.targetPct
+      ? "UNDERFUNDED"
+      : bufferPct > snapshot.overfundedThresholdPct
+        ? "OVERFUNDED"
+        : "ON_TARGET";
+  const action = posture === "UNDERFUNDED"
+    ? "RAISE_BUFFER"
+    : posture === "OVERFUNDED"
+      ? "DEPLOY_EXCESS"
+      : posture === "ON_TARGET"
+        ? "MAINTAIN"
+        : "VERIFY_PRICES";
+
+  return {
+    ...snapshot,
+    cashBalance: cash.investmentCash,
+    investmentCash: cash.investmentCash,
+    dividendGrossCash: cash.dividendGrossCash,
+    dividendTax: cash.dividendTax,
+    dividendNet: cash.dividendNet,
+    dividendWithdrawn: cash.dividendWithdrawn,
+    dividendAvailable: cash.dividendAvailable,
+    realizedInvestmentProfit: cash.realizedInvestmentProfit,
+    liquidCash,
+    totalReserveAssets,
+    haircutAdjustedReserveAssets,
+    grossBuffer: totalReserveAssets,
+    liquidityBuffer: totalReserveAssets,
+    riskAdjustedLiquidityBuffer: haircutAdjustedReserveAssets,
+    bufferPct,
+    targetValue,
+    gapValue,
+    shortfallValue,
+    deployableCash,
+    posture,
+    action,
+    cashRevision: cashRevision(rows),
+  };
+}
+
+/**
+ * Build the production portfolio snapshot used by Holdings, Active Fund and CIO.
+ *
+ * Quotes are slower than ledger reads. A trade or cash edit can therefore land
+ * while prices are being gathered. We verify holdings after pricing (and retry
+ * once if they changed), then read cash last. This prevents an older in-flight
+ * request from becoming a plausible-looking current CIO meeting.
+ */
+export async function buildAuthoritativeCashBufferSnapshot() {
+  const sb = getSupabaseAdmin() ?? getSupabase();
+  if (!sb) throw new Error("Supabase is not configured.");
+
+  let snapshot = await buildCashBufferSnapshot();
+  let finalHoldings = await loadOpenHoldings(sb);
+  let finalRows: Holding[] = finalHoldings.rows.map((row) => ({
+    ticker: String(row.ticker).toUpperCase(),
+    shares: Number(row.shares),
+    avg_cost: Number(row.avg_cost),
+  }));
+  let finalHoldingsRevision = portfolioHoldingsRevision(finalRows);
+
+  if (finalHoldingsRevision !== snapshot.holdingsRevision) {
+    snapshot = await buildCashBufferSnapshot();
+    finalHoldings = await loadOpenHoldings(sb);
+    finalRows = finalHoldings.rows.map((row) => ({
+      ticker: String(row.ticker).toUpperCase(),
+      shares: Number(row.shares),
+      avg_cost: Number(row.avg_cost),
+    }));
+    finalHoldingsRevision = portfolioHoldingsRevision(finalRows);
+  }
+
+  const holdingsConsistent = finalHoldingsRevision === snapshot.holdingsRevision;
+  const { data: cashRows, error: cashError } = await sb
+    .from("cash_ledger")
+    .select("entry_type,amount,notes");
+
+  const withFreshCash = !cashError && cashRows
+    ? applyFreshCash(snapshot, cashRows)
+    : snapshot;
+  const asOf = new Date().toISOString();
+  const portfolioRevision = stableHash(`${finalHoldingsRevision}|${withFreshCash.cashRevision}`);
+
+  return {
+    ...withFreshCash,
+    verified: withFreshCash.verified && holdingsConsistent,
+    asOf,
+    snapshotId: `PORT-${portfolioRevision}`,
+    portfolioRevision,
+    holdingsRevision: finalHoldingsRevision,
+    holdingsConsistent,
+    cashFreshness: cashError ? "SNAPSHOT_FALLBACK" : "DIRECT_DATABASE_FINAL_READ",
+    cashFreshnessError: cashError?.message ?? null,
+    consistencyRule: "Holdings are verified after pricing; cash is read after holdings and prices. All fund surfaces use this authoritative builder.",
   };
 }
