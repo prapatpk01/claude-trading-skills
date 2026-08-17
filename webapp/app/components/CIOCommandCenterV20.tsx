@@ -320,7 +320,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
 
     {view === "opportunities" && <>
       <section className="card">
-        <SectionTitle eyebrow="02 · INVESTMENT ANALYSIS" title={tr(lang, "Every research engine must search beyond current names", "ทุก Research Engine ต้องค้นหาหุ้นนอก Holdings และ Watchlist")} />
+        <SectionTitle eyebrow="02 · INVESTMENT ANALYSIS" title={tr(lang, "Every research model sources new investments", "ทุก Research Engine ต้องค้นหาการลงทุนใหม่นอก Holdings และ Watchlist")} />
         <p className="notice">{meeting.scan?.note ?? tr(lang, "The research scan did not return a summary.", "ไม่มีผลสรุปจากฝ่ายวิจัย")}</p>
         {!proposals.length ? <div className={styles.empty}><strong>{tr(lang, "No candidate cleared every hard filter", "ไม่มีหุ้นผ่านตัวกรองบังคับทั้งหมด")}</strong><p>{tr(lang, "This is a valid NO BUY result—not permission to force the weakest candidate into the portfolio.", "นี่คือผลลัพธ์ NO BUY ที่ถูกต้อง ไม่ใช่เหตุผลให้บังคับเลือกหุ้นที่อ่อนที่สุดเข้าพอร์ต")}</p></div> : <div className={styles.proposalGrid}>{proposals.map((proposal, index) => <article className={`metric ${styles.proposal}`} key={proposal.ticker}>
           <div className={styles.proposalHead}><span className="tag">#{index + 1} · {proposal.setupType}</span><strong>{proposal.ticker}</strong><span>{proposal.score}/100</span></div>
@@ -373,7 +373,7 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
 
     {view === "teams" && <>
       <section className="card">
-        <SectionTitle eyebrow="OPERATING MODEL · 14 PEOPLE · 4 DECISION AUTHORITIES" title={tr(lang, "Two teams present; management decides", "สองทีมนำเสนอ ฝ่ายบริหารตัดสินใจ")} />
+        <SectionTitle eyebrow="OPERATING MODEL · 14 PEOPLE · 4 DECISION AUTHORITIES" title={tr(lang, "Teams & authority", "ทีมและลำดับอำนาจตัดสินใจ")} />
         <p className="notice">{tr(lang, "Ten specialists provide measured evidence but do not vote. Sofia and Lena sign their team packages, Miriam owns the independent risk gate, and James issues the final resolution. Human approval is still required before the ledger changes.", "ผู้เชี่ยวชาญ 10 คนมีหน้าที่ส่งหลักฐานแต่ไม่มีสิทธิ์ลงมติ Sofia และ Lena รับรองผลงานของแต่ละทีม Miriam ควบคุม Risk Gate และ James ออกมติสุดท้าย ก่อนเปลี่ยน Ledger ยังต้องได้รับ Human Approval")}</p>
         <div className={styles.authorityFlow} aria-label={tr(lang, "Decision authority sequence", "ลำดับสิทธิ์ตัดสินใจ")}>
           {["Sofia · Investment", "Lena · Asset Management", "Miriam · CRO", "James · CIO", "Human approval"].map((label, index) => <div key={label}><span>{index + 1}</span><strong>{label}</strong></div>)}
@@ -401,7 +401,10 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
       </section>
     </>}
 
-    {view === "approval" && <MeetingPlanApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={meeting.capitalPlan.approvalReady} approvalBlockReason={meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApproved={markExecutionAuthorized} />}
+    {view === "approval" && <>
+      <section className="card"><SectionTitle eyebrow="06 · HUMAN APPROVAL" title={tr(lang, "What a human must enter", "ข้อมูลที่เจ้าของพอร์ตต้องกรอก")} /><p className="notice">{tr(lang, "Record APPROVE or REJECT for every actionable line, then add the approver name and rationale. This authorizes the plan only; it never sends an order.", "บันทึก APPROVE หรือ REJECT ทุกรายการ พร้อมชื่อผู้อนุมัติและเหตุผล ขั้นนี้อนุมัติเฉพาะแผนและจะไม่ส่งคำสั่งซื้อขาย")}</p></section>
+      <MeetingPlanApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={meeting.capitalPlan.approvalReady} approvalBlockReason={meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApproved={markExecutionAuthorized} />
+    </>}
 
     {view === "reconciliation" && <MeetingApprovalPanel key={`${meeting.meetingId}-${meeting.asOf}`} lang={lang} meetingId={meeting.meetingId} approvalReady={executionAuthorized && meeting.capitalPlan.approvalReady} approvalBlockReason={!executionAuthorized ? tr(lang, "The execution plan has not been approved.", "แผนดำเนินการยังไม่ได้รับอนุมัติ") : meeting.capitalPlan.allocationComplete ? undefined : tr(lang, `${money(meeting.capitalPlan.unallocatedUsd)} has no approved destination.`, `${money(meeting.capitalPlan.unallocatedUsd)} ยังไม่มีปลายทางที่อนุมัติ`)} meeting={{ asOf: meeting.asOf, regime: meeting.regime, quorum: meeting.quorum, capitalPlan: meeting.capitalPlan, minutes: meeting.minutes, resolutions: meeting.resolutions }} motions={approvalMotions} onApplied={freezeRecordedMeeting} />}
 
