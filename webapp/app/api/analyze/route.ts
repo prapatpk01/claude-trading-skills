@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildAnalysis } from "@/lib/analyze";
 import { sanitizeResearch } from "@/lib/sanitizeResearch";
 import { buildUnderwritingPack } from "@/lib/stockUnderwriting";
+import { governThomasSnapshot, resolveThomasValuationForMarketData } from "@/lib/thomasValuation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ function finite(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-function applyEvidenceGate(result: any) {
+async function applyEvidenceGate(result: any) {
   const data = result?.data ?? {};
   const financials = data.financials ?? {};
   const income = Array.isArray(financials.income) ? financials.income : [];
@@ -41,6 +42,36 @@ function applyEvidenceGate(result: any) {
   if (!checks.cashflow) hardBlocks.push("cash-flow statement history is insufficient");
   if (!checks.balance) hardBlocks.push("balance-sheet evidence is insufficient");
   if (evidenceCount < 4) hardBlocks.push("verified evidence coverage is below the institutional minimum");
+
+  const snapshot = await resolveThomasValuationForMarketData(data, { dividends: [] }).catch(() => null);
+  const governed = governThomasSnapshot(snapshot, data.quote?.price ?? null);
+  if (!governed.decisionReady) hardBlocks.push(`governed valuation is not decision-ready: ${governed.reason}`);
+
+  result.valuationGovernance = {
+    status: governed.status,
+    decisionReady: governed.decisionReady,
+    fairValue: governed.fairValue,
+    bearValue: governed.bearValue,
+    bullValue: governed.bullValue,
+    valuationGapPct: governed.valuationGapPct,
+    confidence: snapshot?.confidence ?? "LOW",
+    anchors: snapshot?.anchors ?? [],
+    source: snapshot?.source ?? "UNAVAILABLE",
+    modelRoute: snapshot?.modelRoute ?? null,
+    asOf: snapshot?.asOf ?? null,
+    expiresAt: snapshot?.expiresAt ?? null,
+    reason: governed.reason,
+  };
+  if (governed.decisionReady && governed.fairValue != null) {
+    result.targetPrice = governed.fairValue;
+    result.upsidePct = governed.valuationGapPct;
+    result.expectedReturnPct = governed.valuationGapPct;
+    result.valuationNote = governed.reason;
+    result.thesis = (result.thesis ?? []).map((scenario: any) => ({
+      ...scenario,
+      targetPrice: scenario.label === "Bear" ? governed.bearValue ?? governed.fairValue : scenario.label === "Bull" ? governed.bullValue ?? governed.fairValue : governed.fairValue,
+    }));
+  }
 
   const committee = result.committee ?? {};
   const deskScores = { ...(committee.deskScores ?? {}), data: evidencePct };
@@ -102,7 +133,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (result.research) result.research = await sanitizeResearch(result.research);
-    const gated = applyEvidenceGate(result);
+    const gated = await applyEvidenceGate(result);
     gated.underwriting = buildUnderwritingPack(gated, { engine, horizon });
     gated.analysisVersion = "12.1-institutional-equity-research";
     return NextResponse.json(gated, { headers: { "Cache-Control": "no-store" } });
