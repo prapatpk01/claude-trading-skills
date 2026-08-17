@@ -8,7 +8,16 @@ The intended holding window begins at ACCUMULATION, EARLY_MARKUP or MOMENTUM_EXP
 
 ## Search universe, rotation and investment horizon
 
-The discovery process starts with a balanced pool of up to 240 liquid US equities assembled from engine-specific momentum, institutional, growth, quality, value, AI and income universes. Each engine receives its own actual ticker list rather than relabelling one shared multifactor result. To keep research depth high, 28–42 names receive a full deep dive per cycle and the selection rotates every six hours. Existing watchlist names are re-underwritten separately with relative strength versus SPY, 5-day versus 20-day volume, up/down volume, one- and three-month return, EMA structure, Fair Value and the shared technical gate.
+The discovery process starts with the SEC EDGAR listed-registrant master universe and a liquid-US core. It is designed to cover the breadth represented by the S&P 1500, Nasdaq listings and Russell 3000 segments without claiming that the SEC list itself is an index-constituent file. Liquidity, market-history and research gates determine investability. Holdings, Watchlist names, cash reserves and recently sold names are excluded from Fresh Discovery.
+
+Research is scheduled in four deterministic rotation windows so the same familiar leaders cannot monopolise the queue:
+
+- 3-day fast rotation: liquid leaders, fresh relative strength, volume accumulation and early markup.
+- 7-day cross-sectional rotation: broad factor ranking, sector leadership and replacement candidates.
+- Monthly rotation: growth, quality, filings, estimates and valuation evidence.
+- Quarterly rotation: long-tail and small/mid-cap coverage, including names not recently researched.
+
+Each engine receives its own actual ticker list rather than relabelling one shared multifactor result. To preserve depth and stay inside the request budget, 28–42 scheduled names receive a full deep dive per cycle. The output has two governed layers: Investment Ready for names that clear every gate, and a visible Research Queue for newly sourced names that remain WATCH or RESEARCH INCOMPLETE. Existing Watchlist names are shown in a separate re-underwrite table.
 
 The fund's normal planning window is 4–16 weeks. It may extend to 3–12 months when momentum, the thesis and Fair Value headroom remain intact; the Income Momentum sleeve may run 6–24 months. These are planning ranges, not expiry dates. Technical conditions are monitored daily, a full re-underwrite runs weekly, and earnings, guidance or material news trigger an immediate review.
 
@@ -39,6 +48,12 @@ Each engine keeps its own search question and ranking evidence. An engine may no
 7. Portfolio fit, cash floor, concentration, risk and human approval remain mandatory.
 
 If Fair Value or required fundamental evidence is missing, the stock is labelled RESEARCH INCOMPLETE. It remains visible with the missing evidence and next action, but it is excluded from ranking for capital allocation.
+
+## Thomas valuation architecture
+
+Thomas routes each holding through an explicit model class: operating company, bank/financial, REIT, ETF/look-through proxy or cash equivalent. The primary path combines filing-backed EPS/DCF, fundamental multiples, yield and price-history anchors where appropriate. When those anchors are insufficient, governed analyst consensus may be used as a secondary source subject to a 0.4x–2.5x spot sanity rail. Thomas never creates Fair Value from a generic band around the current price.
+
+Every complete read records Bear, Base/Fair and Bull values, Valuation Gap, source, confidence, as-of date and expiry. The committee and portfolio underwriting reuse the same valuation ledger; the gap is recalculated against the current price. Missing evidence causes Thomas to abstain and keeps the security in research with zero allocation rather than repeating a false 83% coverage score.
 
 ## Momentum Lifecycle
 

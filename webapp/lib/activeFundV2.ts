@@ -1,6 +1,6 @@
 import { buildAnalysis } from "./analyze";
 import { buildMacroOutlook, type MacroOutlook } from "./macroOutlook";
-import { runInvestmentResearchOS, type InvestmentResearchProposal } from "./research/investmentDiscovery";
+import { runInvestmentResearchOS, type InvestmentResearchProposal, type InvestmentResearchQueueItem } from "./research/investmentDiscovery";
 import { classifyMomentumLifecycle, type MomentumLifecycleStage } from "./research/momentumLifecycle";
 import { FUND_HOLDING_POLICY, researchMandate } from "./research/researchMandates";
 
@@ -72,6 +72,9 @@ export interface ActiveFundIdea {
   valuationNote: string;
   positionShares: number | null;
   marketValueUsd: number | null;
+  ideaCategory?: "FRESH_MARKET_DISCOVERY" | "WATCHLIST_REUNDERWRITE" | "PORTFOLIO_MONITOR";
+  rotationCadence?: string;
+  universeSource?: string;
 }
 
 export interface OpportunityDecision {
@@ -118,10 +121,13 @@ export interface ActiveFundV2Result {
   discovery: {
     broadUniverse: number; detailedAnalyzed: number; qualified: number; watchlist: number;
     uniqueNew: number; incomplete: number; models: number; methodology: string;
+    universeSource?: string;
+    rotationWindows?: Array<{ cadence: string; label: string; purpose: string; masterUniverse: number; scheduledThisCycle: number; lastRotationAt: string; nextRotationAt: string }>;
     engines: { id: string; name: string; role: string; searches: string; qualified: number; searchBasis?: string; searchBasisTh?: string; investmentHorizon?: string; investmentHorizonTh?: string }[];
     holdingPolicy: typeof FUND_HOLDING_POLICY;
   };
   newIdeas: ActiveFundIdea[];
+  watchlistReviews: ActiveFundIdea[];
   researchIncomplete: ActiveFundIdea[];
   existing: ActiveFundIdea[];
   portfolioWinners: ActiveFundIdea[];
@@ -285,6 +291,63 @@ function fromProposal(proposal: InvestmentResearchProposal, nav: number, macro: 
     valuationNote: "Research OS target; Thomas remains the core fundamental valuation engine for portfolio holdings/watchlist deep dives.",
     positionShares: null,
     marketValueUsd: null,
+    ideaCategory: "FRESH_MARKET_DISCOVERY",
+    rotationCadence: proposal.rotationCadence,
+    universeSource: proposal.universeSource,
+  };
+}
+
+function fromResearchQueue(item: InvestmentResearchQueueItem): ActiveFundIdea {
+  const complete = item.researchStatus === "COMPLETE" && item.target != null;
+  const gap = complete ? item.valuationGapPct : null;
+  return {
+    ticker: item.ticker,
+    source: ["Active Momentum Research Queue", ...item.sourceModels.map(model => model.toUpperCase())],
+    held: false,
+    action: complete ? "WATCH" : "RESEARCH INCOMPLETE",
+    conviction: Math.round(clamp(item.score)),
+    confidence: item.sourceModels.length >= 4 ? "HIGH" : item.sourceModels.length >= 2 ? "MEDIUM" : "LOW",
+    expectedReturnPct: gap,
+    targetPrice: item.target,
+    currentPrice: item.price,
+    momentum: item.factors.momentum,
+    pnlPct: null,
+    portfolioScore: round1(clamp(item.score)),
+    targetWeightPct: 0,
+    capitalUsd: 0,
+    committee: "RESEARCH QUEUE",
+    thesis: item.thesis,
+    dissent: [...item.failedGates, ...item.valuationFailures],
+    reasons: [
+      `${item.researchEngineLabel} surfaced the name in the ${item.rotationCadence} rotation.`,
+      complete
+        ? "Fair Value exists, but at least one lifecycle, momentum or engine gate is not yet strong enough for initiation."
+        : "Fair Value is incomplete; the name remains visible in research but is excluded from allocation.",
+    ],
+    factors: item.factors,
+    primaryEngine: item.researchEngineLabel,
+    discoveryEngines: item.sourceModels.map(model => model.toUpperCase()),
+    lifecycleStage: item.lifecycleStage,
+    lifecycleScore: item.lifecycleScore,
+    lifecycleEvidence: item.lifecycleEvidence,
+    searchBasis: item.searchBasis,
+    searchBasisTh: item.searchBasisTh,
+    investmentHorizon: item.investmentHorizon,
+    investmentHorizonTh: item.investmentHorizonTh,
+    reviewCadence: item.reviewCadence,
+    reviewCadenceTh: item.reviewCadenceTh,
+    researchStatus: complete ? "COMPLETE" : "INCOMPLETE",
+    valuationGapPct: gap == null ? null : round1(gap),
+    valuationStatus: complete ? Math.abs(gap ?? 0) < .5 ? "NO_EDGE" : "VALID" : "UNAVAILABLE",
+    valuationSource: complete ? "RESEARCH_OS_TARGET" : "UNAVAILABLE",
+    valuationNote: complete
+      ? "Research Queue valuation is available; the candidate remains WATCH until every entry gate clears."
+      : "No defensible Fair Value yet; spot is never used to manufacture a target.",
+    positionShares: null,
+    marketValueUsd: null,
+    ideaCategory: "FRESH_MARKET_DISCOVERY",
+    rotationCadence: item.rotationCadence,
+    universeSource: item.universeSource,
   };
 }
 
@@ -325,6 +388,7 @@ function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): Active
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: null,
     marketValueUsd: null,
+    ideaCategory: "WATCHLIST_REUNDERWRITE",
   };
 }
 
@@ -382,6 +446,7 @@ function fromExistingAnalysis(a: any, position: ExistingPositionInput, nav: numb
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: position.shares,
     marketValueUsd: round2(marketValue),
+    ideaCategory: "PORTFOLIO_MONITOR",
   };
 }
 
@@ -397,8 +462,9 @@ export async function runActiveFundV2(input: {
   const warnings: string[] = [];
   const nav = input.cash.totalNav;
   const held = new Set(input.positions.map(x => cleanTicker(x.ticker)));
+  const watchlistSet = new Set(input.watchlistTickers.map(cleanTicker));
   const riskPositions = input.positions.filter(x => !LIQUIDITY_TICKERS.has(cleanTicker(x.ticker)));
-  const excluded = new Set([...held, ...LIQUIDITY_TICKERS]);
+  const excluded = new Set([...held, ...watchlistSet, ...LIQUIDITY_TICKERS]);
 
   const [macro, phase1, existingAnalyses] = await Promise.all([
     buildMacroOutlook().catch((e: any) => {
@@ -407,7 +473,7 @@ export async function runActiveFundV2(input: {
     }),
     runInvestmentResearchOS({ exclude: excluded, topN: 12, universeLimit: 40 }).catch((e: any) => {
       warnings.push(`Research OS: ${e?.message ?? "failed"}`);
-      return { proposals: [], universeSize: 0, detailedUniverseSize: 0, analyzed: 0, qualified: 0, rejected: 0, warnings: [], models: [], engineDefinitions: [], engineStats: [], methodology: "Research OS unavailable" };
+      return { proposals: [], researchQueue: [], universeSize: 0, detailedUniverseSize: 0, analyzed: 0, qualified: 0, rejected: 0, warnings: [], models: [], engineDefinitions: [], engineStats: [], rotationWindows: [], universeSource: "Unavailable", methodology: "Research OS unavailable" };
     }),
     mapLimit(riskPositions.slice(0, 20), 5, async position => ({ position, analysis: await analyzeSafe(position.ticker) })),
   ]);
@@ -420,18 +486,26 @@ export async function runActiveFundV2(input: {
 
   const phaseIdeas = phase1.proposals.map(proposal => fromProposal(proposal, nav, macro));
   const phaseTickers = new Set(phaseIdeas.map(x => x.ticker));
+  const queueIdeas = (phase1.researchQueue ?? [])
+    .filter(item => !phaseTickers.has(item.ticker))
+    .map(item => fromResearchQueue(item));
   const watchExtras = input.watchlistTickers
     .map(cleanTicker)
     .filter(ticker => !held.has(ticker) && !phaseTickers.has(ticker) && !LIQUIDITY_TICKERS.has(ticker))
     .slice(0, 6);
   const watchAnalyses = await mapLimit(watchExtras, 4, async ticker => analyzeSafe(ticker));
   const watchIdeas = watchAnalyses.filter(Boolean).map(a => fromWatchlistAnalysis(a, nav, macro));
-  const allNewIdeas = [...phaseIdeas, ...watchIdeas]
+  const freshIdeas = [...phaseIdeas, ...queueIdeas]
     .filter((idea, index, all) => all.findIndex(x => x.ticker === idea.ticker) === index)
     .sort((a, b) => b.portfolioScore - a.portfolioScore)
     .slice(0, 15);
-  const newIdeas = allNewIdeas.filter(idea => idea.researchStatus === "COMPLETE" && idea.valuationStatus !== "UNAVAILABLE");
-  const researchIncomplete = allNewIdeas.filter(idea => idea.researchStatus === "INCOMPLETE" || idea.valuationStatus === "UNAVAILABLE");
+  const watchlistReviews = watchIdeas
+    .filter((idea, index, all) => all.findIndex(x => x.ticker === idea.ticker) === index)
+    .sort((a, b) => b.portfolioScore - a.portfolioScore)
+    .slice(0, 10);
+  const allNewIdeas = [...freshIdeas, ...watchlistReviews];
+  const newIdeas = freshIdeas.filter(idea => idea.researchStatus === "COMPLETE" && idea.valuationStatus !== "UNAVAILABLE");
+  const researchIncomplete = freshIdeas.filter(idea => idea.researchStatus === "INCOMPLETE" || idea.valuationStatus === "UNAVAILABLE");
 
   const portfolioWinners = existing.filter(x => x.action === "LET WINNER RUN" || x.action === "ADD").slice(0, 6);
   const weakLinks = existing
@@ -473,7 +547,9 @@ export async function runActiveFundV2(input: {
     return { funded: round2(funded), legs };
   };
 
-  const approvedNew = newIdeas.filter(x => x.action === "INITIATE");
+  const decisionIdeas = [...newIdeas, ...watchlistReviews.filter(idea => idea.researchStatus === "COMPLETE" && idea.valuationStatus !== "UNAVAILABLE")];
+  const decisionIncomplete = [...researchIncomplete, ...watchlistReviews.filter(idea => idea.researchStatus === "INCOMPLETE" || idea.valuationStatus === "UNAVAILABLE")];
+  const approvedNew = decisionIdeas.filter(x => x.action === "INITIATE");
   const liquidityAllocations = new Map<string, { amount: number; legs: FundingLeg[] }>();
   for (const idea of approvedNew) {
     const result = consumeLiquidity(idea.capitalUsd);
@@ -512,7 +588,7 @@ export async function runActiveFundV2(input: {
     });
   }
 
-  const opportunityDecisions: OpportunityDecision[] = newIdeas.map(candidate => {
+  const opportunityDecisions: OpportunityDecision[] = decisionIdeas.map(candidate => {
     const allocation = liquidityAllocations.get(candidate.ticker);
     const funded = allocation?.amount ?? 0;
     const replacement = replacements.find(r => r.to === candidate.ticker);
@@ -548,7 +624,7 @@ export async function runActiveFundV2(input: {
       reasonTh: "ยังไม่ผ่านเกณฑ์เปิดสถานะของ Active Fund", trigger: "Improve score, expected return, valuation or factor consensus.", triggerTh: "รอคะแนน Expected Return Valuation หรือ Factor Consensus ดีขึ้น",
     };
   });
-  opportunityDecisions.push(...researchIncomplete.map(candidate => ({
+  opportunityDecisions.push(...decisionIncomplete.map(candidate => ({
     ticker: candidate.ticker,
     decision: "RESEARCH INCOMPLETE" as const,
     fundingSource: "None",
@@ -618,8 +694,10 @@ export async function runActiveFundV2(input: {
       broadUniverse: phase1.universeSize, detailedAnalyzed: phase1.analyzed, qualified: phase1.qualified ?? phase1.proposals.length,
       watchlist: input.watchlistTickers.length, uniqueNew: newIdeas.filter(idea => idea.action === "INITIATE").length, incomplete: researchIncomplete.length,
       models: phase1.models.length, engines: phase1.engineStats ?? [], methodology: phase1.methodology, holdingPolicy: FUND_HOLDING_POLICY,
+      universeSource: phase1.universeSource,
+      rotationWindows: phase1.rotationWindows ?? [],
     },
-    newIdeas, researchIncomplete, existing, portfolioWinners, weakLinks, opportunityDecisions, executionPlans, replacements,
+    newIdeas, watchlistReviews, researchIncomplete, existing, portfolioWinners, weakLinks, opportunityDecisions, executionPlans, replacements,
     capitalPlan: {
       requestedDeployUsd: round0(requestedDeployUsd), deployUsd: round0(deployUsd), fundedFromLiquidityUsd: round0(fundedFromLiquidityUsd),
       fundedFromRotationsUsd: round0(fundedFromRotationsUsd), raiseUsd: round0(Math.max(0, requestedDeployUsd - deployUsd)),

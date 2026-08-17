@@ -114,7 +114,8 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "buildBookReview",
   "assessRegime",
   "scoreMomentumV3",
-  "assessValuation",
+  "resolveThomasValuation",
+  "loadThomasValuationLedger",
   "assessPositionZone",
   "classifySleeve",
   "/api/analyze/actions",
@@ -129,7 +130,9 @@ requireTokens("app/api/committee/meeting/route.ts", [
 ]);
 
 requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
-requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "balancedUniverse", "sourceModels", "RESEARCH_ENGINES", "buildEngineUniverses", "engineReports", "lifecycleStage", "valuationGapPct", "ENGINE_UNIVERSES"]);
+requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "buildRotatingMarketUniverse", "researchQueue", "sourceModels", "RESEARCH_ENGINES", "buildEngineUniverses", "engineReports", "lifecycleStage", "valuationGapPct", "rotationCadence"]);
+requireTokens("lib/research/marketUniverse.ts", ["loadSecSymbolUniverse", "SEC EDGAR listed-registrant master universe", '"3D"', '"7D"', '"1M"', '"3M"']);
+requireTokens("lib/thomasValuation.ts", ["resolveThomasValuation", "THOMAS_DCF_MULTI_ANCHOR", "YAHOO_ANALYST_CONSENSUS", "saveThomasValuationLedger"]);
 requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
 forbidTokens("app/api/committee/swing-scan/route.ts", [
   ["runSwingScan(", "the scan must go through lib/research/deskScan.ts so the meeting and the page agree"],
@@ -160,6 +163,8 @@ requireTokens("app/components/ActiveFundDecisionView.tsx", [
   "searchBasisTh",
   "investmentHorizonTh",
   "reviewCadenceTh",
+  "Fresh market discoveries — outside Holdings and Watchlist",
+  "Watchlist re-underwrite — tracked names, not fresh discoveries",
 ]);
 
 requireTokens("lib/activeFundV2.ts", [
@@ -181,9 +186,12 @@ requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
   "MOMENTUM_EXPANSION",
   "RESEARCH INCOMPLETE",
   "Valuation Gap",
-  "240 liquid US equities",
+  "SEC EDGAR",
+  "3-day",
+  "Research Queue",
+  "Thomas",
   "4–16 weeks",
-  "six hours",
+  "Quarterly",
 ]);
 
 requireTokens("lib/team/constitution.ts", [

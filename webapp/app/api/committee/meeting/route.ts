@@ -14,7 +14,7 @@ import { sma } from "@/lib/indicators";
 import { assessRegime } from "@/lib/team/governance";
 import { scoreMomentumV3 } from "@/lib/team/scoring";
 import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
-import { assessValuation } from "@/lib/team/positionValuation";
+import { loadThomasValuationLedger, resolveThomasValuation, saveThomasValuationLedger, type ThomasValuationSnapshot } from "@/lib/thomasValuation";
 import { assessPositionZone } from "@/lib/team/risk";
 import { classifySleeve } from "@/lib/team/portfolio";
 import { buildBookReview } from "@/lib/team/book";
@@ -53,6 +53,7 @@ const finite = (v: unknown): number | null => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 };
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
@@ -97,6 +98,14 @@ async function loadHoldings(): Promise<{ rows: { ticker: string; shares: number;
     return { rows: read.rows.map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost })), note: read.note };
   }
   return { rows: openOnly(memStore.holdings).map((h) => ({ ticker: h.ticker, shares: h.shares, avg_cost: h.avg_cost })), note: "" };
+}
+
+async function loadWatchlistTickers(): Promise<string[]> {
+  const sb = getSupabase();
+  if (!sb) return memStore.watchlist.map(row => String(row.ticker).toUpperCase());
+  const { data, error } = await sb.from("watchlist").select("ticker");
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((row: any) => String(row.ticker ?? "").toUpperCase()).filter(Boolean);
 }
 
 type RecentTrade = { ticker: string; side: "BUY" | "SELL"; trade_date: string; created_at?: string | null; id?: string | number | null };
@@ -204,24 +213,29 @@ function sessionsToExit(candles: Candle[], positionValue: number): number | null
 export async function GET(req: NextRequest) {
   const unavailable: string[] = [];
   try {
-    const [{ rows: holdings, note: reconciliationNote }, recentTrades] = await Promise.all([
+    const [{ rows: holdings, note: reconciliationNote }, recentTrades, watchlistTickers] = await Promise.all([
       loadHoldings(),
       loadRecentTrades().catch((error: any) => {
         unavailable.push(`recent transaction history (${error?.message ?? "unavailable"})`);
         return [] as RecentTrade[];
+      }),
+      loadWatchlistTickers().catch((error: any) => {
+        unavailable.push(`watchlist exclusion (${error?.message ?? "unavailable"})`);
+        return [] as string[];
       }),
     ]);
     if (reconciliationNote) unavailable.push(reconciliationNote);
     const asOf = new Date().toISOString();
     const tradeContext = buildTradeContext(recentTrades, asOf);
     const recentSales = new Set([...tradeContext.entries()].filter(([, value]) => value.daysSinceSell != null && value.daysSinceSell < 30).map(([ticker]) => ticker));
-    const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...recentSales]);
+    const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...watchlistTickers, ...recentSales]);
     // Active Momentum Research V23 is the Investment Team's broad sourcing layer.
     // Start it early so independent engines run while meeting evidence is gathered.
     const phase1ResearchPromise = Promise.race([
       runInvestmentResearchOS({ exclude: discoveryHeld, topN: 6, universeLimit: 32 }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Active Momentum Research exceeded its meeting time budget")), 42_000)),
     ]);
+    const thomasLedgerPromise = loadThomasValuationLedger(holdings.map(row => String(row.ticker).toUpperCase()));
 
     // ── benchmark first: the regime, beta and momentum all lean on it ──
     const benchmark = await dailyCandles("SPY", 320).catch(() => [] as Candle[]);
@@ -233,13 +247,15 @@ export async function GET(req: NextRequest) {
     catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }
 
     // ── per-name evidence, gathered once and shared across the desks ──
+    const thomasLedger = await thomasLedgerPromise;
     const gathered = await mapLimit(holdings, 4, async (h) => {
       const ticker = String(h.ticker).toUpperCase();
+      const cachedValuation = thomasLedger.get(ticker) ?? null;
       const [candles, quote, dividendPack, fundamentals] = await Promise.all([
         dailyCandles(ticker, 320).catch(() => [] as Candle[]),
         getLightQuote(ticker).catch(() => null),
         fetchDividends(ticker, 3).catch(() => ({ events: [], price: null })),
-        RESERVES.has(ticker) ? Promise.resolve(null) : secInputsWithinBudget(ticker),
+        RESERVES.has(ticker) || cachedValuation ? Promise.resolve(null) : secInputsWithinBudget(ticker),
       ]);
       const price = finite(quote?.price) ?? finite(candles.at(-1)?.close) ?? finite(dividendPack.price);
       const yieldPct = yieldFromEvents(dividendPack.events, price);
@@ -253,6 +269,7 @@ export async function GET(req: NextRequest) {
         yieldPct,
         dividends: dividendPack.events,
         fundamentals,
+        cachedValuation,
       };
     });
 
@@ -282,7 +299,8 @@ export async function GET(req: NextRequest) {
       }),
     ]);
 
-    const positions: PositionEvidence[] = gathered.map((g) => {
+    const valuationSnapshots: ThomasValuationSnapshot[] = [];
+    const positions: PositionEvidence[] = await mapLimit(gathered, 3, async (g) => {
       const price = g.price;
       const marketValue = price == null ? null : price * g.shares;
       const weightPct = marketValue == null || nav <= 0 ? null : (marketValue / nav) * 100;
@@ -305,19 +323,32 @@ export async function GET(req: NextRequest) {
       // SEC annual/TTM EPS for operating companies plus distribution history for
       // income ETFs/REITs. Trend remains the third independent anchor. If none
       // of those is credible the read stays null rather than inventing fair value.
-      const valuation =
-        price != null && g.candles.length >= 60
-          ? (() => {
-              const v = assessValuation({
-                candles: g.candles,
-                price,
-                annualEps: g.fundamentals?.annualEps ?? [],
-                epsTTM: g.fundamentals?.epsTTM ?? null,
-                dividends: g.dividends,
-              });
-              return v.verdict ? { verdict: v.verdict, deviationPct: v.deviationPct, confidence: v.confidence } : null;
-            })()
-          : null;
+      const valuationSnapshot = price != null && g.candles.length >= 60
+        ? g.cachedValuation ?? await resolveThomasValuation({
+            ticker: g.ticker,
+            candles: g.candles,
+            price,
+            annualEps: g.fundamentals?.annualEps ?? [],
+            epsTTM: g.fundamentals?.epsTTM ?? null,
+            dividends: g.dividends,
+            ttlDays: 7,
+          })
+        : null;
+      if (valuationSnapshot && !g.cachedValuation) valuationSnapshots.push(valuationSnapshot);
+      const valuation = valuationSnapshot?.status === "COMPLETE" && valuationSnapshot.verdict
+        ? {
+            verdict: valuationSnapshot.verdict,
+            deviationPct: valuationSnapshot.fairValue == null ? null : round2((price! / valuationSnapshot.fairValue - 1) * 100),
+            confidence: valuationSnapshot.confidence.toLowerCase(),
+            fairValue: valuationSnapshot.fairValue,
+            bearValue: valuationSnapshot.bearValue,
+            bullValue: valuationSnapshot.bullValue,
+            valuationGapPct: valuationSnapshot.fairValue == null ? null : round2((valuationSnapshot.fairValue / price! - 1) * 100),
+            source: valuationSnapshot.source,
+            modelRoute: valuationSnapshot.modelRoute,
+            asOf: valuationSnapshot.asOf,
+          }
+        : null;
 
       const sma50 = sma(closes, 50);
       const sma200 = sma(closes, 200);
@@ -351,6 +382,7 @@ export async function GET(req: NextRequest) {
         recentTrade: tradeContext.get(g.ticker) ?? null,
       };
     });
+    await saveThomasValuationLedger(valuationSnapshots).catch(() => ({ persistence: "memory" as const }));
 
     // ── the book-level review supplies the round table and risk register ──
     const closesByTicker: Record<string, number[]> = {};
@@ -452,7 +484,7 @@ export async function GET(req: NextRequest) {
     let scanUniverseSize = 0;
     let scanRejected = 0;
     const scanWarnings: string[] = [];
-    let researchOS: any = { universeSize: 0, analyzed: 0, rejected: 0, warnings: [], models: [], methodology: null };
+    let researchOS: any = { universeSize: 0, universeSource: null, rotationWindows: [], analyzed: 0, rejected: 0, warnings: [], models: [], methodology: null };
     try {
       const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
       const referred = new Set(ideas.map((i) => i.ticker));
@@ -534,6 +566,8 @@ export async function GET(req: NextRequest) {
       const phase1 = await phase1ResearchPromise;
       researchOS = {
         universeSize: phase1.universeSize,
+        universeSource: phase1.universeSource,
+        rotationWindows: phase1.rotationWindows,
         analyzed: phase1.analyzed,
         rejected: phase1.rejected,
         warnings: phase1.warnings,

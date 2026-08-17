@@ -49,7 +49,18 @@ export interface PositionEvidence {
   /** Maya Chen — momentum v3.0. */
   momentum: { total: number; signal: string; hardBlocks: string[]; dataQualityPct: number } | null;
   /** Thomas Eriksson — fair value read. */
-  valuation: { verdict: string; deviationPct: number | null; confidence: string } | null;
+  valuation: {
+    verdict: string;
+    deviationPct: number | null;
+    confidence: string;
+    fairValue?: number | null;
+    bearValue?: number | null;
+    bullValue?: number | null;
+    valuationGapPct?: number | null;
+    source?: string;
+    modelRoute?: string;
+    asOf?: string;
+  } | null;
   /** Trend structure, shared evidence for several seats. */
   trend: { aboveSma50: boolean | null; aboveSma200: boolean | null; return1m: number | null; return3m: number | null } | null;
   /** Ryan Blackwood — sessions to exit at 20% of median ADV. */
@@ -667,7 +678,7 @@ function castVotes(m: Omit<Motion, "votes" | "decisionGates" | "tally" | "outcom
     const rich = /PREMIUM|EXPENSIVE|OVERVALUED/i.test(p.valuation.verdict);
     const cheap = /DISCOUNT|CHEAP|UNDERVALUED/i.test(p.valuation.verdict);
     seat("thomas", reducesRisk ? (rich ? "FOR" : cheap ? "AGAINST" : "ABSTAIN") : addsRisk ? (rich ? "AGAINST" : "FOR") : "FOR",
-      `Fair value read ${p.valuation.verdict}${p.valuation.deviationPct == null ? "" : ` (${pct1(p.valuation.deviationPct)})`}, confidence ${p.valuation.confidence}.`);
+      `Fair value read ${p.valuation.verdict}${p.valuation.fairValue == null ? "" : ` at ${money(p.valuation.fairValue)}`}${p.valuation.valuationGapPct == null ? p.valuation.deviationPct == null ? "" : ` (${pct1(p.valuation.deviationPct)} price versus fair)` : ` (${pct1(p.valuation.valuationGapPct)} valuation gap)`}, confidence ${p.valuation.confidence}${p.valuation.source ? `, source ${p.valuation.source}` : ""}.`);
   } else if (idea?.upsidePct != null) {
     seat("thomas", idea.upsidePct > 0 ? "FOR" : "AGAINST", `Upside to the referred target is ${pct1(idea.upsidePct)}.`);
   } else {

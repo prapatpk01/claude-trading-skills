@@ -91,7 +91,7 @@ async function enrichValuationGaps(review: any) {
   // New opportunities are enriched first. The old implementation stopped at 12
   // total names, so lower-ranked opportunities such as OKE/DDOG could stay blank
   // after existing holdings consumed the batch.
-  const all = [...(review?.newIdeas ?? []), ...(review?.researchIncomplete ?? []), ...(review?.existing ?? [])];
+  const all = [...(review?.newIdeas ?? []), ...(review?.watchlistReviews ?? []), ...(review?.researchIncomplete ?? []), ...(review?.existing ?? [])];
   const tickers = Array.from(new Set(all
     .filter((row: any) => String(row?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE")
     .map((row: any) => String(row?.ticker ?? "").trim().toUpperCase())
@@ -146,6 +146,7 @@ async function enrichValuationGaps(review: any) {
     ...review,
     existing: (review?.existing ?? []).map(patch),
     newIdeas: patchedNew,
+    watchlistReviews: (review?.watchlistReviews ?? []).map(patch),
     researchIncomplete: patchedIncomplete,
   };
 }
@@ -254,6 +255,7 @@ export default function ActiveFundDecisionView({
       {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
       <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} />
       <OpportunityTable rows={data.newIdeas ?? []} lang={lang} />
+      <WatchlistReviewTable rows={data.watchlistReviews ?? []} lang={lang} />
       <IncompleteResearchTable rows={data.researchIncomplete ?? []} lang={lang} />
       <ReplacementTable rows={data.replacements ?? []} lang={lang} />
 
@@ -298,12 +300,20 @@ function ExecutionTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
 
 function DiscoveryEnginePanel({ discovery, lang }: { discovery: any; lang: AppLang }) {
   const engines = Array.isArray(discovery?.engines) ? discovery.engines : [];
+  const rotations = Array.isArray(discovery?.rotationWindows) ? discovery.rotationWindows : [];
   const policy = discovery?.holdingPolicy ?? {};
   return <section className="card" style={{ marginTop: 14, borderTop: "2px solid var(--accent)" }} data-active-momentum-engines="23">
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
       <div><span className="tag">ACTIVE MOMENTUM RESEARCH V23</span><h3 className="sub" style={{ margin: "9px 0 5px" }}>{tr(lang, "How the fund finds new stocks", "กองทุนค้นหาหุ้นใหม่อย่างไร")}</h3><p className="muted" style={{ margin: 0, maxWidth: 820, lineHeight: 1.6 }}>{discovery?.methodology}</p></div>
       <span className="tag">{discovery?.broadUniverse ?? 0} US → {discovery?.detailedAnalyzed ?? 0} deep dives</span>
     </div>
+    {!!rotations.length && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 9, marginTop: 12 }}>
+      {rotations.map((window: any) => <div className="metric" key={window.cadence}>
+        <span>{window.label}</span><strong style={{ fontSize: 17, marginTop: 6 }}>{window.scheduledThisCycle} {tr(lang, "scheduled", "ตัวในรอบนี้")}</strong>
+        <small className="muted" style={{ display: "block", marginTop: 6, lineHeight: 1.45 }}>{window.purpose}</small>
+        <small style={{ display: "block", marginTop: 7 }}>{tr(lang, "Next", "รอบถัดไป")} · {String(window.nextRotationAt ?? "").slice(0, 10)}</small>
+      </div>)}
+    </div>}
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(205px,1fr))", gap: 9, marginTop: 14 }}>
       {engines.map((engine: any) => <div className="metric" key={engine.id} style={{ minHeight: 118 }}>
         <span>{engine.role}</span><strong style={{ fontSize: 14, marginTop: 7 }}>{engine.name}</strong>
@@ -313,10 +323,11 @@ function DiscoveryEnginePanel({ discovery, lang }: { discovery: any; lang: AppLa
       </div>)}
     </div>
     <div className="grid cols-3" style={{ marginTop: 12 }}>
-      <Metric label={tr(lang, "Search universe", "แหล่งค้นหา")} value={lang === "th" ? `${discovery?.broadUniverse ?? 0} หุ้น US สภาพคล่องสูง` : `${discovery?.broadUniverse ?? 0} liquid US stocks`} />
+      <Metric label={tr(lang, "Master source universe", "จักรวาลหุ้นต้นทาง")} value={lang === "th" ? `${discovery?.broadUniverse ?? 0} หลักทรัพย์จดทะเบียน` : `${discovery?.broadUniverse ?? 0} listed securities`} />
       <Metric label={tr(lang, "Normal holding window", "กรอบถือหลัก")} value={lang === "th" ? policy.baseWindowTh ?? "4–16 สัปดาห์" : policy.baseWindow ?? "4–16 weeks"} />
       <Metric label={tr(lang, "Conditional extension", "กรอบถือต่อเมื่อยังแข็งแรง")} value={lang === "th" ? policy.extensionWindowTh ?? "3–12 เดือน" : policy.extensionWindow ?? "3–12 months"} />
     </div>
+    <div className="notice" style={{ marginTop: 12 }}><strong>{tr(lang, "Universe source", "แหล่ง Universe")}:</strong> {discovery?.universeSource ?? "SEC EDGAR + Sentinel liquid-US core"}</div>
     <div className="notice" style={{ marginTop: 12 }}><strong>{tr(lang, "Review and exit clock", "รอบทบทวนและจังหวะขาย")}:</strong> {lang === "th" ? policy.reviewCadenceTh ?? "ติดตาม Technical รายวัน และทบทวนงานวิจัยรายสัปดาห์" : policy.reviewCadence ?? "Daily technical monitor and weekly full re-underwrite"}. {lang === "th" ? policy.exitRuleTh ?? "ลดหรือออกเมื่อ Momentum อ่อนแรง Thesis เปลี่ยน หรือราคาเข้าใกล้ Fair Value" : policy.exitRule ?? "Trim or exit when momentum weakens, the thesis changes, or price approaches Fair Value."}</div>
     <div className="notice" style={{ marginTop: 12 }}><strong>{tr(lang, "Mandatory path", "เส้นทางบังคับ")}:</strong> Independent Engine → ACCUMULATION, EARLY_MARKUP or MOMENTUM_EXPANSION → defensible Fair Value gap ≥8% → Committee → Technical Execution → Human Approval.</div>
   </section>;
@@ -336,7 +347,12 @@ function IdeaTable({ rows, title, lang }: { rows: any[]; title: string; lang: Ap
 }
 
 function OpportunityTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
-  return <><h3 className="sub">🚀 {tr(lang, "New opportunities — source, engine, holding window, lifecycle, valuation & execution", "โอกาสใหม่ — แหล่งค้นหา, Engine, กรอบถือ, Lifecycle, Valuation และ Execution")}</h3><p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55 }}>{tr(lang, "The holding window is a planning range, not an expiry date. Every idea is re-underwritten when momentum, earnings/news, thesis or Fair Value changes.", "กรอบถือเป็นช่วงเวลาวางแผน ไม่ใช่วันหมดอายุ ทุกหุ้นจะถูกทบทวนใหม่เมื่อ Momentum งบ/ข่าว Thesis หรือ Fair Value เปลี่ยน")}</p><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Research engine", "Research Engine")}</th><th>{tr(lang, "Found from", "ค้นพบจากอะไร")}</th><th>{tr(lang, "Holding window", "กรอบถือ")}</th><th>{tr(lang, "Momentum stage", "Momentum Stage")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th className="num">Momentum</th><th>{tr(lang, "Why selected / thesis", "เหตุผลที่ค้นพบ / Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong>{x.researchState ? <small className="muted" style={{ display: "block", marginTop: 4 }}>{x.researchState}</small> : null}</td><td>{x.action ?? "WATCH"}</td><td style={{ minWidth: 150 }}><strong>{x.researchEngine ?? researchEngineFromSource(x.source)}</strong><small className="muted" style={{ display: "block", marginTop: 4 }}>{Array.isArray(x.source) ? x.source.slice(1, 4).join(" · ") : ""}</small></td><td style={{ minWidth: 230, fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.searchBasisTh ?? "รอระบุแหล่งค้นหา" : x.searchBasis ?? "Search basis pending"}</td><td style={{ minWidth: 190, fontSize: 11.5, lineHeight: 1.5 }}><strong>{lang === "th" ? x.investmentHorizonTh ?? "ตามสัญญาณ" : x.investmentHorizon ?? "Signal-driven"}</strong><small className="muted" style={{ display: "block", marginTop: 5 }}>{lang === "th" ? x.reviewCadenceTh ?? "ทบทวนรายวัน/รายสัปดาห์" : x.reviewCadence ?? "Daily/weekly review"}</small></td><td style={{ minWidth: 155 }}>{lifecycleCell(x, lang)}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td className="num">{x.momentum == null ? "PENDING" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5, minWidth: 220 }}><strong>{x.lifecycleReason ?? ""}</strong>{x.lifecycleReason ? <br/> : null}{x.thesis}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 5 }}>{view.warning}</small> : null}</td></tr>; })}{!rows.length && <tr><td colSpan={13} className="muted">{tr(lang, "No active-momentum opportunity survived the research engines this cycle.", "รอบนี้ยังไม่มีหุ้นที่ผ่าน Engine และ Active Momentum Lifecycle")}</td></tr>}</tbody></table></div></>;
+  return <><h3 className="sub">🚀 {tr(lang, "Fresh market discoveries — outside Holdings and Watchlist", "หุ้นค้นพบใหม่จากตลาด — ไม่ซ้ำ Holdings และ Watchlist")}</h3><p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55 }}>{tr(lang, "These names came from the rotating market universe. The holding window is a planning range, not an expiry date.", "หุ้นส่วนนี้มาจาก Market Universe ที่หมุนเวียนจริง กรอบถือเป็นช่วงวางแผน ไม่ใช่วันหมดอายุ")}</p><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "Fund state", "สถานะกองทุน")}</th><th>{tr(lang, "Research engine", "Research Engine")}</th><th>{tr(lang, "Found from", "ค้นพบจากอะไร")}</th><th>{tr(lang, "Holding window", "กรอบถือ")}</th><th>{tr(lang, "Momentum stage", "Momentum Stage")}</th><th>{tr(lang, "Technical gate", "Technical Gate")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th>{tr(lang, "Execution levels", "ระดับ Execution")}</th><th className="num">Momentum</th><th>{tr(lang, "Why selected / thesis", "เหตุผลที่ค้นพบ / Thesis")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong><small className="muted" style={{ display: "block", marginTop: 4 }}>{x.rotationCadence ?? "—"} · {x.universeSource ?? "BROAD MARKET"}</small></td><td>{x.action ?? "WATCH"}</td><td style={{ minWidth: 150 }}><strong>{x.researchEngine ?? researchEngineFromSource(x.source)}</strong><small className="muted" style={{ display: "block", marginTop: 4 }}>{Array.isArray(x.source) ? x.source.slice(1, 4).join(" · ") : ""}</small></td><td style={{ minWidth: 230, fontSize: 11.5, lineHeight: 1.5 }}>{lang === "th" ? x.searchBasisTh ?? "รอระบุแหล่งค้นหา" : x.searchBasis ?? "Search basis pending"}</td><td style={{ minWidth: 190, fontSize: 11.5, lineHeight: 1.5 }}><strong>{lang === "th" ? x.investmentHorizonTh ?? "ตามสัญญาณ" : x.investmentHorizon ?? "Signal-driven"}</strong><small className="muted" style={{ display: "block", marginTop: 5 }}>{lang === "th" ? x.reviewCadenceTh ?? "ทบทวนรายวัน/รายสัปดาห์" : x.reviewCadence ?? "Daily/weekly review"}</small></td><td style={{ minWidth: 155 }}>{lifecycleCell(x, lang)}</td><td>{technicalGateCell(x, lang)}</td><td className="num"><strong>{priceText(x.currentPrice)}</strong></td><td className="num"><strong>{view.target}</strong></td><td className={`num ${view.className}`}><strong>{view.upside}</strong></td><td>{executionLevelsCell(x, lang)}</td><td className="num">{x.momentum == null ? "PENDING" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ fontSize: 11.5, lineHeight: 1.5, minWidth: 220 }}>{x.thesis}{view.warning ? <small className="neg" style={{ display: "block", marginTop: 5 }}>{view.warning}</small> : null}</td></tr>; })}{!rows.length && <tr><td colSpan={13} className="muted">{tr(lang, "No fresh name clears every Active Momentum and Fair Value gate yet; the rotation schedule above still shows what is being searched next.", "ยังไม่มีหุ้นใหม่ที่ผ่าน Active Momentum และ Fair Value ครบ แต่ตาราง Rotation ด้านบนจะแสดงว่ารอบถัดไปกำลังค้นหากลุ่มใด")}</td></tr>}</tbody></table></div></>;
+}
+
+function WatchlistReviewTable({ rows, lang }: { rows: any[]; lang: AppLang }) {
+  if (!rows.length) return null;
+  return <><h3 className="sub">👁️ {tr(lang, "Watchlist re-underwrite — tracked names, not fresh discoveries", "ทบทวน Watchlist — หุ้นเดิมที่ติดตาม ไม่ใช่หุ้นค้นพบใหม่")}</h3><div className="table-wrap"><table className="tbl"><thead><tr><th>Ticker</th><th>{tr(lang, "State", "สถานะ")}</th><th>{tr(lang, "Lifecycle", "Momentum Stage")}</th><th className="num">{tr(lang, "Current", "ราคาปัจจุบัน")}</th><th className="num">Fair Value</th><th className="num">Valuation Gap</th><th className="num">Momentum</th><th>{tr(lang, "Next trigger", "Trigger ถัดไป")}</th></tr></thead><tbody>{rows.map((x: any) => { const view = valuationView(x, lang); return <tr key={x.ticker}><td><strong>{x.ticker}</strong></td><td>{x.action ?? "WATCH"}</td><td>{lifecycleCell(x, lang)}</td><td className="num">{priceText(x.currentPrice)}</td><td className="num">{view.target}</td><td className={`num ${view.className}`}>{view.upside}</td><td className="num">{x.momentum == null ? "—" : `${Number(x.momentum).toFixed(0)}/100`}</td><td style={{ minWidth: 240, fontSize: 11.5 }}>{lang === "th" ? x.reviewCadenceTh : x.reviewCadence}</td></tr>; })}</tbody></table></div></>;
 }
 
 function ReplacementTable({ rows, lang }: { rows: any[]; lang: AppLang }) {

@@ -123,7 +123,7 @@ function triggerFor(idea: any, rank: number): WatchTrigger {
 }
 
 function rankCapital(result: ActiveFundV2Result): RankedCapitalCandidate[] {
-  const rows = [...result.existing, ...result.newIdeas]
+  const rows = [...result.existing, ...result.newIdeas, ...result.watchlistReviews]
     .filter((row: any) => row && row.ticker)
     .map((row: any) => ({
       ticker: String(row.ticker),
@@ -236,7 +236,7 @@ export async function runActivePortfolioIntelligenceV21(input: {
 }) {
   const base = await runActiveFundV2(input);
   const actionable = base.executionPlans.filter((plan) => (plan.action === "INITIATE" || plan.action === "ADD") && plan.amountUsd > 0);
-  const watchIdeas = [...base.newIdeas]
+  const watchIdeas = [...base.newIdeas, ...base.watchlistReviews]
     .filter((idea) => !actionable.some((plan) => plan.ticker === idea.ticker))
     .sort((a, b) => b.portfolioScore - a.portfolioScore)
     .slice(0, 5);

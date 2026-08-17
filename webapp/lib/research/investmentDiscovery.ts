@@ -1,18 +1,10 @@
-import { ENGINE_UNIVERSES, FACTOR_UNIVERSE, runFactorDiscovery, type FactorMode, type ResearchCandidate } from "@/lib/factorDiscovery";
+import { runFactorDiscovery, type FactorMode, type ResearchCandidate } from "@/lib/factorDiscovery";
 import { buildTradePlan } from "@/lib/researchEnginePolicies";
 import { classifyMomentumLifecycle, type MomentumLifecycleRead, type MomentumLifecycleStage } from "@/lib/research/momentumLifecycle";
 import { researchMandate } from "@/lib/research/researchMandates";
+import { buildRotatingMarketUniverse, type ResearchRotationCadence, type RotatingResearchName } from "@/lib/research/marketUniverse";
 
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
-const EXPANDED_US_UNIVERSE = [
-  "AAPL", "ACN", "ADI", "AMAT", "KLAC", "LRCX", "MCHP", "MPWR", "NXPI", "SNPS", "CDNS", "FTNT", "ZS", "MDB", "TEAM", "HUBS",
-  "DIS", "SPOT", "RBLX", "TTWO", "EA", "T", "VZ", "BKNG", "ABNB", "RCL", "CCL", "NKE", "SBUX", "TGT", "ROST", "TJX", "ORLY", "AZO", "CVNA",
-  "BRK.B", "BLK", "BX", "KKR", "APO", "COF", "AXP", "SCHW", "MS", "CME", "MRK", "AMGN", "GILD", "TMO", "DHR", "BSX", "SYK", "MDT", "ELV", "CI", "ZTS",
-  "PH", "PWR", "URI", "GEV", "CARR", "TT", "HON", "WM", "RSG", "FAST", "PCAR", "SLB", "EOG", "MPC", "VLO", "OXY", "KMI", "WMB", "OKE",
-  "PM", "MO", "CL", "MDLZ", "KMB", "GIS", "COST", "CEG", "VST", "NEE", "SO", "DUK", "PLD", "AMT", "EQIX", "WELL", "NNN",
-  "LIN", "FCX", "NUE", "SHW", "DECK", "LULU", "ULTA", "CMG", "DPZ", "MAR", "HLT", "ALAB", "NBIS", "CRWV", "HWM", "PANW", "ADSK", "WDAY", "INTU", "ADP", "FI", "CTAS", "FICO",
-];
-
 export type ResearchEngineId =
   | "MOMENTUM_LIFECYCLE"
   | "INSTITUTIONAL_ACCUMULATION"
@@ -58,10 +50,43 @@ export type InvestmentResearchProposal = {
   primaryEngine: string; discoveryEngines: string[];
   lifecycleEvidence: string[];
   valuationSource: string; valuationGapPct: number; researchStatus: "COMPLETE";
+  rotationCadence: ResearchRotationCadence;
+  universeSource: string;
   factors: {
     momentum: number; growth: number; quality: number; value: number;
     dividend: number; institutional: number; ai: number; composite: number;
   };
+};
+
+export type InvestmentResearchQueueItem = {
+  ticker: string;
+  score: number;
+  price: number | null;
+  target: number | null;
+  expectedReturnPct: number | null;
+  thesis: string;
+  researchEngine: ResearchEngineId;
+  researchEngineLabel: string;
+  lifecycleStage: MomentumLifecycleStage;
+  lifecycleScore: number;
+  lifecycleReason: string;
+  lifecycleEvidence: string[];
+  preferredEntryStage: boolean;
+  researchStatus: "COMPLETE" | "INCOMPLETE";
+  valuationSource: string;
+  valuationGapPct: number | null;
+  failedGates: string[];
+  valuationFailures: string[];
+  sourceModels: string[];
+  rotationCadence: ResearchRotationCadence;
+  universeSource: string;
+  searchBasis: string;
+  searchBasisTh: string;
+  investmentHorizon: string;
+  investmentHorizonTh: string;
+  reviewCadence: string;
+  reviewCadenceTh: string;
+  factors: InvestmentResearchProposal["factors"];
 };
 
 type EngineCandidate = { engine: SearchEngine; candidate: ResearchCandidate; lifecycle: MomentumLifecycleRead };
@@ -84,50 +109,15 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
-function balancedUniverse(limit = 240) {
-  const modes: FactorMode[] = ["momentum", "institutional", "growth", "quality", "value", "ai", "dividend", "multifactor"];
-  const output: string[] = [];
-  const seen = new Set<string>();
-  for (let row = 0; output.length < limit; row++) {
-    let added = false;
-    for (const mode of modes) {
-      const ticker = ENGINE_UNIVERSES[mode][row];
-      if (!ticker) continue;
-      added = true;
-      if (!seen.has(ticker)) { seen.add(ticker); output.push(ticker); }
-      if (output.length >= limit) break;
-    }
-    if (!added) break;
-  }
-  for (const ticker of [...FACTOR_UNIVERSE, ...EXPANDED_US_UNIVERSE]) {
-    if (output.length >= limit) break;
-    if (!seen.has(ticker)) { seen.add(ticker); output.push(ticker); }
-  }
-  return output;
-}
-
-function rotationKey() {
-  const now = new Date();
-  const day = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 86400000);
-  return day * 4 + Math.floor(now.getUTCHours() / 6);
-}
-
 /** Give every discovery engine its own actual search list while keeping the total deep-dive budget bounded. */
-function buildEngineUniverses(broad: string[], perEngine: number) {
-  const assigned = new Set<string>();
-  const key = rotationKey();
+function buildEngineUniverses(queue: RotatingResearchName[]) {
+  let cursor = 0;
   return RESEARCH_ENGINES.map((engine, engineIndex) => {
-    const preferred = [...ENGINE_UNIVERSES[engine.mode], ...broad];
-    const unique = Array.from(new Set(preferred));
-    const start = unique.length ? Math.abs((key * 11 + engineIndex * 17) % unique.length) : 0;
-    const tickers: string[] = [];
-    for (let i = 0; i < unique.length && tickers.length < perEngine; i++) {
-      const ticker = unique[(start + i) % unique.length];
-      if (assigned.has(ticker)) continue;
-      assigned.add(ticker);
-      tickers.push(ticker);
-    }
-    return { engine, tickers };
+    const enginesLeft = RESEARCH_ENGINES.length - engineIndex;
+    const count = Math.ceil((queue.length - cursor) / Math.max(1, enginesLeft));
+    const scheduled = queue.slice(cursor, cursor + count);
+    cursor += scheduled.length;
+    return { engine, scheduled, tickers: scheduled.map(row => row.ticker) };
   });
 }
 
@@ -166,16 +156,16 @@ function rank(row: EngineCandidate) {
 
 export async function runInvestmentResearchOS(options: { exclude?: Iterable<string>; topN?: number; universeLimit?: number } = {}) {
   const excluded = new Set(Array.from(options.exclude ?? [], value => String(value).toUpperCase()));
-  const broadUniverse = balancedUniverse(240).filter(ticker => !excluded.has(ticker) && !RESERVES.has(ticker));
   const detailedLimit = Math.max(28, Math.min(42, options.universeLimit ?? 40));
-  const perEngine = Math.max(4, Math.floor(detailedLimit / RESEARCH_ENGINES.length));
-  const batches = buildEngineUniverses(broadUniverse, perEngine);
+  const marketUniverse = await buildRotatingMarketUniverse({ exclude: [...excluded, ...RESERVES], detailedLimit });
+  const batches = buildEngineUniverses(marketUniverse.queue);
+  const scheduledByTicker = new Map(marketUniverse.queue.map(row => [row.ticker, row]));
 
   // Phase 1 factor consensus remains an audit concept, but V23 now earns it from
   // separate discovery engines rather than one multifactor search with labels added later.
-  const results = await mapLimit(batches, 2, async ({ engine, tickers }) => {
+  const results = await mapLimit(batches, 2, async ({ engine, tickers, scheduled }) => {
     const result = await runFactorDiscovery(engine.mode, tickers, tickers.length);
-    return { engine, tickers, result };
+    return { engine, tickers, scheduled, result };
   });
 
   const all: EngineCandidate[] = [];
@@ -235,6 +225,8 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       valuationSource: candidate.valuationSource,
       valuationGapPct: expected,
       researchStatus: "COMPLETE" as const,
+      rotationCadence: scheduledByTicker.get(candidate.ticker)?.cadence ?? "7D",
+      universeSource: scheduledByTicker.get(candidate.ticker)?.source ?? marketUniverse.masterSource,
       factors: {
         momentum: candidate.momentum,
         growth: candidate.growth,
@@ -248,6 +240,64 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     }];
   });
 
+  // The opportunity screen must show what the Investment Team is actively
+  // researching, not only the tiny subset that already clears every buy gate.
+  // Queue rows can be WATCH/INCOMPLETE, but never receive capital here.
+  const proposalTickers = new Set(proposals.map(row => row.ticker));
+  const researchQueue: InvestmentResearchQueueItem[] = all
+    .filter(row => !proposalTickers.has(row.candidate.ticker))
+    .filter(row => row.candidate.price != null && row.candidate.price > 0)
+    .sort((left, right) => rank(right) - rank(left))
+    .slice(0, Math.max(12, (options.topN ?? 10) * 2))
+    .map(({ candidate, engine, lifecycle }) => {
+      const mandate = researchMandate(engine.id);
+      const schedule = scheduledByTicker.get(candidate.ticker);
+      const target = candidate.valuationReady ? finite(candidate.targetPrice) : null;
+      const expected = target != null && candidate.price != null && candidate.price > 0
+        ? (target / candidate.price - 1) * 100
+        : null;
+      const sourceModels = Array.from(new Set([engine.mode, ...(candidate.engines ?? [])]));
+      return {
+        ticker: candidate.ticker,
+        score: Math.round(rank({ candidate, engine, lifecycle })),
+        price: candidate.price,
+        target,
+        expectedReturnPct: expected,
+        thesis: candidate.thesis,
+        researchEngine: engine.id,
+        researchEngineLabel: engine.label,
+        lifecycleStage: lifecycle.stage,
+        lifecycleScore: lifecycle.score,
+        lifecycleReason: lifecycle.reason,
+        lifecycleEvidence: lifecycle.evidence,
+        preferredEntryStage: lifecycle.preferredEntry,
+        researchStatus: target == null ? "INCOMPLETE" as const : "COMPLETE" as const,
+        valuationSource: target == null ? "UNAVAILABLE" : candidate.valuationSource,
+        valuationGapPct: expected,
+        failedGates: candidate.failedGates ?? [],
+        valuationFailures: candidate.valuationFailures ?? [],
+        sourceModels,
+        rotationCadence: schedule?.cadence ?? "7D",
+        universeSource: schedule?.source ?? marketUniverse.masterSource,
+        searchBasis: mandate.searchBasis,
+        searchBasisTh: mandate.searchBasisTh,
+        investmentHorizon: mandate.investmentHorizon,
+        investmentHorizonTh: mandate.investmentHorizonTh,
+        reviewCadence: mandate.reviewCadence,
+        reviewCadenceTh: mandate.reviewCadenceTh,
+        factors: {
+          momentum: candidate.momentum,
+          growth: candidate.growth,
+          quality: candidate.quality,
+          value: candidate.value,
+          dividend: candidate.dividend,
+          institutional: candidate.institutional,
+          ai: candidate.ai,
+          composite: candidate.composite,
+        },
+      };
+    });
+
   const engineReports = results.map(run => ({
     id: run.engine.id,
     label: run.engine.label,
@@ -257,24 +307,29 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     analyzed: run.result.stats.analyzed,
     qualifiedByEngine: run.result.stats.qualified,
     selectedForActiveLifecycle: eligible.filter(row => row.engine.id === run.engine.id).length,
+    rotationMix: Array.from(new Set(run.scheduled.map(row => row.cadence))),
   }));
   const analyzed = results.reduce((sum, run) => sum + run.result.stats.analyzed, 0);
   const qualifiedByEngines = results.reduce((sum, run) => sum + run.result.stats.qualified, 0);
 
   return {
     proposals,
-    universeSize: broadUniverse.length,
+    researchQueue,
+    universeSize: marketUniverse.masterUniverseSize,
+    universeSource: marketUniverse.masterSource,
+    rotationWindows: marketUniverse.windows,
+    scheduledUniverse: marketUniverse.queue,
     detailedUniverseSize: analyzed,
     analyzed,
     qualified: proposals.length,
     engineQualified: qualifiedByEngines,
     rejected: Math.max(0, analyzed - proposals.length),
-    warnings,
+    warnings: [...marketUniverse.warnings, ...warnings],
     models: RESEARCH_ENGINES.map(engine => engine.label),
     engineReports,
     engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose, ...researchMandate(engine.id) })),
     engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle, ...researchMandate(report.id) })),
-    rotationCoverageCycles: Math.max(1, Math.ceil(broadUniverse.length / Math.max(1, analyzed))),
-    methodology: `Sentinel Research OS V23 runs ${RESEARCH_ENGINES.length} independent engines with separate universes and evidence. The Active Momentum lifecycle prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION with Momentum ≥65. MATURE, WEAKENING, BROKEN and valuation-incomplete names are not new-buy candidates. A defensible Fair Value gap of at least 8% is mandatory before Committee review.`,
+    rotationCoverageCycles: Math.max(1, Math.ceil(marketUniverse.masterUniverseSize / Math.max(1, analyzed))),
+    methodology: `Sentinel Research OS V23 schedules a ${marketUniverse.masterUniverseSize}-name listed-US master universe across 3-day, 7-day, monthly and quarterly rotations. ${RESEARCH_ENGINES.length} independent engines own separate deep-research batches. The Active Momentum lifecycle prefers ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION with Momentum ≥65. MATURE, WEAKENING, BROKEN and valuation-incomplete names are retained in research but cannot receive new capital. A defensible Fair Value gap of at least 8% is mandatory before Committee review.`,
   };
 }
