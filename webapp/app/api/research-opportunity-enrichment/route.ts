@@ -15,6 +15,9 @@ type OpportunityInput = {
   institutional: number | null;
   currentPrice: number | null;
   targetPrice: number | null;
+  valuationStatus: string;
+  valuationDecisionReady: boolean;
+  valuationConfidence: string | null;
   source: unknown;
 };
 
@@ -120,6 +123,9 @@ export async function POST(req: NextRequest) {
           institutional: finite(row.factors?.institutional),
           currentPrice: finite(row.currentPrice),
           targetPrice: finite(row.targetPrice),
+          valuationStatus: String(row.valuationStatus ?? "UNAVAILABLE").toUpperCase(),
+          valuationDecisionReady: row.valuationDecisionReady === true,
+          valuationConfidence: row.valuationConfidence == null ? null : String(row.valuationConfidence).toUpperCase(),
           source: row.source,
         };
       })
@@ -149,7 +155,10 @@ export async function POST(req: NextRequest) {
         maFanning: e10 != null && e20 != null && s50 != null ? e10 > e20 && e20 > s50 : null,
         valuationGapPct: gap,
       });
-      const valuationReady = gap != null && gap >= 5;
+      const governedValuation = row.valuationDecisionReady
+        && row.valuationConfidence !== "LOW"
+        && ["VALID", "NO_EDGE"].includes(row.valuationStatus);
+      const valuationReady = governedValuation && gap != null && gap >= 5;
       const technicalReady = overlay?.action === "ADD";
       const engine = researchEngine(row.source);
       const mandate = researchMandate(engine);
@@ -170,6 +179,7 @@ export async function POST(req: NextRequest) {
         lifecycleReason: lifecycle.reason,
         preferredEntryStage: lifecycle.preferredEntry,
         researchState,
+        valuationDecisionReady: governedValuation,
         technicalDecision: overlay?.action ?? null,
         technicalConfidence: overlay?.confidence ?? null,
         technicalReason: overlay?.reason ?? null,
