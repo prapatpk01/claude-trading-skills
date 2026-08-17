@@ -1,0 +1,4 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "ignoreCommand": "if [ \"$VERCEL_PROJECT_ID\" = \"prj_3x8Iu45jhQNbmkSdCh0GmRGprx7a\" ]; then exit 1; else echo \"Skipping duplicate Vercel project $VERCEL_PROJECT_ID\"; exit 0; fi"
+}
