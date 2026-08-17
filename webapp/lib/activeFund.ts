@@ -3,6 +3,7 @@ import { runDividendScan } from "./dividendScan";
 import { runThematicPortfolio } from "./thematicPortfolio";
 import { buildAnalysis } from "./analyze";
 import { buildMacroOutlook, type MacroOutlook } from "./macroOutlook";
+import { governThomasSnapshot, resolveThomasValuationForMarketData, type ThomasValuationSnapshot } from "./thomasValuation";
 
 export type FundAction = "INITIATE" | "ADD" | "HOLD" | "TRIM REVIEW" | "REPLACE" | "EXIT REVIEW" | "WATCH";
 export type OpportunityDecisionType = "INITIATE FROM LIQUIDITY" | "ROTATE / REPLACE" | "WATCH WITH TRIGGER" | "REJECT";
@@ -16,6 +17,7 @@ export interface ActiveFundIdea {
   ticker: string; source: string[]; held: boolean; action: FundAction;
   conviction: number; confidence: string; expectedReturnPct: number | null;
   targetPrice: number | null; currentPrice: number | null; momentum: number | null;
+  valuationDecisionReady: boolean; valuationStatus: string; valuationSource: string;
   targetWeightPct: number; capitalUsd: number; committee: string;
   thesis: string; dissent: string[]; reasons: string[];
 }
@@ -77,20 +79,27 @@ const num = (x: any): number | null => typeof x === "number" && Number.isFinite(
 const portfolioScore = (x: ActiveFundIdea) => x.conviction + Math.max(-20, Math.min(30, x.expectedReturnPct ?? 0)) * 0.5;
 const cleanTicker = (x: string) => String(x).trim().toUpperCase();
 const isLiquidityTicker = (ticker: string) => LIQUIDITY_TICKERS.has(cleanTicker(ticker));
-async function analyzeSafe(ticker: string) { try { return await buildAnalysis(ticker); } catch { return null; } }
+async function analyzeSafe(ticker: string) {
+  try {
+    const analysis = await buildAnalysis(ticker);
+    const valuation = await resolveThomasValuationForMarketData(analysis.data, { dividends: [] }).catch(() => null);
+    return { analysis, valuation };
+  } catch { return null; }
+}
 
-function sizeIdea(a: any, held: boolean, nav: number, macro: MacroOutlook): ActiveFundIdea {
+function sizeIdea(a: any, snapshot: ThomasValuationSnapshot | null, held: boolean, nav: number, macro: MacroOutlook): ActiveFundIdea {
   const c = a.committee;
-  const exp = num(a.expectedReturnPct), conv = num(c?.conviction) ?? 0, mult = num(c?.sizeMultiplier) ?? 0;
+  const governed = governThomasSnapshot(snapshot, a.data?.quote?.price ?? null);
+  const exp = governed.valid ? governed.valuationGapPct : null, conv = num(c?.conviction) ?? 0, mult = num(c?.sizeMultiplier) ?? 0;
   const macroPenalty = macro.score < 38 ? 8 : macro.score < 55 ? 4 : 0;
   const initiateHurdle = 8 + macroPenalty;
   let action: FundAction = "WATCH";
   if (held) {
     if (c?.decision === "REJECT") action = "EXIT REVIEW";
-    else if (c?.decision === "APPROVE" && exp != null && exp >= 15 + macroPenalty / 2) action = "ADD";
-    else if (exp != null && exp < 0) action = "TRIM REVIEW";
+    else if (governed.decisionReady && c?.decision === "APPROVE" && exp != null && exp >= 15 + macroPenalty / 2) action = "ADD";
+    else if (governed.decisionReady && exp != null && exp < 0) action = "TRIM REVIEW";
     else action = "HOLD";
-  } else if (c?.decision === "APPROVE" && exp != null && exp >= initiateHurdle && macro.riskBudgetPct >= 30) {
+  } else if (governed.decisionReady && c?.decision === "APPROVE" && exp != null && exp >= initiateHurdle && macro.riskBudgetPct >= 30) {
     action = "INITIATE";
   }
   const rawWeight = action === "INITIATE" || action === "ADD" ? clamp((conv / 100) * 8 * mult, 1.5, 8) : 0;
@@ -100,7 +109,8 @@ function sizeIdea(a: any, held: boolean, nav: number, macro: MacroOutlook): Acti
   if (macro.score < 55 && !held) reasons.push(`New-position hurdle raised to ${initiateHurdle}% expected return by the Macro desk.`);
   return {
     ticker: a.ticker, source: [], held, action, conviction: conv, confidence: c?.confidence ?? "LOW",
-    expectedReturnPct: exp, targetPrice: num(a.targetPrice), currentPrice: num(a.data?.quote?.price), momentum: num(a.momentum?.total),
+    expectedReturnPct: exp, targetPrice: governed.valid ? governed.fairValue : null, currentPrice: num(a.data?.quote?.price), momentum: num(a.momentum?.total),
+    valuationDecisionReady: governed.decisionReady, valuationStatus: governed.status, valuationSource: snapshot?.source ?? "UNAVAILABLE",
     targetWeightPct: Math.round(targetWeight * 10) / 10, capitalUsd: Math.round(nav * targetWeight / 100),
     committee: c?.decision ?? "WATCH", thesis: a.thesis?.find((x: any) => x.label === "Base")?.narrative ?? "No base thesis available.",
     dissent: c?.dissent ?? [], reasons,
@@ -166,8 +176,8 @@ export async function runActiveFund(
   }).slice(0,15);
   const newAnalyses = await Promise.all(ranked.map(([t]) => analyzeSafe(t)));
   const currentAnalyses = await Promise.all(riskTickers.slice(0,15).map(t => analyzeSafe(t)));
-  const newIdeas = newAnalyses.filter(Boolean).map((a:any,i) => { const x=sizeIdea(a,false,nav,macro); x.source=[...(ranked[i]?.[1]??[])]; return x; }).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
-  const existing = currentAnalyses.filter(Boolean).map((a:any)=>sizeIdea(a,true,nav,macro)).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
+  const newIdeas = newAnalyses.filter(Boolean).map((row:any,i) => { const x=sizeIdea(row.analysis,row.valuation,false,nav,macro); x.source=[...(ranked[i]?.[1]??[])]; return x; }).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
+  const existing = currentAnalyses.filter(Boolean).map((row:any)=>sizeIdea(row.analysis,row.valuation,true,nav,macro)).sort((a,b)=>portfolioScore(b)-portfolioScore(a));
 
   const approvedNew = newIdeas.filter(x=>x.action === "INITIATE");
   const weakest = [...existing].sort((a,b)=>portfolioScore(a)-portfolioScore(b));
