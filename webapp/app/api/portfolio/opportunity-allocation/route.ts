@@ -100,6 +100,8 @@ export async function GET() {
         return idea.action === "INITIATE" &&
           idea.committee === "APPROVE" &&
           idea.confidence !== "LOW" &&
+          idea.valuationDecisionReady === true &&
+          ["VALID", "NO_EDGE"].includes(String(idea.valuationStatus)) &&
           current != null && current > 0 &&
           target != null && target > current &&
           expected != null && expected >= 8;
