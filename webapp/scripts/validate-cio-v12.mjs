@@ -114,7 +114,8 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "buildBookReview",
   "assessRegime",
   "scoreMomentumV3",
-  "assessValuation",
+  "resolveThomasValuation",
+  "loadThomasValuationLedger",
   "assessPositionZone",
   "classifySleeve",
   "/api/analyze/actions",
@@ -123,13 +124,15 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "unavailable",
   "runDeskScan",
   "runInvestmentResearchOS",
-  "Sentinel Research OS Phase 1",
+  "Active Momentum Research V23",
   "proposals",
-  "Swing model supplies tactical timing only",
+  "lifecycle and Fair Value gates",
 ]);
 
 requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
-requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "balancedUniverse", "sourceModels", "Phase 1 factor consensus", "ENGINE_UNIVERSES"]);
+requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "buildRotatingMarketUniverse", "researchQueue", "sourceModels", "RESEARCH_ENGINES", "buildEngineUniverses", "engineReports", "lifecycleStage", "valuationGapPct", "rotationCadence"]);
+requireTokens("lib/research/marketUniverse.ts", ["loadSecSymbolUniverse", "SEC EDGAR listed-registrant master universe", '"3D"', '"7D"', '"1M"', '"3M"']);
+requireTokens("lib/thomasValuation.ts", ["resolveThomasValuation", "THOMAS_DCF_MULTI_ANCHOR", "YAHOO_ANALYST_CONSENSUS", "saveThomasValuationLedger"]);
 requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
 forbidTokens("app/api/committee/swing-scan/route.ts", [
   ["runSwingScan(", "the scan must go through lib/research/deskScan.ts so the meeting and the page agree"],
@@ -145,6 +148,50 @@ requireTokens("app/components/ResearchWorkspaceV12.tsx", [
   "source:engine",
   "body?.error",
   "watchError",
+  "ACTIVE MOMENTUM RESEARCH OS · V23",
+  "Momentum Stage",
+  "Valuation Complete",
+]);
+
+requireTokens("app/components/ActiveFundDecisionView.tsx", [
+  "DiscoveryEnginePanel",
+  "DiscoveryIdeaTable",
+  "IncompleteResearchTable",
+  "RESEARCH INCOMPLETE",
+  "lifecycleStage",
+  "valuationGapPct",
+  "searchBasisTh",
+  "investmentHorizonTh",
+  "reviewCadenceTh",
+  "Fresh market discoveries — outside Holdings and Watchlist",
+  "Watchlist re-underwrite — tracked names, not fresh discoveries",
+]);
+
+requireTokens("lib/activeFundV2.ts", [
+  "active-momentum-fund-v23",
+  "RESEARCH INCOMPLETE",
+  "classifyMomentumLifecycle",
+  "Accumulation Confirmed",
+  "Fair Value is mandatory",
+  "valuation gap of 0% or less",
+  "FUND_HOLDING_POLICY",
+  "searchBasis",
+  "investmentHorizon",
+]);
+
+requireTokens("docs/SENTINEL_ACTIVE_MOMENTUM_V23.md", [
+  "Active Momentum",
+  "ACCUMULATION",
+  "EARLY_MARKUP",
+  "MOMENTUM_EXPANSION",
+  "RESEARCH INCOMPLETE",
+  "Valuation Gap",
+  "SEC EDGAR",
+  "3-day",
+  "Research Queue",
+  "Thomas",
+  "4–16 weeks",
+  "Quarterly",
 ]);
 
 requireTokens("lib/team/constitution.ts", [

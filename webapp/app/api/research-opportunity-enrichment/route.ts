@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { dailyCandles } from "@/lib/marketData";
 import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
 import { classifyMomentumLifecycle } from "@/lib/research/momentumLifecycle";
+import { researchMandate } from "@/lib/research/researchMandates";
 import type { Candle } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -150,6 +151,8 @@ export async function POST(req: NextRequest) {
       });
       const valuationReady = gap != null && gap >= 5;
       const technicalReady = overlay?.action === "ADD";
+      const engine = researchEngine(row.source);
+      const mandate = researchMandate(engine);
       const researchState = !valuationReady
         ? "VALUATION_REQUIRED"
         : !lifecycle.preferredEntry
@@ -160,7 +163,8 @@ export async function POST(req: NextRequest) {
 
       return {
         ticker: row.ticker,
-        researchEngine: researchEngine(row.source),
+        researchEngine: engine,
+        ...mandate,
         lifecycleStage: lifecycle.stage,
         lifecycleScore: lifecycle.score,
         lifecycleReason: lifecycle.reason,
@@ -178,7 +182,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       rows: enriched,
-      methodology: "Active Momentum Lifecycle: ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION. MATURE and WEAKENING are watch/trim states. New risk additionally requires valuation room and the shared Holdings technical gate.",
+      methodology: "Active Momentum Lifecycle: ACCUMULATION → EARLY MARKUP → MOMENTUM EXPANSION. The normal holding window is 4–16 weeks, extendable while momentum, thesis and Fair Value room survive. MATURE and WEAKENING are watch/trim states. New risk additionally requires valuation room and the shared Holdings technical gate.",
     }, { headers: { "Cache-Control": "no-store, max-age=0" } });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Opportunity enrichment failed" }, { status: 500, headers: { "Cache-Control": "no-store" } });

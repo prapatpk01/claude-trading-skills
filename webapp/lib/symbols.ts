@@ -23,7 +23,12 @@ export interface SymbolHit {
 let secList: { ticker: string; name: string }[] | null = null;
 let secLoadedAt = 0;
 
-async function loadSecList(): Promise<{ ticker: string; name: string }[]> {
+/**
+ * Complete SEC registrant universe used by autocomplete and the Research OS
+ * master-universe scheduler.  Keeping one loader avoids two large EDGAR
+ * downloads in the same server process.
+ */
+export async function loadSecSymbolUniverse(): Promise<{ ticker: string; name: string }[]> {
   const DAY = 24 * 60 * 60 * 1000;
   if (secList && Date.now() - secLoadedAt < DAY) return secList;
   const res = await fetch("https://www.sec.gov/files/company_tickers.json", {
@@ -92,7 +97,7 @@ export async function searchSymbols(query: string, limit = 8): Promise<SymbolHit
 
   // 2) SEC list — always reachable
   try {
-    const list = await loadSecList();
+    const list = await loadSecSymbolUniverse();
     return rankSec(list, q, limit);
   } catch {
     return [];

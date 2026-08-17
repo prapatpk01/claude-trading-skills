@@ -5,6 +5,7 @@ const outDir = process.argv[2];
 if (!outDir) { console.error("usage: node scripts/test-research-v23.mjs <compiled-dir>"); process.exit(2); }
 const require_ = createRequire(import.meta.url);
 const { classifyMomentumLifecycle } = require_(path.resolve(outDir, "momentumLifecycle.js"));
+const { FUND_HOLDING_POLICY, researchMandate } = require_(path.resolve(outDir, "researchMandates.js"));
 
 let passed = 0, failed = 0;
 function ok(name, condition, detail = "") {
@@ -49,6 +50,14 @@ const partial = classifyMomentumLifecycle({
   return1m: null, return3m: null, aboveEma20: null, maFanning: null, valuationGapPct: 12,
 });
 ok("downstream aggregate evidence still produces a lifecycle read", partial.stage === "EARLY_MARKUP", partial.stage);
+
+const momentumMandate = researchMandate("MOMENTUM_LIFECYCLE");
+ok("momentum engine identifies its real search evidence", momentumMandate.searchBasis.includes("SPY") && momentumMandate.searchBasis.includes("volume"));
+ok("momentum engine publishes a conditional holding window", momentumMandate.investmentHorizon.includes("2–12 weeks") && momentumMandate.investmentHorizonTh.includes("2–12 สัปดาห์"));
+
+const watchlistMandate = researchMandate("Watchlist Re-underwrite");
+ok("watchlist re-underwrite names its screening tools", watchlistMandate.searchBasis.includes("5D/20D volume") && watchlistMandate.searchBasis.includes("Fair Value"));
+ok("fund holding policy is evidence-driven, not calendar-driven", FUND_HOLDING_POLICY.baseWindow === "4–16 weeks" && FUND_HOLDING_POLICY.exitRule.includes("No fixed expiry"));
 
 console.log(`\n${passed} passed · ${failed} failed`);
 if (failed) process.exit(1);

@@ -93,6 +93,7 @@ function momentumReview(candidate:ResearchCandidateLike){
   {label:"30-day relative strength ≥ 1.0",pass:rs>=1},
   {label:"Volume participation ≥ 0.9x",pass:volume>=.9},
   {label:"2–4 week modeled upside ≥ 10%",pass:expected==null||expected>=10},
+  {label:"Lifecycle is Accumulation Confirmed / Early Markup / Markup",pass:Boolean(candidate?.lifecycle?.entryEligible)},
  ];
  return{passed:checks.every(check=>check.pass),gateReasons:checks.filter(check=>check.pass).map(check=>check.label),failedGates:checks.filter(check=>!check.pass).map(check=>check.label)};
 }
@@ -112,7 +113,7 @@ export function engineSelectionLimit(mode:ResearchEngineMode){
 
 export function engineProfile(mode:ResearchEngineMode){
  if(mode==="momentum")return{
-  id:"momentum-v1",title:"2–4 Week Momentum",objective:"Select exactly five liquid stocks with strong relative strength, trend and volume participation, targeting at least 10% modeled upside.",holdingPeriod:"10–30 calendar days",benchmark:"SPY / QQQ",performanceMetrics:["Win rate","TP1 hit rate","TP2 hit rate","Stop-loss rate","Average return","Average holding days"],independentState:true,
+  id:"momentum-leadership-v23",title:"Momentum Leadership Engine",objective:"Find liquid market leaders in Accumulation Confirmed, Early Markup or Markup using relative strength, RSI, MACD and moving-average structure; reject late extensions and weakening trends.",holdingPeriod:"Active while momentum survives",benchmark:"SPY / QQQ",performanceMetrics:["Alpha vs SPY","Stage conversion rate","Weakening exit capture","Average return","Average holding days"],independentState:true,
  };
  if(mode==="dividend")return{
   id:"dividend-v1",title:"Dividend Quality & Growth",objective:"Select five durable income securities using yield, payout safety, cash-flow coverage and distribution durability without imposing a growth-stock upside gate.",holdingPeriod:"6–24 months",benchmark:"SCHD",performanceMetrics:["Total return","Income return","Distribution growth","Maximum drawdown","Dividend cut rate"],independentState:true,
@@ -120,7 +121,13 @@ export function engineProfile(mode:ResearchEngineMode){
  if(mode==="thematic")return{
   id:"thematic-v1",title:"1–3 Month Thematic Portfolio",objective:"Build an AI-weighted five-stock portfolio within one investable theme, with entry zones, targets, stops and weights totaling 100%.",holdingPeriod:"30–90 calendar days",benchmark:"Theme ETF",performanceMetrics:["Portfolio return","Benchmark alpha","Win rate by constituent","Maximum drawdown","Target hit rate"],independentState:true,
  };
- return{id:`${mode}-v1`,title:mode,objective:"Independent research engine.",holdingPeriod:"Engine specific",benchmark:"SPY",performanceMetrics:["Total return"],independentState:true};
+ if(mode==="institutional")return{id:"accumulation-flow-v23",title:"Accumulation & Flow Engine",objective:"Find early institutional accumulation through sustained 5D/20D volume, positive Up/Down volume, relative-strength stabilization and transition into markup.",holdingPeriod:"Accumulation through markup",benchmark:"SPY",performanceMetrics:["Accumulation-to-breakout conversion","False breakout rate","Volume persistence","Alpha vs SPY"],independentState:true};
+ if(mode==="growth")return{id:"growth-revision-v23",title:"Growth & Earnings Revision Engine",objective:"Find accelerating revenue, earnings, operating income and margins; it confirms that price momentum has an improving business engine.",holdingPeriod:"1–4 quarters while revisions improve",benchmark:"Russell 1000 Growth",performanceMetrics:["Estimate revision breadth","Revenue acceleration","Post-earnings alpha","Total return"],independentState:true};
+ if(mode==="quality")return{id:"quality-compounder-v23",title:"Quality Compounder Engine",objective:"Find high-ROE, cash-generative businesses with durable margins and balance sheets that can support a momentum run.",holdingPeriod:"3–12 months while quality holds",benchmark:"QUAL / SPY",performanceMetrics:["ROE persistence","FCF conversion","Drawdown","Quality alpha"],independentState:true};
+ if(mode==="value")return{id:"valuation-gap-v23",title:"Valuation Gap Engine",objective:"Require a defensible DCF or fundamental multiple Fair Value and measure remaining upside; synthetic spot-price targets are rejected.",holdingPeriod:"Until Fair Value closes or thesis changes",benchmark:"SPY",performanceMetrics:["Fair Value calibration","Gap capture","Target hit rate","Model error"],independentState:true};
+ if(mode==="ai")return{id:"innovation-leadership-v23",title:"AI & Innovation Leadership Engine",objective:"Search AI infrastructure, software, cloud, cyber, automation and semiconductor leadership, then require the same Momentum Stage and Fair Value gates.",holdingPeriod:"Theme leadership cycle",benchmark:"QQQ / SOXX",performanceMetrics:["Theme alpha","Leadership persistence","Drawdown","Target hit rate"],independentState:true};
+ if(mode==="multifactor")return{id:"cross-engine-confirmation-v23",title:"Cross-Engine Confirmation",objective:"Combine independent Momentum, Accumulation, Growth, Quality, Valuation and Theme evidence without allowing the composite to bypass any mandatory gate.",holdingPeriod:"Active-cycle dependent",benchmark:"SPY",performanceMetrics:["Cross-engine hit rate","Alpha vs SPY","Drawdown","Signal stability"],independentState:true};
+ return{id:`${mode}-v23`,title:mode,objective:"Independent research engine with a separate universe, gate and performance record.",holdingPeriod:"Engine specific",benchmark:"SPY",performanceMetrics:["Total return"],independentState:true};
 }
 
 export function createPerformanceContract(mode:ResearchEngineMode,candidate:ResearchCandidateLike,asOf:string):EnginePerformanceContract{
