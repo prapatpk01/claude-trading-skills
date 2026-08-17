@@ -20,6 +20,8 @@ export type FundamentalValuationFallback = {
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const finite = (value: unknown): number | null => Number.isFinite(Number(value)) ? Number(value) : null;
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const BANK_TICKERS = new Set(["JPM", "BAC", "C", "WFC", "GS", "MS", "USB", "HSBC", "ITUB", "SCHW", "BK", "TROW"]);
+const REIT_TICKERS = new Set(["O", "NNN", "OHI", "PLD", "AMT", "EQIX", "WELL", "SPG", "VICI"]);
 
 function pctValue(value: number | null) {
   if (value == null) return null;
@@ -59,6 +61,11 @@ function weightedAverage(anchors: FundamentalValuationAnchor[]) {
  * - filing-derived FCF/share capitalized at a growth-adjusted FCF yield.
  */
 export function fundamentalValuationFallback(data: MarketData): FundamentalValuationFallback | null {
+  const ticker = String(data.ticker ?? "").toUpperCase();
+  const sector = String(data.overview?.sector ?? "").toLowerCase();
+  const industry = String(data.overview?.industry ?? "").toLowerCase();
+  const isBank = BANK_TICKERS.has(ticker) || /\bbanks?\b|banking|capital markets|brokerage/.test(industry);
+  const isReit = REIT_TICKERS.has(ticker) || /reit|real estate investment trust/.test(`${sector} ${industry}`);
   const price = finite(data.quote?.price);
   const overview = data.overview;
   const shares = finite(overview?.sharesOutstanding);
@@ -89,6 +96,7 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
   const operatingCashFlow = finite(latestCashFlow?.operatingCashflow);
   const capex = Math.abs(finite(latestCashFlow?.capitalExpenditures) ?? 0);
   const freeCashFlow = operatingCashFlow != null ? operatingCashFlow - capex : null;
+  const equity = finite(data.financials.balance[0]?.totalShareholderEquity);
 
   const anchors: FundamentalValuationAnchor[] = [];
   const analystTarget = finite(overview?.analystTargetPrice);
@@ -102,7 +110,40 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
   }
 
   const eps = finite(overview?.eps) ?? annualEps[0] ?? null;
-  if (eps != null && eps > 0) {
+
+  // A bank is valued on book equity and sustainable return on that equity.
+  // Industrial-company FCF and revenue multiples are structurally misleading
+  // because deposits, loans and interest cash flows are the operating model.
+  if (isBank && equity != null && equity > 0 && shares != null && shares > 0) {
+    const bookValuePerShare = equity / shares;
+    const roe = clamp(roePct ?? 10, 2, 30) / 100;
+    const costOfEquity = 0.105;
+    const perpetualGrowth = 0.03;
+    const justifiedPb = clamp((roe - perpetualGrowth) / Math.max(0.02, costOfEquity - perpetualGrowth), 0.6, 2.5);
+    const target = bookValuePerShare * justifiedPb;
+    if (target > 0) anchors.push({
+      label: "Bank book value × justified P/B",
+      target,
+      weight: 1.5,
+      detail: `Book value/share $${round2(bookValuePerShare).toFixed(2)} × ${round2(justifiedPb).toFixed(2)}x justified P/B from ${(roe * 100).toFixed(1)}% ROE, 10.5% cost of equity and 3.0% perpetual growth.`,
+    });
+  }
+
+  // For REITs, accounting depreciation makes EPS and generic DCF a poor core
+  // anchor. Filed equity/share is kept as a conservative NAV proxy until AFFO
+  // and property-level NAV are available; analyst consensus remains separate.
+  if (isReit && equity != null && equity > 0 && shares != null && shares > 0) {
+    const bookValuePerShare = equity / shares;
+    const target = bookValuePerShare * 1.05;
+    if (target > 0) anchors.push({
+      label: "REIT filed NAV proxy",
+      target,
+      weight: 0.8,
+      detail: `Filed equity/share $${round2(bookValuePerShare).toFixed(2)} × 1.05. This is a conservative NAV proxy, not an AFFO model.`,
+    });
+  }
+
+  if (!isBank && !isReit && eps != null && eps > 0) {
     const forwardGrowth = clamp(epsGrowthPct ?? growthPct, -10, 30) / 100;
     const forwardEps = eps * (1 + forwardGrowth);
     const qualityAdjustment = (operatingMarginPct ?? 0) >= 25 ? 3 : (operatingMarginPct ?? 0) >= 15 ? 1.5 : 0;
@@ -117,7 +158,7 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
     });
   }
 
-  if (revenue != null && revenue > 0 && shares != null && shares > 0) {
+  if (!isBank && !isReit && revenue != null && revenue > 0 && shares != null && shares > 0) {
     const revenuePerShare = revenue / shares;
     const margin = clamp(operatingMarginPct ?? 10, -10, 50);
     const fairPs = clamp(1.5 + Math.max(0, growthPct) * 0.16 + Math.max(0, margin) * 0.10, 1.5, 15);
@@ -130,7 +171,7 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
     });
   }
 
-  if (freeCashFlow != null && freeCashFlow > 0 && shares != null && shares > 0) {
+  if (!isBank && !isReit && freeCashFlow != null && freeCashFlow > 0 && shares != null && shares > 0) {
     const fcfPerShare = freeCashFlow / shares;
     const fairYieldPct = clamp(6.2 - Math.max(0, growthPct) * 0.075 - Math.max(0, operatingMarginPct ?? 0) * 0.025, 2.5, 7.0);
     const target = fcfPerShare / (fairYieldPct / 100);
@@ -147,9 +188,10 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
   // Spot is a sanity rail only: reject targets that almost certainly represent
   // an unadjusted split/share basis. It never determines the fair value.
   const basisSafe = price != null && price > 0
-    ? anchors.filter((anchor) => anchor.target >= price * 0.15 && anchor.target <= price * 5)
+    ? anchors.filter((anchor) => anchor.target >= price * 0.4 && anchor.target <= price * 2.5)
     : anchors;
-  const usable = basisSafe.length ? basisSafe : anchors;
+  if (!basisSafe.length) return null;
+  const usable = basisSafe;
   const base = weightedAverage(usable);
   if (!(base > 0)) return null;
 
@@ -170,6 +212,6 @@ export function fundamentalValuationFallback(data: MarketData): FundamentalValua
     upsidePct,
     confidence,
     anchors: usable.map((anchor) => ({ ...anchor, target: round2(anchor.target) })),
-    method: `Thomas filing-based fundamental range (${anchorNames}). Spot is used only for basis sanity checks, never as the fair-value anchor.`,
+    method: `Thomas ${isBank ? "bank-specific" : isReit ? "REIT-specific" : "filing-based"} fundamental range (${anchorNames}). Spot is used only for basis sanity checks, never as the fair-value anchor.`,
   };
 }
