@@ -18,7 +18,14 @@ requireTokens("app/components/HoldingsDashboardV12.tsx",[
 requireTokens("app/components/HoldingsMarketMonitor.tsx",[
  "holding-reconciliation","Shares","Average cost","Save corrected holding","reconcil","PATCH",
  "Portfolio & Watchlist Market Monitor","/api/watchlist","TECHNICAL WATCHLIST OVERLAY","BUY CANDIDATE","AVOID NEW BUY","REMOVE REVIEW",
- "Investment must verify thesis, valuation and catalyst","Adding here creates a research item only—not a BUY order","WatchlistTable"
+ "Investment must verify thesis, valuation and catalyst","Adding here creates a research item only—not a BUY order","WatchlistTable",
+ "MARKET DATA","Retry market data","Provider unavailable","marketDataNote","cleanTicker"
+]);
+requireTokens("app/api/holding-market/route.ts",[
+ "dailyCandlesWithFallback","buildHoldingMarketItem","uniqueMarketTickers","failed","partial","complete"
+]);
+requireTokens("lib/holdingMarketModel.ts",[
+ "cleanMarketTicker","uniqueMarketTickers","buildHoldingMarketItem","COMPLETE","PARTIAL","UNAVAILABLE","requiredBars: 220"
 ]);
 // The route now expresses the old “split-brain” safeguard as an explicit
 // ledger-first source-of-truth contract. Validate behavior, not a deleted

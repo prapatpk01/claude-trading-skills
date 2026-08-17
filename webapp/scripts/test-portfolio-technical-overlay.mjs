@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 const buildDir = process.argv[2];
 const modulePath = path.join(process.cwd(), buildDir, "portfolioTechnicalOverlay.js");
 const { computePortfolioTechnicalOverlay } = await import(pathToFileURL(modulePath).href);
+const modelPath = path.join(process.cwd(), buildDir, "holdingMarketModel.js");
+const { buildHoldingMarketItem, cleanMarketTicker, uniqueMarketTickers } = await import(pathToFileURL(modelPath).href);
 
 function candles(count, drift) {
   let price = 100;
@@ -41,5 +43,21 @@ for (const drift of [0.35, -0.25, 0]) {
   assert.ok(result.confidence >= 0 && result.confidence <= 100);
   assert.ok(result.mcdx.smartFlow >= 0 && result.mcdx.smartFlow <= 100);
 }
+
+assert.equal(cleanMarketTicker(" net "), "NET", "normalizes portfolio/watchlist ticker keys");
+assert.deepEqual(uniqueMarketTickers([" net ", "NET", "rtx", "bad ticker"]), ["NET", "RTX"], "deduplicates normalized ticker keys");
+
+const complete = buildHoldingMarketItem(candles(320, 0.25), null, "TEST HISTORY");
+assert.equal(complete.dataQuality.status, "COMPLETE", "complete history populates the technical monitor");
+assert.equal(complete.dataQuality.historyBars, 320);
+assert.ok(complete.price > 0);
+assert.ok(complete.technicalOverlay);
+assert.ok(complete.chartRanges.YTD.series.length > 1);
+assert.ok(complete.low52 > 0 && complete.high52 > complete.low52);
+
+const quoteOnly = buildHoldingMarketItem([], { symbol: "IPO", price: 25, change: 0, changePercent: 0, high: 25, low: 25, open: 25, prevClose: 25, asOf: "2026-08-17" }, "QUOTE FALLBACK");
+assert.equal(quoteOnly.dataQuality.status, "PARTIAL", "quote-only fallback still displays the current price");
+assert.equal(quoteOnly.price, 25);
+assert.equal(quoteOnly.technicalOverlay, null, "missing history never invents a technical decision");
 
 console.log("portfolio technical overlay: all assertions passed");

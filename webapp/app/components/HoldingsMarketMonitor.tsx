@@ -10,10 +10,12 @@ type EditMode = "reconcile" | "add" | "reduce" | "close";
 type EditState = { id: string; ticker: string; heldShares: number; mode: EditMode; shares: string; avgCost: string; tradePrice: string };
 type MonitorScope = "holdings" | "watchlist";
 type ChartRange = "1M" | "3M" | "6M" | "YTD" | "1Y";
+type MarketHealth = { requested: number; complete: number; partial: string[]; failed: string[] };
 
 const CHART_RANGES: ChartRange[] = ["1M", "3M", "6M", "YTD", "1Y"];
 const pc = (v: number | null) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`);
 const today = () => new Date().toISOString().slice(0, 10);
+const cleanTicker = (value: unknown) => String(value ?? "").trim().toUpperCase();
 const WATCHLIST_ACTIONS: Record<string, { label: string; className: string }> = {
   ADD: { label: "BUY CANDIDATE", className: "add" },
   HOLD: { label: "WATCH", className: "hold" },
@@ -24,12 +26,25 @@ const WATCHLIST_ACTIONS: Record<string, { label: string; className: string }> = 
 async function loadMarket(tickers: string[]) {
   const chunks: string[][] = [];
   for (let index = 0; index < tickers.length; index += 25) chunks.push(tickers.slice(index, index + 25));
-  const payloads = await Promise.all(chunks.map(async (chunk) => {
+  const items: Record<string, any> = {};
+  const failed = new Set<string>();
+  const partial = new Set<string>();
+  let requested = 0;
+  let complete = 0;
+  // Load chunks sequentially so a 10-holding + 18-watchlist portfolio does not
+  // create two simultaneous provider bursts. The route already parallelizes
+  // three tickers at a time with bounded concurrency.
+  for (const chunk of chunks) {
     const response = await fetch(`/api/holding-market?tickers=${encodeURIComponent(chunk.join(","))}&t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error("Unable to load market intelligence.");
-    return response.json();
-  }));
-  return Object.assign({}, ...payloads.map((payload) => payload.items ?? {}));
+    const payload = await response.json();
+    Object.assign(items, payload.items ?? {});
+    for (const ticker of payload.failed ?? []) failed.add(cleanTicker(ticker));
+    for (const ticker of payload.partial ?? []) partial.add(cleanTicker(ticker));
+    requested += Number(payload.requested ?? chunk.length);
+    complete += Number(payload.complete ?? 0);
+  }
+  return { items, health: { requested, complete, failed: [...failed], partial: [...partial] } as MarketHealth };
 }
 
 function selectedRange(item: any, range: ChartRange) {
@@ -43,6 +58,7 @@ export default function HoldingsMarketMonitor({ onUpdated }: { onUpdated?: () =>
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [market, setMarket] = useState<Record<string, any>>({});
+  const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [scope, setScope] = useState<MonitorScope>("holdings");
   const [chartRange, setChartRange] = useState<ChartRange>("YTD");
   const [loading, setLoading] = useState(true);
@@ -65,13 +81,28 @@ export default function HoldingsMarketMonitor({ onUpdated }: { onUpdated?: () =>
       const [p, w] = await Promise.all([portfolioResponse.json(), watchlistResponse.json()]);
       if (!portfolioResponse.ok) throw new Error(p.error || "Unable to load holdings.");
       if (!watchlistResponse.ok) throw new Error(w.error || "Unable to load watchlist.");
-      const hs = (p.holdings ?? []).filter((h: Holding) => !h.closed_at && Number(h.shares) > 0);
+      const hs = (p.holdings ?? []).flatMap((raw: Holding) => {
+        const ticker = cleanTicker(raw.ticker);
+        return /^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker) && !raw.closed_at && Number(raw.shares) > 0
+          ? [{ ...raw, ticker, shares: Number(raw.shares), avg_cost: Number(raw.avg_cost) }]
+          : [];
+      });
       const heldTickers = new Set(hs.map((holding: Holding) => holding.ticker));
-      const ws = (w.watchlist ?? []).filter((item: WatchItem) => !heldTickers.has(item.ticker));
+      const ws = (w.watchlist ?? []).flatMap((raw: WatchItem) => {
+        const ticker = cleanTicker(raw.ticker);
+        return /^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker) && !heldTickers.has(ticker) ? [{ ...raw, ticker }] : [];
+      });
       setHoldings(hs);
       setWatchlist(ws);
       const tickers = Array.from(new Set([...hs.map((h: Holding) => h.ticker), ...ws.map((item: WatchItem) => item.ticker)]));
-      setMarket(tickers.length ? await loadMarket(tickers) : {});
+      if (tickers.length) {
+        const result = await loadMarket(tickers);
+        setMarket(result.items);
+        setMarketHealth(result.health);
+      } else {
+        setMarket({});
+        setMarketHealth({ requested: 0, complete: 0, partial: [], failed: [] });
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to load holdings.");
     } finally { setLoading(false); }
@@ -182,6 +213,16 @@ export default function HoldingsMarketMonitor({ onUpdated }: { onUpdated?: () =>
       <div className="watchlist-manage-grid"><TickerInput value={watchTicker} onChange={(value) => setWatchTicker(value.toUpperCase())} onSubmitTicker={(ticker) => setWatchTicker(ticker)} placeholder="Search ticker or company"/><input value={watchReason} onChange={(event) => setWatchReason(event.target.value)} placeholder="Research reason (optional)"/><button type="button" className="btn" disabled={watchSaving || !watchTicker.trim()} onClick={() => void addToWatchlist()}>{watchSaving ? "Adding…" : "+ Add to Watchlist"}</button></div>
     </section>}
 
+    {marketHealth && marketHealth.requested > 0 && <div className={marketHealth.failed.length ? "err" : "notice"} style={{ marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div><strong>MARKET DATA · {marketHealth.complete}/{marketHealth.requested} COMPLETE</strong>
+          {marketHealth.partial.length > 0 && <small style={{ display: "block", marginTop: 5 }}>Partial history (&lt;220 trading days): {marketHealth.partial.join(", ")}</small>}
+          {marketHealth.failed.length > 0 && <small style={{ display: "block", marginTop: 5 }}>Provider unavailable: {marketHealth.failed.join(", ")}. No signal is inferred from missing data.</small>}
+        </div>
+        {(marketHealth.failed.length > 0 || marketHealth.partial.length > 0) && <button type="button" className="btn ghost sm" onClick={() => void load()} disabled={loading}>{loading ? "Retrying…" : "Retry market data"}</button>}
+      </div>
+    </div>}
+
     {message && <div className={`holding-edit-message ${/reconciled|added|reduced|closed|removed/.test(message) ? "success" : "error"}`}>{message}</div>}
 
     {editing && <section className="holding-edit-panel" aria-label={`Edit ${editing.ticker} holding`}>
@@ -207,7 +248,7 @@ function HoldingsTable({holdings,market,nav,chartRange,beginEdit}:{holdings:Hold
   if(!holdings.length)return <div className="notice" style={{marginTop:12}}>No open holdings are available for market monitoring.</div>;
   return <div className="table-wrap" style={{marginTop:12}}><table className="tbl holdings-market-table"><thead><tr><th>Ticker</th><th className="num">Shares</th><th className="num">Avg cost</th><th className="num">Current</th><th className="num">vs cost</th><th>Overlay action</th><th>Technical targets</th><th>Sentinel X</th><th>MCDX proxy</th><th className="num">1W</th><th>{chartRange}</th><th>52W range</th><th className="num">Weight</th><th className="num">Edit</th></tr></thead><tbody>{holdings.map(holding=>{
     const item=market[holding.ticker];const overlay=item?.technicalOverlay;const price=item?.price??null;const vs=price!=null&&holding.avg_cost>0?(price/holding.avg_cost-1)*100:null;const marketValue=(price??holding.avg_cost)*holding.shares;const weight=nav?marketValue/nav*100:0;const chart=selectedRange(item,chartRange);
-    return <tr key={holding.id||holding.ticker}><td><strong>{holding.ticker}</strong><br/><span className="muted" style={{fontSize:10.5}}>{item?.asOf??"—"}</span></td><td className="num"><strong>{Number(holding.shares).toLocaleString(undefined,{maximumFractionDigits:7})}</strong></td><td className="num">{money(holding.avg_cost)}</td><td className="num"><strong>{price==null?"—":money(price)}</strong></td><td className={`num ${vs==null?"muted":vs>=0?"pos":"neg"}`}>{pc(vs)}</td><td style={{minWidth:190}}>{overlay?<><span className={`overlay-action ${overlay.action.toLowerCase().replace(" ","-")}`}>{overlay.action}</span><div className="overlay-reason">{overlay.reason}</div><small className="muted">Confidence {overlay.confidence}%</small></>:<span className="muted">Need 220 trading days</span>}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-targets"><span>T1 <strong>{overlay.target1==null?"—":money(overlay.target1)}</strong></span><span>T2 <strong>{overlay.target2==null?"Conditional":money(overlay.target2)}</strong></span><span>S1 <strong>{overlay.support1==null?"—":money(overlay.support1)}</strong></span><small>Room {overlay.roomAtr==null?"—":`${overlay.roomAtr.toFixed(2)} ATR`}</small></div>:"—"}</td><td style={{minWidth:140}}>{overlay?<div className="overlay-signals"><strong className={overlay.sentinel.trend==="BULL"?"pos":overlay.sentinel.trend==="BEAR"?"neg":""}>{overlay.sentinel.trend}</strong><span>D {overlay.sentinel.dailyScore} · W {overlay.sentinel.weeklyScore}</span><small>{overlay.sentinel.structure} structure</small></div>:"—"}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-signals"><strong className={overlay.mcdx.state==="ACCUMULATION"?"pos":overlay.mcdx.state==="DISTRIBUTION"?"neg":""}>{overlay.mcdx.state}</strong><span>Flow {overlay.mcdx.smartFlow} · Context {overlay.mcdx.contextScore}</span><small>Smart proxy {overlay.mcdx.smartMoneyProxy}</small></div>:"—"}</td><td className={`num ${item?.change1w==null?"muted":item.change1w>=0?"pos":"neg"}`}>{pc(item?.change1w??null)}</td><td style={{minWidth:150}}><Spark points={chart.series??[]} positive={(chart.changePct??0)>=0} label={chartRange}/><div className={chart.changePct==null?"muted":chart.changePct>=0?"pos":"neg"} style={{fontSize:10.5,marginTop:2}}>{chartRange} {pc(chart.changePct??null)}</div></td><td style={{minWidth:210}}><PriceRange low={item?.low52??null} high={item?.high52??null} pos={item?.pos52??null} price={price}/></td><td className="num">{weight.toFixed(1)}%</td><td className="num"><button type="button" className="holding-edit-btn" onClick={()=>beginEdit(holding)}>Edit</button></td></tr>;
+    return <tr key={holding.id||holding.ticker}><td><strong>{holding.ticker}</strong><br/><span className="muted" style={{fontSize:10.5}}>{item?.asOf??"—"}</span>{item?.dataQuality?.source&&<small className="muted" style={{display:"block",fontSize:9.5}}>{item.dataQuality.source}</small>}</td><td className="num"><strong>{Number(holding.shares).toLocaleString(undefined,{maximumFractionDigits:7})}</strong></td><td className="num">{money(holding.avg_cost)}</td><td className="num"><strong>{price==null?"—":money(price)}</strong></td><td className={`num ${vs==null?"muted":vs>=0?"pos":"neg"}`}>{pc(vs)}</td><td style={{minWidth:190}}>{overlay?<><span className={`overlay-action ${overlay.action.toLowerCase().replace(" ","-")}`}>{overlay.action}</span><div className="overlay-reason">{overlay.reason}</div><small className="muted">Confidence {overlay.confidence}%</small></>:<span className="muted">{marketDataNote(item)}</span>}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-targets"><span>T1 <strong>{overlay.target1==null?"—":money(overlay.target1)}</strong></span><span>T2 <strong>{overlay.target2==null?"Conditional":money(overlay.target2)}</strong></span><span>S1 <strong>{overlay.support1==null?"—":money(overlay.support1)}</strong></span><small>Room {overlay.roomAtr==null?"—":`${overlay.roomAtr.toFixed(2)} ATR`}</small></div>:"—"}</td><td style={{minWidth:140}}>{overlay?<div className="overlay-signals"><strong className={overlay.sentinel.trend==="BULL"?"pos":overlay.sentinel.trend==="BEAR"?"neg":""}>{overlay.sentinel.trend}</strong><span>D {overlay.sentinel.dailyScore} · W {overlay.sentinel.weeklyScore}</span><small>{overlay.sentinel.structure} structure</small></div>:"—"}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-signals"><strong className={overlay.mcdx.state==="ACCUMULATION"?"pos":overlay.mcdx.state==="DISTRIBUTION"?"neg":""}>{overlay.mcdx.state}</strong><span>Flow {overlay.mcdx.smartFlow} · Context {overlay.mcdx.contextScore}</span><small>Smart proxy {overlay.mcdx.smartMoneyProxy}</small></div>:"—"}</td><td className={`num ${item?.change1w==null?"muted":item.change1w>=0?"pos":"neg"}`}>{pc(item?.change1w??null)}</td><td style={{minWidth:150}}><Spark points={chart.series??[]} positive={(chart.changePct??0)>=0} label={chartRange}/><div className={chart.changePct==null?"muted":chart.changePct>=0?"pos":"neg"} style={{fontSize:10.5,marginTop:2}}>{chartRange} {pc(chart.changePct??null)}</div></td><td style={{minWidth:210}}><PriceRange low={item?.low52??null} high={item?.high52??null} pos={item?.pos52??null} price={price}/></td><td className="num">{weight.toFixed(1)}%</td><td className="num"><button type="button" className="holding-edit-btn" onClick={()=>beginEdit(holding)}>Edit</button></td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -215,7 +256,7 @@ function WatchlistTable({watchlist,market,chartRange,pendingDelete,deleting,onRe
   if(!watchlist.length)return <div className="notice" style={{marginTop:12}}>No watchlist-only names. Use the search above to add a research candidate.</div>;
   return <div className="table-wrap" style={{marginTop:12}}><table className="tbl holdings-market-table watchlist-market-table"><thead><tr><th>Ticker</th><th>Research source</th><th className="num">Current</th><th>Watchlist decision</th><th>Technical targets</th><th>Sentinel X</th><th>MCDX proxy</th><th className="num">1W</th><th>{chartRange}</th><th>52W range</th><th>Manage</th></tr></thead><tbody>{watchlist.map(watch=>{
     const item=market[watch.ticker];const overlay=item?.technicalOverlay;const price=item?.price??null;const decision=overlay?WATCHLIST_ACTIONS[overlay.action]??WATCHLIST_ACTIONS.HOLD:null;const confirming=pendingDelete===watch.id;const chart=selectedRange(item,chartRange);
-    return <tr key={watch.id||watch.ticker}><td><strong>{watch.ticker}</strong><br/><span className="muted" style={{fontSize:10.5}}>{item?.asOf??"—"}</span></td><td style={{minWidth:190}}><strong>{watch.source??"Manual watchlist"}</strong><div className="overlay-reason">{watch.reason??"Awaiting Investment research brief."}</div>{watch.entry_price!=null&&<small className="muted">Reference entry {money(Number(watch.entry_price))}</small>}</td><td className="num"><strong>{price==null?"—":money(price)}</strong></td><td style={{minWidth:210}}>{overlay&&decision?<><span className={`overlay-action ${decision.className}`}>{decision.label}</span><div className="overlay-reason">{watchlistReason(overlay.action,overlay.reason)}</div><small className="muted">Technical confidence {overlay.confidence}%</small></>:<span className="muted">Need 220 trading days</span>}</td><td style={{minWidth:175}}>{overlay?<div className="overlay-targets"><span>T1 <strong>{overlay.target1==null?"—":money(overlay.target1)}</strong></span><span>T2 <strong>{overlay.target2==null?"Conditional":money(overlay.target2)}</strong></span><span>S1 <strong>{overlay.support1==null?"—":money(overlay.support1)}</strong></span><small>Room {overlay.roomAtr==null?"—":`${overlay.roomAtr.toFixed(2)} ATR`}</small></div>:"—"}</td><td style={{minWidth:140}}>{overlay?<div className="overlay-signals"><strong className={overlay.sentinel.trend==="BULL"?"pos":overlay.sentinel.trend==="BEAR"?"neg":""}>{overlay.sentinel.trend}</strong><span>D {overlay.sentinel.dailyScore} · W {overlay.sentinel.weeklyScore}</span><small>{overlay.sentinel.structure} structure</small></div>:"—"}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-signals"><strong className={overlay.mcdx.state==="ACCUMULATION"?"pos":overlay.mcdx.state==="DISTRIBUTION"?"neg":""}>{overlay.mcdx.state}</strong><span>Flow {overlay.mcdx.smartFlow} · Context {overlay.mcdx.contextScore}</span><small>Smart proxy {overlay.mcdx.smartMoneyProxy}</small></div>:"—"}</td><td className={`num ${item?.change1w==null?"muted":item.change1w>=0?"pos":"neg"}`}>{pc(item?.change1w??null)}</td><td style={{minWidth:150}}><Spark points={chart.series??[]} positive={(chart.changePct??0)>=0} label={chartRange}/><div className={chart.changePct==null?"muted":chart.changePct>=0?"pos":"neg"} style={{fontSize:10.5,marginTop:2}}>{chartRange} {pc(chart.changePct??null)}</div></td><td style={{minWidth:210}}><PriceRange low={item?.low52??null} high={item?.high52??null} pos={item?.pos52??null} price={price}/></td><td><div className="watchlist-remove-actions">{confirming?<><button type="button" className="btn danger sm" disabled={deleting===watch.id} onClick={()=>void onRemove(watch)}>{deleting===watch.id?"Removing…":"Confirm remove"}</button><button type="button" className="btn ghost sm" disabled={deleting===watch.id} onClick={()=>onRequestDelete(null)}>Cancel</button></>:<button type="button" className="btn ghost sm" onClick={()=>onRequestDelete(watch.id)}>Remove</button>}</div></td></tr>;
+    return <tr key={watch.id||watch.ticker}><td><strong>{watch.ticker}</strong><br/><span className="muted" style={{fontSize:10.5}}>{item?.asOf??"—"}</span>{item?.dataQuality?.source&&<small className="muted" style={{display:"block",fontSize:9.5}}>{item.dataQuality.source}</small>}</td><td style={{minWidth:190}}><strong>{watch.source??"Manual watchlist"}</strong><div className="overlay-reason">{watch.reason??"Awaiting Investment research brief."}</div>{watch.entry_price!=null&&<small className="muted">Reference entry {money(Number(watch.entry_price))}</small>}</td><td className="num"><strong>{price==null?"—":money(price)}</strong></td><td style={{minWidth:210}}>{overlay&&decision?<><span className={`overlay-action ${decision.className}`}>{decision.label}</span><div className="overlay-reason">{watchlistReason(overlay.action,overlay.reason)}</div><small className="muted">Technical confidence {overlay.confidence}%</small></>:<span className="muted">{marketDataNote(item)}</span>}</td><td style={{minWidth:175}}>{overlay?<div className="overlay-targets"><span>T1 <strong>{overlay.target1==null?"—":money(overlay.target1)}</strong></span><span>T2 <strong>{overlay.target2==null?"Conditional":money(overlay.target2)}</strong></span><span>S1 <strong>{overlay.support1==null?"—":money(overlay.support1)}</strong></span><small>Room {overlay.roomAtr==null?"—":`${overlay.roomAtr.toFixed(2)} ATR`}</small></div>:"—"}</td><td style={{minWidth:140}}>{overlay?<div className="overlay-signals"><strong className={overlay.sentinel.trend==="BULL"?"pos":overlay.sentinel.trend==="BEAR"?"neg":""}>{overlay.sentinel.trend}</strong><span>D {overlay.sentinel.dailyScore} · W {overlay.sentinel.weeklyScore}</span><small>{overlay.sentinel.structure} structure</small></div>:"—"}</td><td style={{minWidth:155}}>{overlay?<div className="overlay-signals"><strong className={overlay.mcdx.state==="ACCUMULATION"?"pos":overlay.mcdx.state==="DISTRIBUTION"?"neg":""}>{overlay.mcdx.state}</strong><span>Flow {overlay.mcdx.smartFlow} · Context {overlay.mcdx.contextScore}</span><small>Smart proxy {overlay.mcdx.smartMoneyProxy}</small></div>:"—"}</td><td className={`num ${item?.change1w==null?"muted":item.change1w>=0?"pos":"neg"}`}>{pc(item?.change1w??null)}</td><td style={{minWidth:150}}><Spark points={chart.series??[]} positive={(chart.changePct??0)>=0} label={chartRange}/><div className={chart.changePct==null?"muted":chart.changePct>=0?"pos":"neg"} style={{fontSize:10.5,marginTop:2}}>{chartRange} {pc(chart.changePct??null)}</div></td><td style={{minWidth:210}}><PriceRange low={item?.low52??null} high={item?.high52??null} pos={item?.pos52??null} price={price}/></td><td><div className="watchlist-remove-actions">{confirming?<><button type="button" className="btn danger sm" disabled={deleting===watch.id} onClick={()=>void onRemove(watch)}>{deleting===watch.id?"Removing…":"Confirm remove"}</button><button type="button" className="btn ghost sm" disabled={deleting===watch.id} onClick={()=>onRequestDelete(null)}>Cancel</button></>:<button type="button" className="btn ghost sm" onClick={()=>onRequestDelete(watch.id)}>Remove</button>}</div></td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -224,6 +265,10 @@ function watchlistReason(action:string,reason:string){
   if(action==="HOLD")return "No qualified entry yet; keep monitoring trend, flow and Target 1 room.";
   if(action==="TRIM")return "Entry quality is currently unfavorable; wait for risk/reward and accumulation to improve.";
   return "Bearish trend/distribution requires Research to review whether this name should remain on the watchlist.";
+}
+
+function marketDataNote(item:any){
+  return item?.dataQuality?.reason ?? "Market data unavailable. Use Retry market data; no technical decision is inferred.";
 }
 
 function Spark({points,positive,label}:{points:any[];positive:boolean;label:string}){

@@ -500,6 +500,41 @@ export async function dailyCandles(ticker: string, days = 200): Promise<Candle[]
 }
 
 /**
+ * Price history for portfolio screens with a provider fallback and provenance.
+ * The monitor calls this once per ticker and derives the displayed price from
+ * the last bar, avoiding the previous duplicate history + quote request burst.
+ */
+export async function dailyCandlesWithFallback(ticker: string, days = 460): Promise<{ candles: Candle[]; source: string | null; warnings: string[] }> {
+  const active = dataProvider();
+  const warnings: string[] = [];
+  const attempt = async (label: string, fn: () => Promise<Candle[]>) => {
+    try {
+      const candles = await fn();
+      if (candles.length) return { candles, source: label };
+      warnings.push(`${label} returned no history.`);
+    } catch (error) {
+      warnings.push(`${label}: ${error instanceof Error ? error.message : "history request failed"}`);
+    }
+    return null;
+  };
+
+  const primary = active === "yahoo"
+    ? await attempt("Yahoo Finance chart", () => yahooCandles(ticker, days))
+    : await attempt("Alpha Vantage daily", () => avDaily(ticker, days > 130 ? "full" : "compact"));
+  if (primary) return { ...primary, warnings };
+
+  if (active === "alphavantage") {
+    const yahooFallback = await attempt("Yahoo Finance chart fallback", () => yahooCandles(ticker, days));
+    if (yahooFallback) return { ...yahooFallback, warnings };
+  } else if (process.env.ALPHA_VANTAGE_API_KEY) {
+    const alphaFallback = await attempt("Alpha Vantage daily fallback", () => avDaily(ticker, days > 130 ? "full" : "compact"));
+    if (alphaFallback) return { ...alphaFallback, warnings };
+  }
+
+  return { candles: [], source: null, warnings };
+}
+
+/**
  * Lightweight latest quote from the active provider.
  *
  * Yahoo's `quote` endpoint needs the cookie+crumb handshake that Yahoo blocks
