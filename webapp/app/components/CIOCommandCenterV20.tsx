@@ -108,7 +108,8 @@ type Meeting = {
   riskRegister: { raisedBy: string; role: string; severity: "high" | "medium" | "low"; item: string; evidence: string; suggestedAction: string }[];
   minutes: string[];
   disclosures: string[];
-  sources?: { navFrom: string; priced: number; positions: number };
+  portfolioSnapshot?: { id: string; asOf: string; portfolioRevision: string; holdingsRevision: string; cashRevision: string; holdingsConsistent: boolean; cashFreshness: string } | null;
+  sources?: { navFrom: string; priced: number; positions: number; snapshotId?: string | null; snapshotAsOf?: string | null };
   sentiment?: { value: number; band: string } | null;
 };
 
@@ -142,13 +143,28 @@ const EXECUTIVE_TEAM = [
 ] as const;
 
 async function loadMeeting(): Promise<Meeting> {
-  const response = await fetch("/api/committee/meeting", { cache: "no-store", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(45_000) });
+  const response = await fetch(`/api/committee/meeting?fresh=${Date.now()}`, {
+    cache: "no-store",
+    headers: { Accept: "application/json", "Cache-Control": "no-cache", Pragma: "no-cache" },
+    signal: AbortSignal.timeout(45_000),
+  });
   const type = response.headers.get("content-type") ?? "";
   const text = await response.text();
   if (!type.includes("application/json")) throw new Error(`Committee returned ${response.status} ${type || "non-JSON response"}`);
   const payload = JSON.parse(text || "{}");
   if (!response.ok) throw new Error(payload?.error ?? `Committee meeting failed (${response.status})`);
   return payload as Meeting;
+}
+
+async function loadPortfolioIdentity(): Promise<{ snapshotId: string | null; asOf: string | null }> {
+  const response = await fetch(`/api/portfolio/cash-buffer?identity=${Date.now()}`, {
+    cache: "no-store",
+    headers: { Accept: "application/json", "Cache-Control": "no-cache", Pragma: "no-cache" },
+    signal: AbortSignal.timeout(45_000),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.error) throw new Error(payload?.error ?? "Portfolio identity unavailable");
+  return { snapshotId: payload?.snapshotId ?? null, asOf: payload?.asOf ?? null };
 }
 
 export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
@@ -160,46 +176,68 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
   const [frozen, setFrozen] = useState(false);
   const [executionAuthorized, setExecutionAuthorized] = useState(false);
   const markExecutionAuthorized = useCallback(() => setExecutionAuthorized(true), []);
-
-  useEffect(() => {
-    let active = true;
-    if (refreshKey === 0) {
-      try {
-        const saved = window.localStorage.getItem(FROZEN_MEETING_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved) as Meeting;
-          if (parsed?.meetingId && parsed?.motions?.length) {
-            setMeeting(parsed);
-            setFrozen(true);
-            setLoading(false);
-            return () => { active = false; };
-          }
-        }
-      } catch {
-        window.localStorage.removeItem(FROZEN_MEETING_KEY);
-      }
-    }
-    setLoading(true);
-    setError(null);
-    loadMeeting()
-      .then((payload) => { if (active) setMeeting(payload); })
-      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Committee meeting unavailable"); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [refreshKey]);
-
-  useEffect(() => {
-    if (!meeting?.meetingId) return;
-    setExecutionAuthorized(Boolean(window.localStorage.getItem(`sentinel:cio:plan-approval:${meeting.meetingId}`)));
-  }, [meeting?.meetingId]);
-
-  const startNextMeeting = () => {
+  const startNextMeeting = useCallback(() => {
     window.localStorage.removeItem(FROZEN_MEETING_KEY);
     setFrozen(false);
     setExecutionAuthorized(false);
     setView("opportunities");
     setRefreshKey((value) => value + 1);
-  };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        if (refreshKey === 0) {
+          const saved = window.localStorage.getItem(FROZEN_MEETING_KEY);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved) as Meeting;
+              const live = await loadPortfolioIdentity();
+              if (parsed?.meetingId && parsed?.motions?.length && parsed.portfolioSnapshot?.id && parsed.portfolioSnapshot.id === live.snapshotId) {
+                if (active) {
+                  setMeeting(parsed);
+                  setFrozen(true);
+                  setLoading(false);
+                }
+                return;
+              }
+            } catch {
+              // A legacy/corrupt saved meeting must never block a fresh meeting.
+            }
+            window.localStorage.removeItem(FROZEN_MEETING_KEY);
+          }
+        }
+        const payload = await loadMeeting();
+        if (active) {
+          setMeeting(payload);
+          setFrozen(false);
+        }
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : "Committee meeting unavailable");
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [refreshKey]);
+
+  useEffect(() => {
+    const refreshFromLedger = () => startNextMeeting();
+    window.addEventListener("sentinel:portfolio-updated", refreshFromLedger);
+    window.addEventListener("sentinel:cash-ledger-changed", refreshFromLedger);
+    return () => {
+      window.removeEventListener("sentinel:portfolio-updated", refreshFromLedger);
+      window.removeEventListener("sentinel:cash-ledger-changed", refreshFromLedger);
+    };
+  }, [startNextMeeting]);
+
+  useEffect(() => {
+    if (!meeting?.meetingId) return;
+    setExecutionAuthorized(Boolean(window.localStorage.getItem(`sentinel:cio:plan-approval:${meeting.meetingId}`)));
+  }, [meeting?.meetingId]);
 
   const freezeRecordedMeeting = () => {
     if (!meeting) return;
@@ -255,13 +293,15 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
 
     <section className={`card ${styles.meetingControl}`} aria-label={tr(lang, "Meeting controls and authority handoff", "แถบควบคุมและลำดับผู้รับผิดชอบการประชุม")}>
       <div className={styles.controlTop}>
-        <div className={styles.meetingMeta}><span><small>MEETING</small><strong>{meeting.meetingId}</strong></span><span><small>AS OF</small><strong>{String(meeting.asOf).slice(0, 16).replace("T", " ")} UTC</strong></span><span><small>QUORUM</small><strong className={meeting.quorum.met ? styles.good : styles.bad}>{meeting.quorum.present}/{meeting.quorum.required} · {meeting.quorum.met ? "READY" : "BLOCKED"}</strong></span></div>
+        <div className={styles.meetingMeta}><span><small>MEETING</small><strong>{meeting.meetingId}</strong></span><span><small>AS OF</small><strong>{String(meeting.asOf).slice(0, 16).replace("T", " ")} UTC</strong></span><span><small>PORTFOLIO SNAPSHOT</small><strong>{meeting.portfolioSnapshot?.id ?? "LEGACY / UNVERIFIED"}</strong></span><span><small>QUORUM</small><strong className={meeting.quorum.met ? styles.good : styles.bad}>{meeting.quorum.present}/{meeting.quorum.required} · {meeting.quorum.met ? "READY" : "BLOCKED"}</strong></span></div>
         <div className={styles.heroActions}><span className={`tag ${frozen || meeting.quorum.met ? styles.good : styles.bad}`}>{frozen ? "MEETING RECORDED · FROZEN" : meeting.quorum.met ? "LIVE MEETING" : "QUORUM BLOCKED"}</span><button className="btn ghost" type="button" disabled={loading} onClick={startNextMeeting}>↻ {loading ? tr(lang, "Running…", "กำลังประมวลผล…") : frozen ? tr(lang, "Start next meeting", "เริ่มประชุมรอบถัดไป") : tr(lang, "Run new meeting", "ประชุมใหม่")}</button></div>
       </div>
       <div className={styles.handoff}>
         {[`Sofia · ${tr(lang, "Analyze", "วิเคราะห์")}`, `Lena · ${tr(lang, "Allocate", "จัดสรรเงิน")}`, "Miriam · Risk", `James · ${tr(lang, "Resolve", "ออกมติ")}`, `Owner · ${tr(lang, "Approve", "อนุมัติ")}`, "Ryan · Execution", "Nina · Reconcile"].map((label, index) => <div key={label}><span>{index + 1}</span><strong>{label}</strong></div>)}
       </div>
     </section>
+
+    {meeting.portfolioSnapshot && (!meeting.portfolioSnapshot.holdingsConsistent || meeting.portfolioSnapshot.cashFreshness !== "DIRECT_DATABASE_FINAL_READ") && <div className="err">⚠ {tr(lang, "Portfolio changed while this meeting was assembled. Run a new meeting before approval.", "พอร์ตมีการเปลี่ยนแปลงระหว่างสร้างการประชุม กรุณาประชุมใหม่ก่อนอนุมัติ")}</div>}
 
     <section className={styles.kpis}>
       <Kpi label={tr(lang, "Fund NAV", "มูลค่าพอร์ต")} value={money(meeting.nav)} note={meeting.sources?.navFrom ?? "portfolio ledger"} />
