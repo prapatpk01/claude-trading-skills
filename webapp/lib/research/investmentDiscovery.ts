@@ -50,6 +50,9 @@ export type InvestmentResearchProposal = {
   primaryEngine: string; discoveryEngines: string[];
   lifecycleEvidence: string[];
   valuationSource: string; valuationGapPct: number; researchStatus: "COMPLETE";
+  valuationConfidence: string; valuationBear: number | null; valuationBull: number | null;
+  valuationAnchors: Array<{ method: string; fairValue: number; weight: number; detail: string }>;
+  valuationAsOf: string | null; valuationExpiresAt: string | null; valuationModelRoute: string | null;
   rotationCadence: ResearchRotationCadence;
   universeSource: string;
   factors: {
@@ -77,6 +80,9 @@ export type InvestmentResearchQueueItem = {
   valuationGapPct: number | null;
   failedGates: string[];
   valuationFailures: string[];
+  valuationConfidence: string; valuationBear: number | null; valuationBull: number | null;
+  valuationAnchors: Array<{ method: string; fairValue: number; weight: number; detail: string }>;
+  valuationAsOf: string | null; valuationExpiresAt: string | null; valuationModelRoute: string | null;
   sourceModels: string[];
   rotationCadence: ResearchRotationCadence;
   universeSource: string;
@@ -224,6 +230,13 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       lifecycleEvidence: lifecycle.evidence,
       valuationSource: candidate.valuationSource,
       valuationGapPct: expected,
+      valuationConfidence: candidate.valuationConfidence,
+      valuationBear: candidate.valuationBear,
+      valuationBull: candidate.valuationBull,
+      valuationAnchors: candidate.valuationAnchors,
+      valuationAsOf: candidate.valuationAsOf,
+      valuationExpiresAt: candidate.valuationExpiresAt,
+      valuationModelRoute: candidate.valuationModelRoute,
       researchStatus: "COMPLETE" as const,
       rotationCadence: scheduledByTicker.get(candidate.ticker)?.cadence ?? "7D",
       universeSource: scheduledByTicker.get(candidate.ticker)?.source ?? marketUniverse.masterSource,
@@ -252,7 +265,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     .map(({ candidate, engine, lifecycle }) => {
       const mandate = researchMandate(engine.id);
       const schedule = scheduledByTicker.get(candidate.ticker);
-      const target = candidate.valuationReady ? finite(candidate.targetPrice) : null;
+      const target = finite(candidate.targetPrice);
       const expected = target != null && candidate.price != null && candidate.price > 0
         ? (target / candidate.price - 1) * 100
         : null;
@@ -271,11 +284,18 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
         lifecycleReason: lifecycle.reason,
         lifecycleEvidence: lifecycle.evidence,
         preferredEntryStage: lifecycle.preferredEntry,
-        researchStatus: target == null ? "INCOMPLETE" as const : "COMPLETE" as const,
+        researchStatus: target == null || !candidate.valuationReady ? "INCOMPLETE" as const : "COMPLETE" as const,
         valuationSource: target == null ? "UNAVAILABLE" : candidate.valuationSource,
         valuationGapPct: expected,
         failedGates: candidate.failedGates ?? [],
         valuationFailures: candidate.valuationFailures ?? [],
+        valuationConfidence: candidate.valuationConfidence,
+        valuationBear: candidate.valuationBear,
+        valuationBull: candidate.valuationBull,
+        valuationAnchors: candidate.valuationAnchors,
+        valuationAsOf: candidate.valuationAsOf,
+        valuationExpiresAt: candidate.valuationExpiresAt,
+        valuationModelRoute: candidate.valuationModelRoute,
         sourceModels,
         rotationCadence: schedule?.cadence ?? "7D",
         universeSource: schedule?.source ?? marketUniverse.masterSource,
