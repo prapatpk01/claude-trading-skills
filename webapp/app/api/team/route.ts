@@ -32,6 +32,7 @@ import { computeBeta } from "@/lib/derive";
 import { openOnly } from "@/lib/openPositions";
 import { pctReturn } from "@/lib/indicators";
 import { FUND } from "@/lib/team/roster";
+import { governThomasSnapshot, resolveThomasValuationForMarketData } from "@/lib/thomasValuation";
 import type { Candle } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -131,6 +132,8 @@ export async function POST(req: NextRequest) {
       // Reuse the analysis the page already computed when it was supplied,
       // otherwise fetch fresh.
       const analysis = body.analysis?.data ? body.analysis : await buildAnalysis(ticker);
+      const thomasSnapshot = await resolveThomasValuationForMarketData(analysis.data, { dividends: [] }).catch(() => null);
+      const thomas = governThomasSnapshot(thomasSnapshot, analysis.data.quote?.price ?? null);
       const holdings = await loadHoldings().catch(() => []);
       const prices: Record<string, number | null> = {};
       await Promise.all(
@@ -166,10 +169,10 @@ export async function POST(req: NextRequest) {
         nav: nav > 0 ? nav : null,
         currentWeightPct: heldWeight,
         yieldPct,
-        dcfFairValue: analysis.dcf?.fairValue ?? null,
-        dcfUpsidePct: analysis.dcf?.upsidePct ?? null,
-        targetPrice: analysis.targetPrice ?? null,
-        upsidePct: analysis.upsidePct ?? null,
+        dcfFairValue: thomas.decisionReady ? thomas.fairValue : null,
+        dcfUpsidePct: thomas.decisionReady ? thomas.valuationGapPct : null,
+        targetPrice: thomas.decisionReady ? thomas.fairValue : null,
+        upsidePct: thomas.decisionReady ? thomas.valuationGapPct : null,
         theme: grp
           ? { label: grp.label, proxy: grp.proxy, leadership: grp.leadership, rs3mPct: grp.rs3m }
           : null,
