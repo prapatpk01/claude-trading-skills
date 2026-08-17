@@ -14,14 +14,14 @@ import { sma } from "@/lib/indicators";
 import { assessRegime } from "@/lib/team/governance";
 import { scoreMomentumV3 } from "@/lib/team/scoring";
 import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
-import { loadThomasValuationLedger, resolveThomasValuation, saveThomasValuationLedger, type ThomasValuationSnapshot } from "@/lib/thomasValuation";
+import { governThomasSnapshot, loadThomasValuationLedger, resolveThomasValuation, saveThomasValuationLedger, type ThomasValuationSnapshot } from "@/lib/thomasValuation";
 import { assessPositionZone } from "@/lib/team/risk";
 import { classifySleeve } from "@/lib/team/portfolio";
 import { buildBookReview } from "@/lib/team/book";
 import { runCommitteeMeeting, type PositionEvidence, type IdeaEvidence } from "@/lib/team/committee";
 import { runDeskScan } from "@/lib/research/deskScan";
 import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";
-import { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
+import { buildAuthoritativeCashBufferSnapshot, portfolioHoldingsRevision } from "@/lib/cashBufferSnapshot";
 import { FUND, STANDING_DUTY } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
 
@@ -215,7 +215,7 @@ function sessionsToExit(candles: Candle[], positionValue: number): number | null
 export async function GET(req: NextRequest) {
   const unavailable: string[] = [];
   try {
-    const [{ rows: holdings, note: reconciliationNote }, recentTrades, watchlistTickers] = await Promise.all([
+    const [initialHoldingsRead, recentTrades, watchlistTickers] = await Promise.all([
       loadHoldings(),
       loadRecentTrades().catch((error: any) => {
         unavailable.push(`recent transaction history (${error?.message ?? "unavailable"})`);
@@ -226,8 +226,9 @@ export async function GET(req: NextRequest) {
         return [] as string[];
       }),
     ]);
-    if (reconciliationNote) unavailable.push(reconciliationNote);
-    const asOf = new Date().toISOString();
+    let holdings = initialHoldingsRead.rows;
+    if (initialHoldingsRead.note) unavailable.push(initialHoldingsRead.note);
+    let asOf = new Date().toISOString();
     const tradeContext = buildTradeContext(recentTrades, asOf);
     const recentSales = new Set([...tradeContext.entries()].filter(([, value]) => value.daysSinceSell != null && value.daysSinceSell < 30).map(([ticker]) => ticker));
     const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...watchlistTickers, ...recentSales]);
@@ -244,10 +245,18 @@ export async function GET(req: NextRequest) {
     if (!benchmark.length) unavailable.push("SPY benchmark history (Yahoo chart endpoint)");
 
     // ── the ledger's own numbers, not a second computation of them ──
-    // Keep this snapshot identical to /api/portfolio/cash-buffer by delegating
-    // both consumers to buildCashBufferSnapshot rather than fetching our own API.
+    // Holdings, Active Fund and CIO all delegate to the same authoritative
+    // builder. It verifies positions after pricing and reads cash last.
     let buffer: any = null;
-    try { buffer = await buildCashBufferSnapshot(); }
+    try {
+      buffer = await buildAuthoritativeCashBufferSnapshot();
+      asOf = buffer.asOf ?? asOf;
+      if (buffer.holdingsRevision !== portfolioHoldingsRevision(holdings)) {
+        const refreshed = await loadHoldings();
+        holdings = refreshed.rows;
+        if (refreshed.note && !unavailable.includes(refreshed.note)) unavailable.push(refreshed.note);
+      }
+    }
     catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }
 
     // ── per-name evidence, gathered once and shared across the desks ──
@@ -331,19 +340,24 @@ export async function GET(req: NextRequest) {
       // SEC annual/TTM EPS for operating companies plus distribution history for
       // income ETFs/REITs. Trend remains the third independent anchor. If none
       // of those is credible the read stays null rather than inventing fair value.
+      const cachedValuationGate = governThomasSnapshot(g.cachedValuation, price);
+      const refreshedFundamentals = price != null && g.cachedValuation && !cachedValuationGate.valid && !isReserve
+        ? await secInputsWithinBudget(g.ticker).catch(() => null)
+        : g.fundamentals;
       const valuationSnapshot = price != null && g.candles.length >= 60
-        ? g.cachedValuation ?? await resolveThomasValuation({
+        ? cachedValuationGate.valid ? g.cachedValuation : await resolveThomasValuation({
             ticker: g.ticker,
             candles: g.candles,
             price,
-            annualEps: g.fundamentals?.annualEps ?? [],
-            epsTTM: g.fundamentals?.epsTTM ?? null,
+            annualEps: refreshedFundamentals?.annualEps ?? [],
+            epsTTM: refreshedFundamentals?.epsTTM ?? null,
             dividends: g.dividends,
             ttlDays: 7,
           })
         : null;
-      if (valuationSnapshot && !g.cachedValuation) valuationSnapshots.push(valuationSnapshot);
-      const valuation = valuationSnapshot?.status === "COMPLETE" && valuationSnapshot.verdict
+      const valuationGate = governThomasSnapshot(valuationSnapshot, price);
+      if (valuationSnapshot && (!g.cachedValuation || !cachedValuationGate.valid)) valuationSnapshots.push(valuationSnapshot);
+      const valuation = valuationSnapshot?.status === "COMPLETE" && valuationSnapshot.verdict && valuationGate.decisionReady
         ? {
             verdict: valuationSnapshot.verdict,
             deviationPct: valuationSnapshot.fairValue == null ? null : round2((price! / valuationSnapshot.fairValue - 1) * 100),
@@ -673,9 +687,23 @@ export async function GET(req: NextRequest) {
         fund: FUND,
         standingDuty: STANDING_DUTY,
         cashBuffer: { valueUsd: finite(buffer?.liquidityBuffer) ?? combinedBuffer, pct: cashBufferPct, targetPct: targetCashPct, reserveHoldings: buffer?.reserveHoldings ?? [] },
-        sources: { navFrom: buffer ? "shared cash-buffer snapshot" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },
+        portfolioSnapshot: buffer ? {
+          id: buffer.snapshotId,
+          asOf: buffer.asOf,
+          portfolioRevision: buffer.portfolioRevision,
+          holdingsRevision: buffer.holdingsRevision,
+          cashRevision: buffer.cashRevision,
+          holdingsConsistent: buffer.holdingsConsistent,
+          cashFreshness: buffer.cashFreshness,
+        } : null,
+        sources: { navFrom: buffer ? "authoritative Holdings/CIO snapshot" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length, snapshotId: buffer?.snapshotId ?? null, snapshotAsOf: buffer?.asOf ?? asOf },
       },
-      { headers: { "Cache-Control": "no-store" } }
+      { headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, s-maxage=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "Surrogate-Control": "no-store",
+      } }
     );
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Investment committee meeting could not be assembled." }, { status: 500 });
