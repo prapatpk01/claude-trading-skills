@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
-import { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
+import { buildAuthoritativeCashBufferSnapshot as buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
 import { runActivePortfolioIntelligenceV21 } from "@/lib/activePortfolioIntelligenceV21";
 import { applyCommitteeCashPool, type CommitteeSnapshot } from "@/lib/activeFundGovernance";
 import { dailyCandles } from "@/lib/marketData";
