@@ -58,6 +58,7 @@ const finite = (value: unknown): number | null => {
 };
 
 function fairValueGap(idea: any): number | null {
+  if (idea?.valuationDecisionReady !== true) return null;
   const price = finite(idea?.currentPrice);
   const target = finite(idea?.targetPrice);
   if (price == null || target == null || price <= 0 || target <= 0) return null;
@@ -72,7 +73,7 @@ function watchBlockers(idea: any) {
   const valuationStatus = String(idea?.valuationStatus ?? "UNAVAILABLE");
   const score = finite(idea?.portfolioScore) ?? 0;
 
-  if (valuationStatus === "UNAVAILABLE") {
+  if (valuationStatus === "UNAVAILABLE" || valuationStatus === "INVALID" || valuationStatus === "LOW_CONFIDENCE" || idea?.valuationDecisionReady !== true) {
     blockers.push("No defensible fair-value target yet");
     blockersTh.push("ยังไม่มี Fair Value ที่เชื่อถือได้");
   }
@@ -99,7 +100,7 @@ function triggerFor(idea: any, rank: number): WatchTrigger {
   const { blockers, blockersTh } = watchBlockers(idea);
   const expected = finite(idea?.expectedReturnPct);
   const momentum = finite(idea?.momentum);
-  const valuationMissing = String(idea?.valuationStatus ?? "UNAVAILABLE") === "UNAVAILABLE";
+  const valuationMissing = !["VALID", "NO_EDGE"].includes(String(idea?.valuationStatus ?? "UNAVAILABLE")) || idea?.valuationDecisionReady !== true;
 
   const gates = [
     valuationMissing ? "establish defensible Fair Value" : null,
