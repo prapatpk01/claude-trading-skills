@@ -1,9 +1,12 @@
-import type { Candle } from "@/lib/types";
+import type { Candle, MarketData } from "@/lib/types";
 import type { AnnualEps } from "@/lib/sec";
-import type { DividendEvent } from "@/lib/dividends";
+import { fetchDividends, type DividendEvent } from "@/lib/dividends";
 import { assessValuation } from "@/lib/team/positionValuation";
 import { fetchYahooAnalystConsensus } from "@/lib/yahooAnalystConsensus";
 import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
+import { fundamentalValuationFallback } from "@/lib/fundamentalValuationFallback";
+import { governValuationSnapshot, type GovernedValuationRead } from "@/lib/valuationGovernance";
+export type { GovernedValuationRead } from "@/lib/valuationGovernance";
 
 export type ThomasValuationStatus = "COMPLETE" | "INCOMPLETE";
 export type ThomasModelRoute = "OPERATING_COMPANY" | "BANK_FINANCIAL" | "REIT" | "ETF_LOOK_THROUGH" | "CASH_EQUIVALENT";
@@ -43,7 +46,7 @@ function median(values: number[]) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function modelRoute(ticker: string): ThomasModelRoute {
+export function thomasModelRoute(ticker: string): ThomasModelRoute {
   if (CASH.has(ticker)) return "CASH_EQUIVALENT";
   if (ETF.has(ticker)) return "ETF_LOOK_THROUGH";
   if (BANKS.has(ticker)) return "BANK_FINANCIAL";
@@ -61,6 +64,18 @@ function verdictForGap(gapPct: number, bandPct = 10) {
 
 function expiry(asOf: Date, days: number) {
   return new Date(asOf.getTime() + days * 86400000).toISOString();
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>(resolve => { timer = setTimeout(() => resolve(fallback), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -219,7 +234,7 @@ export async function resolveThomasValuation(input: {
 }): Promise<ThomasValuationSnapshot> {
   const ticker = input.ticker.trim().toUpperCase();
   const asOf = input.asOf ?? new Date();
-  const route = modelRoute(ticker);
+  const route = thomasModelRoute(ticker);
   const primary = assessValuation({
     candles: input.candles,
     price: input.price,
@@ -287,5 +302,127 @@ export async function resolveThomasValuation(input: {
     fairValue: null, bearValue: null, bullValue: null, valuationGapPct: null, verdict: null, confidence: "LOW", anchors: [],
     note: `${primary.note} Filing/yield/trend and analyst-consensus paths were attempted. Thomas keeps the line in research rather than manufacturing Fair Value from spot.`,
     warnings, asOf: asOf.toISOString(), expiresAt: expiry(asOf, 1),
+  };
+}
+
+export function governThomasSnapshot(
+  snapshot: ThomasValuationSnapshot | null | undefined,
+  livePrice?: number | null,
+  now = new Date(),
+): GovernedValuationRead {
+  return governValuationSnapshot(snapshot, livePrice, now);
+}
+
+function snapshotFromFallback(
+  ticker: string,
+  price: number,
+  fallback: NonNullable<ReturnType<typeof fundamentalValuationFallback>>,
+  asOf: Date,
+  route: ThomasModelRoute,
+): ThomasValuationSnapshot {
+  const gap = round2((fallback.targetPrice / price - 1) * 100);
+  return {
+    ticker,
+    status: "COMPLETE",
+    modelRoute: route,
+    source: "THOMAS_FUNDAMENTAL_RANGE",
+    currentPrice: price,
+    fairValue: fallback.targetPrice,
+    bearValue: fallback.bearPrice,
+    bullValue: fallback.bullPrice,
+    valuationGapPct: gap,
+    verdict: verdictForGap(gap),
+    confidence: fallback.confidence,
+    anchors: fallback.anchors.map(anchor => ({ method: anchor.label, fairValue: anchor.target, weight: anchor.weight, detail: anchor.detail })),
+    note: fallback.method,
+    warnings: [],
+    asOf: asOf.toISOString(),
+    expiresAt: expiry(asOf, 7),
+  };
+}
+
+function snapshotFromConsensus(
+  ticker: string,
+  price: number,
+  consensus: Awaited<ReturnType<typeof fetchYahooAnalystConsensus>>,
+  asOf: Date,
+  route: ThomasModelRoute,
+): ThomasValuationSnapshot | null {
+  if (!consensus?.targetMeanPrice || !(consensus.targetMeanPrice > 0)) return null;
+  const fair = round2(consensus.targetMeanPrice);
+  const ratio = fair / price;
+  if (ratio < 0.4 || ratio > 2.5) return null;
+  const low = consensus.targetLowPrice && consensus.targetLowPrice > 0 ? consensus.targetLowPrice : fair * .85;
+  const high = consensus.targetHighPrice && consensus.targetHighPrice > 0 ? consensus.targetHighPrice : fair * 1.15;
+  const count = consensus.analystCount ?? 0;
+  const confidence = count >= 15 ? "HIGH" : count >= 5 ? "MEDIUM" : "LOW";
+  const gap = round2((fair / price - 1) * 100);
+  return {
+    ticker, status: "COMPLETE", modelRoute: route, source: "YAHOO_ANALYST_CONSENSUS", currentPrice: price,
+    fairValue: fair, bearValue: round2(Math.min(low, high)), bullValue: round2(Math.max(low, high)),
+    valuationGapPct: gap, verdict: verdictForGap(gap), confidence,
+    anchors: [{ method: "Analyst consensus", fairValue: fair, weight: 1, detail: `${count || "n/a"} analyst opinion(s); mean/base target.` }],
+    note: `Yahoo Finance analyst consensus fallback. Bear $${round2(Math.min(low, high)).toFixed(2)} · Base $${fair.toFixed(2)} · Bull $${round2(Math.max(low, high)).toFixed(2)}.`,
+    warnings: [], asOf: asOf.toISOString(), expiresAt: expiry(asOf, 7),
+  };
+}
+
+/** Resolve the best instrument-aware snapshot from a complete MarketData pack. */
+export async function resolveThomasValuationForMarketData(
+  data: MarketData,
+  options: { dividends?: DividendEvent[]; asOf?: Date; ttlDays?: number } = {},
+): Promise<ThomasValuationSnapshot> {
+  const ticker = String(data.ticker).trim().toUpperCase();
+  const asOf = options.asOf ?? new Date();
+  const price = Number(data.quote?.price ?? data.candles.at(-1)?.close);
+  const listedRoute = thomasModelRoute(ticker);
+  const industry = String(data.overview?.industry ?? "").toLowerCase();
+  const route: ThomasModelRoute = listedRoute !== "OPERATING_COMPANY"
+    ? listedRoute
+    : /\bbanks?\b|banking|capital markets|brokerage/.test(industry)
+      ? "BANK_FINANCIAL"
+      : /reit|real estate investment trust/.test(industry)
+        ? "REIT"
+        : listedRoute;
+  if (!(price > 0)) {
+    return { ticker, status: "INCOMPLETE", modelRoute: route, source: "UNAVAILABLE", currentPrice: 0, fairValue: null, bearValue: null, bullValue: null, valuationGapPct: null, verdict: null, confidence: "LOW", anchors: [], note: "A live price is required before per-share valuation can be validated.", warnings: ["Current price unavailable"], asOf: asOf.toISOString(), expiresAt: expiry(asOf, 1) };
+  }
+
+  const dividends = options.dividends ?? (await fetchDividends(ticker, 5).catch(() => ({ events: [] as DividendEvent[] }))).events;
+  const primary = await resolveThomasValuation({ ticker, candles: data.candles, price, annualEps: data.annualEps as AnnualEps[], epsTTM: data.overview?.eps ?? null, dividends, asOf, ttlDays: options.ttlDays ?? 7 });
+  const primaryGate = governThomasSnapshot(primary, price, asOf);
+  const primaryMethods = primary.anchors.map(anchor => anchor.method);
+  const primaryFundamental = primaryMethods.some(method => ["Earnings multiple", "Discounted cash flow", "Dividend yield"].includes(method));
+
+  const filing = fundamentalValuationFallback(data);
+  const filingSnapshot = filing ? snapshotFromFallback(ticker, price, filing, asOf, route) : null;
+  const filingGate = governThomasSnapshot(filingSnapshot, price, asOf);
+
+  // Banks and REITs must use their instrument route rather than a generic
+  // operating-company DCF. For ordinary companies, a strong Thomas primary
+  // anchor stack remains first choice.
+  if (route === "BANK_FINANCIAL" && filingGate.decisionReady) return filingSnapshot!;
+  if (route === "REIT" && filingGate.decisionReady) return filingSnapshot!;
+  if (primaryGate.decisionReady && ((route === "OPERATING_COMPANY" && primaryFundamental) || route === "ETF_LOOK_THROUGH" || route === "CASH_EQUIVALENT")) return primary;
+  if (filingGate.decisionReady) return filingSnapshot!;
+
+  const consensus = primary.source === "YAHOO_ANALYST_CONSENSUS"
+    ? null
+    : await withTimeout(fetchYahooAnalystConsensus(ticker).catch(() => null), 5_000, null);
+  const analyst = primary.source === "YAHOO_ANALYST_CONSENSUS"
+    ? { ...primary, modelRoute: route }
+    : snapshotFromConsensus(ticker, price, consensus, asOf, route);
+  const analystGate = governThomasSnapshot(analyst, price, asOf);
+  if (analystGate.decisionReady) return analyst!;
+  if (primaryGate.valid && !["BANK_FINANCIAL", "REIT"].includes(route)) return primary;
+  if (filingGate.valid) return filingSnapshot!;
+  if (analystGate.valid) return analyst!;
+
+  return {
+    ticker, status: "INCOMPLETE", modelRoute: route, source: "UNAVAILABLE", currentPrice: price,
+    fairValue: null, bearValue: null, bullValue: null, valuationGapPct: null, verdict: null, confidence: "LOW", anchors: [],
+    note: [primaryGate.reason, filingGate.reason, analystGate.reason].filter(Boolean).join(" "),
+    warnings: ["No decision-ready instrument-aware valuation survived the basis, expiry and confidence gates."],
+    asOf: asOf.toISOString(), expiresAt: expiry(asOf, 1),
   };
 }
