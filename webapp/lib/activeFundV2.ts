@@ -3,11 +3,12 @@ import { buildMacroOutlook, type MacroOutlook } from "./macroOutlook";
 import { runInvestmentResearchOS, type InvestmentResearchProposal, type InvestmentResearchQueueItem } from "./research/investmentDiscovery";
 import { classifyMomentumLifecycle, type MomentumLifecycleStage } from "./research/momentumLifecycle";
 import { FUND_HOLDING_POLICY, researchMandate } from "./research/researchMandates";
+import { governThomasSnapshot, resolveThomasValuationForMarketData, type ThomasValuationSnapshot } from "./thomasValuation";
 
 export type FundAction = "INITIATE" | "ADD" | "LET WINNER RUN" | "HOLD" | "TRIM PROFIT REVIEW" | "TRIM REVIEW" | "EXIT REVIEW" | "WATCH" | "RESEARCH INCOMPLETE";
 export type OpportunityDecisionType = "INITIATE FROM LIQUIDITY" | "ROTATE / REPLACE" | "WATCH WITH TRIGGER" | "RESEARCH INCOMPLETE" | "REJECT";
-export type ValuationStatus = "VALID" | "NO_EDGE" | "UNAVAILABLE";
-export type ValuationSource = "THOMAS_MULTI_ANCHOR" | "RESEARCH_OS_TARGET" | "UNAVAILABLE";
+export type ValuationStatus = "VALID" | "NO_EDGE" | "LOW_CONFIDENCE" | "INVALID" | "UNAVAILABLE";
+export type ValuationSource = "THOMAS_DCF_MULTI_ANCHOR" | "THOMAS_MULTI_ANCHOR" | "THOMAS_FUNDAMENTAL_RANGE" | "THOMAS_ETF_PRICE_HISTORY_PROXY" | "THOMAS_CASH_EQUIVALENT" | "YAHOO_ANALYST_CONSENSUS" | "UNAVAILABLE" | string;
 export type ExecutionAction = "HOLD" | "ADD" | "TRIM" | "EXIT" | "INITIATE" | "WAIT";
 
 export interface ExistingPositionInput {
@@ -70,6 +71,15 @@ export interface ActiveFundIdea {
   valuationStatus: ValuationStatus;
   valuationSource: ValuationSource;
   valuationNote: string;
+  valuationDecisionReady: boolean;
+  valuationConfidence: string;
+  valuationBear: number | null;
+  valuationBull: number | null;
+  valuationAnchors: Array<{ method: string; fairValue: number; weight: number; detail: string }>;
+  valuationAsOf: string | null;
+  valuationExpiresAt: string | null;
+  valuationModelRoute: string | null;
+  valuationWarnings: string[];
   positionShares: number | null;
   marketValueUsd: number | null;
   ideaCategory?: "FRESH_MARKET_DISCOVERY" | "WATCHLIST_REUNDERWRITE" | "PORTFOLIO_MONITOR";
@@ -191,32 +201,46 @@ function targetWeight(score: number, macro: MacroOutlook) {
   return round1(base * clamp(macro.riskBudgetPct, 20, 100) / 100);
 }
 
-function valuationFromAnalysis(a: any) {
-  const price = finite(a?.data?.quote?.price);
-  const rawTarget = finite(a?.targetPrice);
-  const note = String(a?.valuationNote ?? "");
-  const genericFallback = /insufficient fundamental data|generic \u00b120% spot band/i.test(note);
-  if (genericFallback || price == null || price <= 0 || rawTarget == null || rawTarget <= 0) {
-    return {
-      status: "UNAVAILABLE" as ValuationStatus,
-      source: "UNAVAILABLE" as ValuationSource,
-      targetPrice: null,
-      expectedReturnPct: null,
-      note: genericFallback ? "Thomas could not establish a defensible fundamental fair-value anchor; the spot-price fallback is suppressed." : "A defensible valuation target is unavailable.",
-    };
-  }
-  const gap = (rawTarget / price - 1) * 100;
+function valuationFromSnapshot(snapshot: ThomasValuationSnapshot | null | undefined, price: number | null) {
+  const read = governThomasSnapshot(snapshot, price);
   return {
-    status: Math.abs(gap) < .5 ? "NO_EDGE" as ValuationStatus : "VALID" as ValuationStatus,
-    source: "THOMAS_MULTI_ANCHOR" as ValuationSource,
-    targetPrice: rawTarget,
-    expectedReturnPct: finite(a?.expectedReturnPct),
-    note: note || "Thomas multi-anchor valuation.",
+    status: read.status as ValuationStatus,
+    source: String(snapshot?.source ?? "UNAVAILABLE") as ValuationSource,
+    targetPrice: read.valid ? read.fairValue : null,
+    expectedReturnPct: read.valid ? read.valuationGapPct : null,
+    note: read.reason,
+    decisionReady: read.decisionReady,
+    confidence: snapshot?.confidence ?? "LOW",
+    bear: read.valid ? read.bearValue : null,
+    bull: read.valid ? read.bullValue : null,
+    anchors: read.valid ? snapshot?.anchors ?? [] : [],
+    asOf: snapshot?.asOf ?? null,
+    expiresAt: snapshot?.expiresAt ?? null,
+    modelRoute: snapshot?.modelRoute ?? null,
+    warnings: [...(snapshot?.warnings ?? []), ...(!read.valid ? [read.reason] : [])],
+  };
+}
+
+function valuationEvidence(input: {
+  decisionReady?: boolean; confidence?: string; bear?: number | null; bull?: number | null;
+  anchors?: Array<{ method: string; fairValue: number; weight: number; detail: string }>;
+  asOf?: string | null; expiresAt?: string | null; modelRoute?: string | null; warnings?: string[];
+}) {
+  return {
+    valuationDecisionReady: Boolean(input.decisionReady),
+    valuationConfidence: input.confidence ?? "LOW",
+    valuationBear: input.bear ?? null,
+    valuationBull: input.bull ?? null,
+    valuationAnchors: input.anchors ?? [],
+    valuationAsOf: input.asOf ?? null,
+    valuationExpiresAt: input.expiresAt ?? null,
+    valuationModelRoute: input.modelRoute ?? null,
+    valuationWarnings: input.warnings ?? [],
   };
 }
 
 function stripSyntheticSpotTarget(thesis: string, status: ValuationStatus) {
-  if (status !== "UNAVAILABLE") return thesis;
+  if (status !== "UNAVAILABLE" && status !== "INVALID") return thesis;
   const cleaned = String(thesis ?? "")
     .replace(/\s*Target\s*~?\$[\d,.]+\s*\([+-]?\d+(?:\.\d+)?%\s+vs\s+spot\)\.?/gi, "")
     .trim();
@@ -247,7 +271,8 @@ function lifecycleFromAnalysis(a: any, valuationGapPct: number | null) {
 function fromProposal(proposal: InvestmentResearchProposal, nav: number, macro: MacroOutlook): ActiveFundIdea {
   const score = scoreProposal(proposal);
   const weight = targetWeight(score, macro);
-  const approved = score >= 64 && proposal.expectedReturnPct >= 8 && proposal.sourceModels.length >= 2
+  const decisionReady = proposal.valuationConfidence !== "LOW" && proposal.valuationAnchors.length > 0;
+  const approved = decisionReady && score >= 64 && proposal.expectedReturnPct >= 8 && proposal.sourceModels.length >= 2
     && ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(proposal.lifecycleStage);
   const gap = proposal.price > 0 ? (proposal.target / proposal.price - 1) * 100 : 0;
   return {
@@ -287,8 +312,9 @@ function fromProposal(proposal: InvestmentResearchProposal, nav: number, macro: 
     researchStatus: "COMPLETE",
     valuationGapPct: round1(gap),
     valuationStatus: Math.abs(gap) < .5 ? "NO_EDGE" : "VALID",
-    valuationSource: "RESEARCH_OS_TARGET",
-    valuationNote: "Research OS target; Thomas remains the core fundamental valuation engine for portfolio holdings/watchlist deep dives.",
+    valuationSource: proposal.valuationSource,
+    valuationNote: `Thomas governed ${proposal.valuationModelRoute ?? "instrument"} valuation used by Research OS.`,
+    ...valuationEvidence({ decisionReady, confidence: proposal.valuationConfidence, bear: proposal.valuationBear, bull: proposal.valuationBull, anchors: proposal.valuationAnchors, asOf: proposal.valuationAsOf, expiresAt: proposal.valuationExpiresAt, modelRoute: proposal.valuationModelRoute }),
     positionShares: null,
     marketValueUsd: null,
     ideaCategory: "FRESH_MARKET_DISCOVERY",
@@ -298,8 +324,10 @@ function fromProposal(proposal: InvestmentResearchProposal, nav: number, macro: 
 }
 
 function fromResearchQueue(item: InvestmentResearchQueueItem): ActiveFundIdea {
-  const complete = item.researchStatus === "COMPLETE" && item.target != null;
-  const gap = complete ? item.valuationGapPct : null;
+  const hasValuation = item.target != null && item.valuationAnchors.length > 0;
+  const decisionReady = item.researchStatus === "COMPLETE" && item.valuationConfidence !== "LOW" && hasValuation;
+  const complete = decisionReady;
+  const gap = hasValuation ? item.valuationGapPct : null;
   return {
     ticker: item.ticker,
     source: ["Active Momentum Research Queue", ...item.sourceModels.map(model => model.toUpperCase())],
@@ -338,11 +366,12 @@ function fromResearchQueue(item: InvestmentResearchQueueItem): ActiveFundIdea {
     reviewCadenceTh: item.reviewCadenceTh,
     researchStatus: complete ? "COMPLETE" : "INCOMPLETE",
     valuationGapPct: gap == null ? null : round1(gap),
-    valuationStatus: complete ? Math.abs(gap ?? 0) < .5 ? "NO_EDGE" : "VALID" : "UNAVAILABLE",
-    valuationSource: complete ? "RESEARCH_OS_TARGET" : "UNAVAILABLE",
+    valuationStatus: complete ? Math.abs(gap ?? 0) < .5 ? "NO_EDGE" : "VALID" : hasValuation ? "LOW_CONFIDENCE" : "UNAVAILABLE",
+    valuationSource: hasValuation ? item.valuationSource : "UNAVAILABLE",
     valuationNote: complete
       ? "Research Queue valuation is available; the candidate remains WATCH until every entry gate clears."
-      : "No defensible Fair Value yet; spot is never used to manufacture a target.",
+      : hasValuation ? "Display-only Fair Value: confidence or evidence is insufficient for a capital decision." : "No defensible Fair Value yet; spot is never used to manufacture a target.",
+    ...valuationEvidence({ decisionReady: complete, confidence: item.valuationConfidence, bear: item.valuationBear, bull: item.valuationBull, anchors: item.valuationAnchors, asOf: item.valuationAsOf, expiresAt: item.valuationExpiresAt, modelRoute: item.valuationModelRoute, warnings: item.valuationFailures }),
     positionShares: null,
     marketValueUsd: null,
     ideaCategory: "FRESH_MARKET_DISCOVERY",
@@ -351,24 +380,25 @@ function fromResearchQueue(item: InvestmentResearchQueueItem): ActiveFundIdea {
   };
 }
 
-function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): ActiveFundIdea {
+function fromWatchlistAnalysis(a: any, snapshot: ThomasValuationSnapshot | null, nav: number, macro: MacroOutlook): ActiveFundIdea {
   const c = a?.committee ?? {};
   const conviction = finite(c.conviction) ?? 0;
   const momentum = finite(a?.momentum?.total);
-  const valuation = valuationFromAnalysis(a);
+  const price = finite(a?.data?.quote?.price);
+  const valuation = valuationFromSnapshot(snapshot, price);
   const lifecycle = lifecycleFromAnalysis(a, valuation.expectedReturnPct);
   const expected = valuation.expectedReturnPct;
   const committee = String(c.decision ?? "WATCH").toUpperCase();
   const score = scoreExisting(conviction, momentum, expected, committee);
-  const complete = valuation.status !== "UNAVAILABLE";
-  const approved = committee === "APPROVE" && expected != null && expected >= 8 && score >= 64 && complete && lifecycle.entryEligible;
+  const complete = valuation.status !== "UNAVAILABLE" && valuation.status !== "INVALID";
+  const approved = valuation.decisionReady && committee === "APPROVE" && expected != null && expected >= 8 && score >= 64 && complete && lifecycle.entryEligible;
   const weight = approved ? targetWeight(score, macro) : 0;
   const rawThesis = a?.thesis?.find?.((x: any) => x.label === "Base")?.narrative ?? "Watchlist candidate awaiting a stronger edge.";
   const mandate = researchMandate("WATCHLIST_REUNDERWRITE");
   return {
     ticker: cleanTicker(a?.ticker ?? ""), source: ["Watchlist / Thomas Research"], held: false,
     action: !complete ? "RESEARCH INCOMPLETE" : approved ? "INITIATE" : "WATCH", conviction: Math.round(conviction), confidence: String(c.confidence ?? "LOW"),
-    expectedReturnPct: expected, targetPrice: valuation.targetPrice, currentPrice: finite(a?.data?.quote?.price), momentum,
+    expectedReturnPct: expected, targetPrice: valuation.targetPrice, currentPrice: price, momentum,
     pnlPct: null, portfolioScore: score, targetWeightPct: weight, capitalUsd: round0(nav * weight / 100), committee,
     thesis: stripSyntheticSpotTarget(rawThesis, valuation.status),
     dissent: Array.isArray(c.dissent) ? c.dissent : [], reasons: [
@@ -378,13 +408,14 @@ function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): Active
     valuationStatus: valuation.status,
     valuationSource: valuation.source,
     valuationNote: valuation.note,
+    ...valuationEvidence(valuation),
     primaryEngine: lifecycle.stage.includes("ACCUMULATION") ? "Accumulation & Flow" : "Momentum Leadership",
     discoveryEngines: ["Watchlist Deep Dive", "Momentum Lifecycle", "Thomas Valuation"],
     lifecycleStage: lifecycle.stage,
     lifecycleScore: lifecycle.score,
     lifecycleEvidence: lifecycle.evidence,
     ...mandate,
-    researchStatus: complete ? "COMPLETE" : "INCOMPLETE",
+    researchStatus: complete && valuation.decisionReady ? "COMPLETE" : "INCOMPLETE",
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: null,
     marketValueUsd: null,
@@ -392,29 +423,29 @@ function fromWatchlistAnalysis(a: any, nav: number, macro: MacroOutlook): Active
   };
 }
 
-function fromExistingAnalysis(a: any, position: ExistingPositionInput, nav: number, macro: MacroOutlook): ActiveFundIdea {
+function fromExistingAnalysis(a: any, snapshot: ThomasValuationSnapshot | null, position: ExistingPositionInput, nav: number, macro: MacroOutlook): ActiveFundIdea {
   const c = a?.committee ?? {};
   const committee = String(c.decision ?? "WATCH").toUpperCase();
   const conviction = finite(c.conviction) ?? 0;
   const momentum = finite(a?.momentum?.total);
-  const valuation = valuationFromAnalysis(a);
-  const expected = valuation.expectedReturnPct;
   const price = finite(a?.data?.quote?.price);
+  const valuation = valuationFromSnapshot(snapshot, price);
+  const expected = valuation.expectedReturnPct;
   const lifecycle = lifecycleFromAnalysis(a, expected);
   const pnlPct = price != null && position.avgCost > 0 ? (price / position.avgCost - 1) * 100 : null;
   const score = scoreExisting(conviction, momentum, expected, committee);
   let action: FundAction = "HOLD";
 
   const winner = pnlPct != null && pnlPct >= 10 && lifecycle.holdEligible && (momentum ?? 0) >= 65 && expected != null && expected >= 8 && committee !== "REJECT";
-  const fullValuation = expected != null && expected <= 0;
-  const nearFullValuation = expected != null && expected <= 5;
+  const fullValuation = valuation.decisionReady && expected != null && expected <= 0;
+  const nearFullValuation = valuation.decisionReady && expected != null && expected <= 5;
   const profitFading = pnlPct != null && pnlPct >= 8 && (lifecycle.stage === "WEAKENING" || nearFullValuation);
   const broken = committee === "REJECT" || lifecycle.stage === "BROKEN" || fullValuation;
 
   if (broken) action = "EXIT REVIEW";
   else if (profitFading) action = "TRIM PROFIT REVIEW";
   else if (winner) action = "LET WINNER RUN";
-  else if (committee === "APPROVE" && expected != null && expected >= 15 && (momentum ?? 0) >= 65 && lifecycle.entryEligible) action = "ADD";
+  else if (valuation.decisionReady && committee === "APPROVE" && expected != null && expected >= 15 && (momentum ?? 0) >= 65 && lifecycle.entryEligible) action = "ADD";
   else if (nearFullValuation || lifecycle.stage === "WEAKENING" || (momentum != null && momentum < 48)) action = "TRIM REVIEW";
 
   const weight = action === "ADD" ? targetWeight(score, macro) : 0;
@@ -436,13 +467,14 @@ function fromExistingAnalysis(a: any, position: ExistingPositionInput, nav: numb
     valuationStatus: valuation.status,
     valuationSource: valuation.source,
     valuationNote: valuation.note,
+    ...valuationEvidence(valuation),
     primaryEngine: "Portfolio Momentum Monitor",
     discoveryEngines: ["Portfolio Momentum Monitor", "Thomas Valuation", "Thesis Monitor"],
     lifecycleStage: lifecycle.stage,
     lifecycleScore: lifecycle.score,
     lifecycleEvidence: lifecycle.evidence,
     ...mandate,
-    researchStatus: valuation.status === "UNAVAILABLE" ? "INCOMPLETE" : "COMPLETE",
+    researchStatus: valuation.decisionReady ? "COMPLETE" : "INCOMPLETE",
     valuationGapPct: expected == null ? null : round1(expected),
     positionShares: position.shares,
     marketValueUsd: round2(marketValue),
@@ -475,13 +507,17 @@ export async function runActiveFundV2(input: {
       warnings.push(`Research OS: ${e?.message ?? "failed"}`);
       return { proposals: [], researchQueue: [], universeSize: 0, detailedUniverseSize: 0, analyzed: 0, qualified: 0, rejected: 0, warnings: [], models: [], engineDefinitions: [], engineStats: [], rotationWindows: [], universeSource: "Unavailable", methodology: "Research OS unavailable" };
     }),
-    mapLimit(riskPositions.slice(0, 20), 5, async position => ({ position, analysis: await analyzeSafe(position.ticker) })),
+    mapLimit(riskPositions.slice(0, 20), 4, async position => {
+      const analysis = await analyzeSafe(position.ticker);
+      const valuation = analysis?.data ? await resolveThomasValuationForMarketData(analysis.data, { dividends: [] }).catch(() => null) : null;
+      return { position, analysis, valuation };
+    }),
   ]);
 
   warnings.push(...(phase1.warnings ?? []), ...(macro.warnings ?? []));
   const existing = existingAnalyses
     .filter(row => row.analysis)
-    .map(row => fromExistingAnalysis(row.analysis, row.position, nav, macro))
+    .map(row => fromExistingAnalysis(row.analysis, row.valuation, row.position, nav, macro))
     .sort((a, b) => b.portfolioScore - a.portfolioScore);
 
   const phaseIdeas = phase1.proposals.map(proposal => fromProposal(proposal, nav, macro));
@@ -493,8 +529,12 @@ export async function runActiveFundV2(input: {
     .map(cleanTicker)
     .filter(ticker => !held.has(ticker) && !phaseTickers.has(ticker) && !LIQUIDITY_TICKERS.has(ticker))
     .slice(0, 6);
-  const watchAnalyses = await mapLimit(watchExtras, 4, async ticker => analyzeSafe(ticker));
-  const watchIdeas = watchAnalyses.filter(Boolean).map(a => fromWatchlistAnalysis(a, nav, macro));
+  const watchAnalyses = await mapLimit(watchExtras, 3, async ticker => {
+    const analysis = await analyzeSafe(ticker);
+    const valuation = analysis?.data ? await resolveThomasValuationForMarketData(analysis.data, { dividends: [] }).catch(() => null) : null;
+    return { analysis, valuation };
+  });
+  const watchIdeas = watchAnalyses.filter(row => row.analysis).map(row => fromWatchlistAnalysis(row.analysis, row.valuation, nav, macro));
   const freshIdeas = [...phaseIdeas, ...queueIdeas]
     .filter((idea, index, all) => all.findIndex(x => x.ticker === idea.ticker) === index)
     .sort((a, b) => b.portfolioScore - a.portfolioScore)
