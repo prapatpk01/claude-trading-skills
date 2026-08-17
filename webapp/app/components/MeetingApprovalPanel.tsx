@@ -210,8 +210,8 @@ export default function MeetingApprovalPanel({
     <section className="card" data-approval-version="2.1-live-reconcile" style={{ borderTop: "2px solid var(--accent)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div>
-          <span className="tag">{tr(lang, "STAGE 5 · AUTO RECONCILE CHECKLIST", "ขั้นที่ 5 · เช็กลิสต์เทียบพอร์ตอัตโนมัติ")}</span>
-          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Record real trades in Holdings, then confirm the matches", "แก้ Holdings ตามพอร์ตจริง แล้วตรวจยืนยันรายการที่จับคู่ได้")}</h3>
+          <span className="tag">{tr(lang, "STAGE 8 · RECONCILIATION & MINUTES", "ขั้นที่ 8 · กระทบยอดและปิดรายงานประชุม")}</span>
+          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "After broker execution, update Holdings and confirm the matches", "หลังซื้อขายจริง ให้อัปเดต Holdings แล้วตรวจยืนยันรายการที่จับคู่ได้")}</h3>
           <p className="muted" style={{ margin: 0, maxWidth: 820, fontSize: 13 }}>
             {tr(lang,
               "The system matches ticker, BUY/SELL direction and transactions from the meeting date. A size within ±40% is checked automatically. If a fill is recorded after the first check, missing lines refresh automatically. Recording this checklist does not create another trade.",

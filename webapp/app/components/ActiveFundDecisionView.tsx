@@ -174,10 +174,12 @@ export default function ActiveFundDecisionView({
   lang,
   committeeMeeting = null,
   embedded = false,
+  mode = "full",
 }: {
   lang: AppLang;
   committeeMeeting?: CommitteeMeetingAuthority | null;
   embedded?: boolean;
+  mode?: "full" | "research" | "portfolio" | "execution";
 }) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
@@ -215,11 +217,21 @@ export default function ActiveFundDecisionView({
     void run(authority);
   }, [committeeMeeting?.meetingId, embedded]);
 
+  const showResearch = mode === "full" || mode === "research";
+  const showPortfolio = mode === "full" || mode === "portfolio";
+  const showExecution = mode === "full" || mode === "execution";
+  const embeddedTitle = mode === "research"
+    ? tr(lang, "Investment analysis & fresh discovery", "วิเคราะห์การลงทุนและค้นหาโอกาสใหม่")
+    : mode === "execution"
+      ? tr(lang, "Execution plan & technical levels", "แผนดำเนินการและระดับ Technical")
+      : tr(lang, "Allocation, valuation & cash-pool check", "วิเคราะห์จัดสรรพอร์ต Valuation และ Cash Pool");
+  const embeddedStage = mode === "research" ? "02 · INVESTMENT ANALYSIS" : mode === "execution" ? "07 · EXECUTION HANDOFF" : "03 · PORTFOLIO & CAPITAL";
+
   const Wrapper = embedded ? "section" : "div";
   return <Wrapper className="card ai-card" style={embedded ? undefined : { marginTop: 18 }} data-portfolio-underwriting={embedded ? "same-cio-meeting" : "standalone"}>
     {embedded
       ? <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-          <div><span className="tag">02 · PORTFOLIO UNDERWRITING</span><h3 className="sub" style={{ margin: "8px 0 0" }}>🧠 {tr(lang, "Allocation, valuation & cash-pool check", "วิเคราะห์จัดสรรพอร์ต Valuation และ Cash Pool")}</h3></div>
+          <div><span className="tag">{embeddedStage}</span><h3 className="sub" style={{ margin: "8px 0 0" }}>🧠 {embeddedTitle}</h3></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><span className="tag">{committeeMeeting?.meetingId ?? "—"}</span><button className="btn ghost sm" type="button" onClick={() => void run()} disabled={loading}>{loading ? "…" : tr(lang, "Refresh underwriting", "อัปเดตการวิเคราะห์")}</button></div>
         </div>
       : <><h3 className="sub">🧠 {tr(lang, "Portfolio Decision Layer", "ชั้นตัดสินใจและจัดสรรพอร์ต")}</h3><button className="btn" type="button" onClick={() => void run()} disabled={loading}>{loading ? tr(lang, "Checking Committee + building cash-pool plan…", "กำลังตรวจ Committee และสร้างแผน Cash Pool…") : tr(lang, "🏛 Run Governed Portfolio Review", "🏛 วิเคราะห์พอร์ตตามมติ Committee")}</button></>}
@@ -241,23 +253,17 @@ export default function ActiveFundDecisionView({
           `หุ้นที่ถืออยู่จะเพิ่มน้ำหนักไม่ได้ถ้า Holdings ยังเป็น TRIM / HOLD / EXIT REVIEW รายการที่ถูกบล็อกรอบนี้: ${(data.technicalSignalAlignment.blockedAdds ?? []).join(", ")}.`)}
       </div>}
 
-      <div className="grid cols-4" style={{ marginTop: 14 }}>
+      {showResearch && <div className="grid cols-4" style={{ marginTop: 14 }}>
         <Metric label={tr(lang, "US universe", "จักรวาลหุ้น US")} value={data.discovery?.broadUniverse ?? 0} />
         <Metric label={tr(lang, "Deep analyzed", "วิเคราะห์เชิงลึก")} value={data.discovery?.detailedAnalyzed ?? 0} />
         <Metric label={tr(lang, "Research engines", "Research Engines")} value={data.discovery?.models ?? 0} />
         <Metric label={tr(lang, "Investment ready", "พร้อมพิจารณาลงทุน")} value={data.discovery?.uniqueNew ?? 0} />
         <Metric label={tr(lang, "Research incomplete", "ข้อมูลยังไม่ครบ")} value={data.researchIncomplete?.length ?? data.discovery?.incomplete ?? 0} />
-      </div>
+      </div>}
 
-      <DiscoveryEnginePanel discovery={data.discovery} lang={lang} />
-      <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />
-      <CashPoolPlan plan={data.cashPoolPlan} lang={lang} />
-      {!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}
-      <IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} />
-      <OpportunityTable rows={data.newIdeas ?? []} lang={lang} />
-      <WatchlistReviewTable rows={data.watchlistReviews ?? []} lang={lang} />
-      <IncompleteResearchTable rows={data.researchIncomplete ?? []} lang={lang} />
-      <ReplacementTable rows={data.replacements ?? []} lang={lang} />
+      {showResearch && <><DiscoveryEnginePanel discovery={data.discovery} lang={lang} /><OpportunityTable rows={data.newIdeas ?? []} lang={lang} /><WatchlistReviewTable rows={data.watchlistReviews ?? []} lang={lang} /><IncompleteResearchTable rows={data.researchIncomplete ?? []} lang={lang} /></>}
+      {showPortfolio && <><CashPoolPlan plan={data.cashPoolPlan} lang={lang} />{!embedded && <FundingSummary liquidity={data.liquidity} lang={lang} />}<IdeaTable rows={data.existing ?? []} title={tr(lang, "Current holdings — fund state, valuation & technical execution", "หุ้นที่ถืออยู่ — มติกองทุน Valuation และ Technical Execution")} lang={lang} /><ReplacementTable rows={data.replacements ?? []} lang={lang} /></>}
+      {showExecution && <ExecutionTable rows={data.executionPlans ?? []} lang={lang} />}
 
       <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>{tr(lang, "Valuation evidence never overrides Committee authority or the Holdings technical execution gate, and no broker order is sent automatically.", "หลักฐาน Valuation ไม่สามารถข้ามมติ Committee หรือ Holdings Technical Execution Gate และระบบไม่ส่งคำสั่งไปโบรกเกอร์อัตโนมัติ")}</p>
     </>}
