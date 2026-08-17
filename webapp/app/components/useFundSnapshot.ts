@@ -56,7 +56,10 @@ const finite = (value: unknown): number | null => {
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 
 async function json(path: string) {
-  const response = await fetch(path, { cache: "no-store" });
+  const response = await fetch(path, {
+    cache: "no-store",
+    headers: { Accept: "application/json", "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
   const payload = await response.json();
   if (!response.ok || payload?.error) throw new Error(payload?.error ?? `${path} failed`);
   return payload;
@@ -66,6 +69,17 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
   const [raw, setRaw] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [ledgerRevision, setLedgerRevision] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => setLedgerRevision((value) => value + 1);
+    window.addEventListener("sentinel:portfolio-updated", refresh);
+    window.addEventListener("sentinel:cash-ledger-changed", refresh);
+    return () => {
+      window.removeEventListener("sentinel:portfolio-updated", refresh);
+      window.removeEventListener("sentinel:cash-ledger-changed", refresh);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -92,7 +106,7 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
       }
     })();
     return () => { active = false; };
-  }, [refreshKey]);
+  }, [refreshKey, ledgerRevision]);
 
   return useMemo(() => {
     const sourceHoldings = (Array.isArray(raw?.portfolio?.holdings) ? raw.portfolio.holdings : []).filter((row: any) => !row?.closed_at && Number(row?.shares) > 0);
