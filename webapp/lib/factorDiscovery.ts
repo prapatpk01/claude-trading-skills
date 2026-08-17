@@ -1,5 +1,6 @@
 import {buildAnalysis} from "./analyze";
 import {classifyMomentumLifecycle,type MomentumLifecycle} from "./research/momentumLifecycle";
+import {governThomasSnapshot,resolveThomasValuationForMarketData} from "./thomasValuation";
 
 export type FactorMode="momentum"|"growth"|"quality"|"value"|"dividend"|"institutional"|"ai"|"multifactor";
 export type ResearchStatus="QUALIFIED"|"REJECTED"|"ANALYSIS_FAILED";
@@ -10,6 +11,7 @@ export type ResearchCandidate={
  reasons:string[];metrics:Record<string,number|null>;thesis:string;dataQuality:string;
  engines?:string[];consensusCount?:number;status:ResearchStatus;passed:boolean;gateReasons:string[];failedGates:string[];
  lifecycle:MomentumLifecycle;valuationReady:boolean;valuationSource:string;valuationNote:string;valuationFailures:string[];
+ valuationConfidence:string;valuationBear:number|null;valuationBull:number|null;valuationAnchors:Array<{method:string;fairValue:number;weight:number;detail:string}>;valuationAsOf:string|null;valuationExpiresAt:string|null;valuationModelRoute:string|null;
 };
 
 export const ENGINE_UNIVERSES:Record<FactorMode,string[]>={
@@ -31,7 +33,7 @@ const ratio=(a:number|null,b:number|null)=>a!=null&&b!=null&&b!==0?a/b:null;
 const positive=(v:number|null,threshold=0)=>v!=null&&v>threshold;
 async function mapLimit<T,R>(items:T[],limit:number,fn:(item:T)=>Promise<R>):Promise<R[]>{const output=new Array<R>(items.length);let next=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const index=next++;if(index>=items.length)break;output[index]=await fn(items[index])}}));return output;}
 
-function scoreOne(a:any):Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">{
+async function scoreOne(a:any):Promise<Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">>{
  const ov=a.data?.overview??{};const inc=a.data?.financials?.income??[];const cf=a.data?.financials?.cashflow??[];const bal=a.data?.financials?.balance??[];const tech=a.technicals??{};
  const revG=growthPct(inc,"totalRevenue");const epsG=growthPct(inc,"netIncome");const opG=growthPct(inc,"operatingIncome");const qGrowth=n(a.data?.quarters?.[0]?.revenueYoY);
  const margin=(n(ov.profitMargin)??ratio(n(inc?.[0]?.netIncome),n(inc?.[0]?.totalRevenue))??0)*100;
@@ -39,17 +41,17 @@ function scoreOne(a:any):Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|
  const roe=(n(ov.roe)??0)*100;const roa=(n(ov.roa)??0)*100;
  const ocf=n(cf?.[0]?.operatingCashflow);const capex=Math.abs(n(cf?.[0]?.capitalExpenditures)??0);const fcf=ocf==null?null:ocf-capex;const ni=n(inc?.[0]?.netIncome);
  const cashConv=ni&&fcf!=null?fcf/ni:null;const debt=(n(bal?.[0]?.longTermDebt)??0)+(n(bal?.[0]?.shortTermDebt)??0);const cash=n(bal?.[0]?.cashAndEquivalents)??0;
- const price=n(a.data?.quote?.price);const rawTarget=n(a.targetPrice);const valuationNote=String(a.valuationNote??"");
- const syntheticValuation=/insufficient fundamental data|generic \u00b120% spot band/i.test(valuationNote);
- const hasFundamentalAnchor=Boolean(a.multiples)||Boolean(a.dcf?.reliable);
- const valuationReady=price!=null&&price>0&&rawTarget!=null&&rawTarget>0&&!syntheticValuation&&hasFundamentalAnchor;
- const targetPrice=valuationReady?rawTarget:null;const expectedReturnPct=valuationReady&&price?((targetPrice!/price)-1)*100:null;
- const valuationSource=valuationReady?(a.multiples?"FUNDAMENTAL_MULTIPLE_RANGE":"RELIABLE_DCF"):"UNAVAILABLE";
+ const price=n(a.data?.quote?.price);
+ const snapshot=await resolveThomasValuationForMarketData(a.data,{dividends:[]}).catch(()=>null);
+ const governed=governThomasSnapshot(snapshot,price);
+ const valuationReady=governed.valid&&governed.decisionReady;
+ const targetPrice=governed.valid?governed.fairValue:null;const expectedReturnPct=governed.valid?governed.valuationGapPct:null;
+ const valuationSource=governed.valid?String(snapshot?.source??"UNAVAILABLE"):"UNAVAILABLE";
+ const valuationNote=snapshot?.note??governed.reason;
  const valuationFailures=[
   ...(price==null||price<=0?["Current price unavailable"]:[]),
-  ...(rawTarget==null||rawTarget<=0?["Fair value unavailable"]:[]),
-  ...(syntheticValuation?["Synthetic spot-price target rejected"]:[]),
-  ...(!hasFundamentalAnchor?["No reliable DCF or fundamental multiple anchor"]:[]),
+  ...(!governed.valid?[governed.reason]:[]),
+  ...(governed.valid&&!governed.decisionReady?["Valuation is display-only because confidence/evidence is insufficient for a portfolio decision"]:[]),
   ...(expectedReturnPct!=null&&expectedReturnPct<8?["Valuation gap below 8%"]:[]),
  ];
  const pe=n(ov.forwardPE)??n(ov.peRatio);const peg=n(ov.pegRatio);const pb=n(ov.priceToBook);const upside=expectedReturnPct??0;
@@ -73,7 +75,7 @@ function scoreOne(a:any):Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|
  if(institutional>=75)reasons.push("Accumulation proxy from volume and relative strength");
  if(ai>=75)reasons.push("AI / innovation theme exposure");
  const lifecycle=classifyMomentumLifecycle({momentum,institutional,rs30,volumeRatio:volRatio,upDownVolume:upDown,return1m:ret1m,return3m:ret3m,aboveEma20:tech.aboveEma20,maFanning:tech.maFanning,valuationGapPct:expectedReturnPct});
- return {ticker:a.ticker,name:ov.name??a.ticker,sector:ov.sector??"Unknown",price,targetPrice,expectedReturnPct,momentum,growth,quality,value,dividend,institutional,ai,composite,reasons,metrics:{revenueGrowthPct:revG??qGrowth,earningsGrowthPct:epsG,operatingMarginPct:opMargin,roePct:roe,freeCashFlow:fcf,forwardPE:pe,peg,pb,dividendYieldPct:yieldPct,payoutRatioPct:payout,rs30,volumeRatio:volRatio,upDownVolume:upDown,return1m:ret1m,return3m:ret3m,rsi14:n(tech.rsi14),macdHist:n(tech.macdHist),aboveEma20:tech.aboveEma20?1:0,maFanning:tech.maFanning?1:0},thesis:a.thesis?.find((x:any)=>x.label==="Base")?.narrative??"Institutional factor candidate.",dataQuality:a.committee?.confidence??"MEDIUM",lifecycle,valuationReady,valuationSource,valuationNote,valuationFailures};
+ return {ticker:a.ticker,name:ov.name??a.ticker,sector:ov.sector??"Unknown",price,targetPrice,expectedReturnPct,momentum,growth,quality,value,dividend,institutional,ai,composite,reasons,metrics:{revenueGrowthPct:revG??qGrowth,earningsGrowthPct:epsG,operatingMarginPct:opMargin,roePct:roe,freeCashFlow:fcf,forwardPE:pe,peg,pb,dividendYieldPct:yieldPct,payoutRatioPct:payout,rs30,volumeRatio:volRatio,upDownVolume:upDown,return1m:ret1m,return3m:ret3m,rsi14:n(tech.rsi14),macdHist:n(tech.macdHist),aboveEma20:tech.aboveEma20?1:0,maFanning:tech.maFanning?1:0},thesis:a.thesis?.find((x:any)=>x.label==="Base")?.narrative??"Institutional factor candidate.",dataQuality:a.committee?.confidence??"MEDIUM",lifecycle,valuationReady,valuationSource,valuationNote,valuationFailures,valuationConfidence:snapshot?.confidence??"LOW",valuationBear:governed.bearValue,valuationBull:governed.bullValue,valuationAnchors:snapshot?.anchors??[],valuationAsOf:snapshot?.asOf??null,valuationExpiresAt:snapshot?.expiresAt??null,valuationModelRoute:snapshot?.modelRoute??null};
 }
 
 function gateReview(mode:FactorMode,row:Omit<ResearchCandidate,"status"|"passed"|"gateReasons"|"failedGates">){
@@ -93,7 +95,7 @@ function gateReview(mode:FactorMode,row:Omit<ResearchCandidate,"status"|"passed"
 export async function runFactorDiscovery(mode:FactorMode,universe?:string[],topN=10){
  const sourceUniverse=(universe?.length?universe:ENGINE_UNIVERSES[mode]).slice(0,40);const analyzed:ResearchCandidate[]=[];const warnings:string[]=[];
  const outcomes=await mapLimit(sourceUniverse,5,async ticker=>{
-  try{const scored=scoreOne(await buildAnalysis(ticker));const review=gateReview(mode,scored);return{candidate:{...scored,...review,status:review.passed?"QUALIFIED":"REJECTED"} as ResearchCandidate,error:null}}
+  try{const scored=await scoreOne(await buildAnalysis(ticker));const review=gateReview(mode,scored);return{candidate:{...scored,...review,status:review.passed?"QUALIFIED":"REJECTED"} as ResearchCandidate,error:null}}
   catch(e:any){return{candidate:null,error:`${ticker}: ${e?.message??"analysis failed"}`}}
  });
  for(const outcome of outcomes){if(outcome.candidate)analyzed.push(outcome.candidate);if(outcome.error)warnings.push(outcome.error)}
