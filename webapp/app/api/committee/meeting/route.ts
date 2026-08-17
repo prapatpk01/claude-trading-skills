@@ -21,6 +21,7 @@ import { buildBookReview } from "@/lib/team/book";
 import { runCommitteeMeeting, type PositionEvidence, type IdeaEvidence } from "@/lib/team/committee";
 import { runDeskScan } from "@/lib/research/deskScan";
 import { runInvestmentResearchOS } from "@/lib/research/investmentDiscovery";
+import { buildCashBufferSnapshot } from "@/lib/cashBufferSnapshot";
 import { FUND, STANDING_DUTY } from "@/lib/team/roster";
 import type { Candle } from "@/lib/types";
 
@@ -77,6 +78,7 @@ async function internalJson(req: NextRequest, path: string): Promise<any> {
   const response = await fetch(new URL(path, req.nextUrl.origin), {
     cache: "no-store",
     headers: { accept: "application/json", ...(cookie ? { cookie } : {}), ...(authorization ? { authorization } : {}) },
+    signal: AbortSignal.timeout(8_000),
   });
   const text = await response.text();
   let json: any;
@@ -243,7 +245,7 @@ export async function GET(req: NextRequest) {
 
     // ── the ledger's own numbers, not a second computation of them ──
     let buffer: any = null;
-    try { buffer = await internalJson(req, "/api/portfolio/cash-buffer"); }
+    try { buffer = await buildCashBufferSnapshot(); }
     catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }
 
     // ── per-name evidence, gathered once and shared across the desks ──
@@ -277,11 +279,15 @@ export async function GET(req: NextRequest) {
     if (unpriced.length) unavailable.push(`current price for ${unpriced.join(", ")}`);
 
     const securitiesValue = gathered.reduce((s, g) => s + (g.price ?? g.avgCost) * g.shares, 0);
+    const reserveFallback = gathered.reduce((sum, g) => RESERVES.has(g.ticker) ? sum + (g.price ?? g.avgCost) * g.shares : sum, 0);
     const cashBalance = finite(buffer?.cashBalance) ?? 0;
-    const nav = finite(buffer?.totalNav) ?? securitiesValue + cashBalance;
-    const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? finite(buffer?.gapValue) ?? 0);
-    const cashBufferPct = finite(buffer?.bufferPct) ?? (nav > 0 ? (cashBalance / nav) * 100 : null);
+    const dividendAvailable = finite(buffer?.dividendAvailable) ?? 0;
+    const combinedBuffer = finite(buffer?.liquidityBuffer) ?? (cashBalance + dividendAvailable + reserveFallback);
+    const nav = finite(buffer?.totalNav) ?? securitiesValue;
     const targetCashPct = finite(buffer?.targetPct);
+    const cashBufferPct = finite(buffer?.bufferPct) ?? (nav > 0 ? (combinedBuffer / nav) * 100 : null);
+    const targetCashValue = nav > 0 && targetCashPct != null ? nav * targetCashPct / 100 : null;
+    const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? (targetCashValue == null ? 0 : combinedBuffer - targetCashValue));
 
     const regime = benchmark.length ? assessRegime(benchmark) : null;
 
@@ -501,7 +507,7 @@ export async function GET(req: NextRequest) {
           exclude: held,
         }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("the sweep did not finish inside the meeting's time budget")), 25_000)
+          setTimeout(() => reject(new Error("the sweep did not finish inside the meeting's time budget")), 12_000)
         ),
       ]);
       scanRegime = scan.result.regime;
@@ -664,7 +670,8 @@ export async function GET(req: NextRequest) {
         ],
         fund: FUND,
         standingDuty: STANDING_DUTY,
-        sources: { navFrom: buffer ? "portfolio ledger cash-buffer" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },
+        cashBuffer: { valueUsd: finite(buffer?.liquidityBuffer) ?? combinedBuffer, pct: cashBufferPct, targetPct: targetCashPct, reserveHoldings: buffer?.reserveHoldings ?? [] },
+        sources: { navFrom: buffer ? "shared cash-buffer snapshot" : "computed from holdings and prices", priced: positions.filter((p) => p.price != null).length, positions: positions.length },
       },
       { headers: { "Cache-Control": "no-store" } }
     );

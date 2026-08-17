@@ -146,7 +146,10 @@ export async function POST(req: NextRequest) {
   const sb = getSupabaseAdmin() ?? getSupabase();
   if (!sb) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
 
-  const reconciliationMode = String(body.mode ?? "").toUpperCase() === "RECONCILE_EXISTING";
+  const requestedMode = String(body.mode ?? "").toUpperCase();
+  const reconciliationMode = requestedMode === "RECONCILE_EXISTING";
+  const planApprovalMode = requestedMode === "PLAN_APPROVAL";
+  const recordMeetingId = planApprovalMode ? `${meetingId}.PLAN` : meetingId;
   const tradeDate = String(body.tradeDate ?? body.asOf ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
   const tolerancePct = Math.min(100, Math.max(0, finite(body.tolerancePct) ?? DEFAULT_RECONCILIATION_TOLERANCE_PCT));
   let reconciledByResolution = new Map<string, ReturnType<typeof reconcileCommitteeMotions>[number]>();
@@ -172,14 +175,14 @@ export async function POST(req: NextRequest) {
 
   // ── Idempotency. A meeting applies once. ──
   let persistence: "supabase" | "unavailable" = "supabase";
-  const existing = await sb.from(MINUTES_TABLE).select("meeting_id,created_at").eq("meeting_id", meetingId).limit(1);
+  const existing = await sb.from(MINUTES_TABLE).select("meeting_id,created_at").eq("meeting_id", recordMeetingId).limit(1);
   if (existing.error) {
     if (/does not exist|schema cache|relation/i.test(existing.error.message)) persistence = "unavailable";
     else return NextResponse.json({ error: existing.error.message }, { status: 500 });
   } else if ((existing.data ?? []).length && body.supersede !== true) {
     return NextResponse.json(
       {
-        error: `Minutes for ${meetingId} were already recorded on ${existing.data![0].created_at}. Applying them twice would double every position. Send supersede: true only if you intend to record a corrected version.`,
+        error: `${planApprovalMode ? "Plan approval" : "Minutes"} for ${meetingId} was already recorded on ${existing.data![0].created_at}.`,
         alreadyRecorded: true,
       },
       { status: 409 }
@@ -202,6 +205,13 @@ export async function POST(req: NextRequest) {
     }
     if (verdict !== "APPROVED" && verdict !== "AMENDED") {
       skipped.push({ ticker, kind, reason: `Unrecognised verdict "${decision.verdict}" — nothing applied.` });
+      continue;
+    }
+
+    // Stage 6 records authority only. It must never create a transaction or
+    // mutate Holdings; execution remains a separate manual broker action.
+    if (planApprovalMode) {
+      applied.push({ ticker, kind, verdict, proposedUsd: decision.proposedUsd ?? null, proposedShares: decision.proposedShares ?? null, mode: "PLAN_APPROVED" });
       continue;
     }
     if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) {
@@ -266,7 +276,7 @@ export async function POST(req: NextRequest) {
 
   /* ── Record the meeting, whatever happened above ── */
   const record = {
-    meeting_id: meetingId,
+    meeting_id: recordMeetingId,
     approved_by: approvedBy,
     as_of: String(body.asOf ?? new Date().toISOString()),
     regime: body.regime ?? null,
@@ -292,7 +302,9 @@ export async function POST(req: NextRequest) {
   }
 
   const summary = [
-    reconciliationMode
+    planApprovalMode
+      ? `${applied.length} execution plan line(s) authorised; no broker order or ledger transaction was created`
+      : reconciliationMode
       ? `${applied.length} existing portfolio transaction(s) reconciled — no trade was created`
       : `${applied.length} transaction(s) recorded in the ledger`,
     `${skipped.length} line(s) required none`,
@@ -312,21 +324,31 @@ export async function POST(req: NextRequest) {
       recordError,
       note:
         persistence === "unavailable"
-          ? reconciliationMode
+          ? planApprovalMode
+            ? `The approval was captured in this session, but the plan record could not be stored because the ${MINUTES_TABLE} table does not exist on this database. No trade was created.`
+            : reconciliationMode
             ? `The Holdings comparison completed and no trade was created, but the checklist could not be stored because the ${MINUTES_TABLE} table does not exist on this database. Run ${MIGRATION_HINT} to keep committee minutes.`
             : `Trades were applied to the ledger, but the meeting record could not be stored: the ${MINUTES_TABLE} table does not exist on this database. Run ${MIGRATION_HINT} to keep minutes. The ledger entries carry the meeting id in their notes, so the audit trail survives either way.`
           : recorded
-          ? reconciliationMode
+          ? planApprovalMode
+            ? "The pre-execution plan approval is on the record. It did not create a broker order or change Holdings."
+            : reconciliationMode
             ? "The checklist is on the record. It references existing Holdings transactions and did not create another trade."
             : "The meeting is on the record. Every applied line carries the meeting id in its ledger note."
-          : reconciliationMode
+          : planApprovalMode
+            ? `The plan approval failed to save${recordError ? `: ${recordError}` : ""}. No trade was created.`
+            : reconciliationMode
             ? `The Holdings comparison completed and no trade was created, but the checklist failed to save${recordError ? `: ${recordError}` : ""}.`
             : `The meeting record failed to save${recordError ? `: ${recordError}` : ""}. The ledger entries are still there and carry the meeting id in their notes.`,
       disclosures: [
-        reconciliationMode
+        planApprovalMode
+          ? "This approval authorises a plan only. Orders remain manual and Holdings remains unchanged until the owner records actual broker activity."
+          : reconciliationMode
           ? "The portfolio transaction ledger remained the source of truth. This approval only matched and recorded existing Holdings activity; it did not create another trade."
           : "Only lines a person marked APPROVED or AMENDED were applied. A carried motion on its own does nothing.",
-        reconciliationMode
+        planApprovalMode
+          ? "Approved and rejected plan lines are retained in the pre-execution record; no fill price is required at this stage."
+          : reconciliationMode
           ? `Directional BUY/SELL matches within ${tolerancePct}% of the proposed size were marked as close matches; different sizes were retained as amendments for human review.`
           : "Prices recorded are the ones supplied by the approver, not the committee's reference price.",
         failed.length ? "Failed lines were not recorded and were not retried. Re-submit them individually once the cause is understood." : null,
