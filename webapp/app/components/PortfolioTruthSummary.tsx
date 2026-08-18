@@ -4,8 +4,11 @@ import type { AppLang } from "../page";
 import { money, pct, cls } from "./format";
 import { useFundSnapshot } from "./useFundSnapshot";
 import { useCallback, useEffect, useRef, useState } from "react";
+import CashLedgerPanel from "./CashLedgerPanel";
 
-export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: AppLang; refreshKey?: number }) {
+type CashView = "balance" | "flows" | "dividends";
+
+export default function PortfolioTruthSummary({ lang, refreshKey = 0, cashOnly = false }: { lang: AppLang; refreshKey?: number; cashOnly?: boolean }) {
   const fund = useFundSnapshot(refreshKey);
   const t = (en: string, th: string) => lang === "th" ? th : en;
   const [buffer,setBuffer]=useState<any>(null);
@@ -16,6 +19,7 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
   const [dividendInput,setDividendInput]=useState("");
   const [dividendBusy,setDividendBusy]=useState(false);
   const [dividendMessage,setDividendMessage]=useState<string|null>(null);
+  const [cashView,setCashView]=useState<CashView>("balance");
 
   const loadBuffer=useCallback(async()=>{
     try{
@@ -34,6 +38,12 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
   },[]);
 
   useEffect(()=>{loadBuffer()},[loadBuffer,refreshKey]);
+  useEffect(()=>{
+    if(typeof window==="undefined")return;
+    const refresh=()=>void loadBuffer();
+    window.addEventListener("sentinel:cash-ledger-changed",refresh);
+    return()=>window.removeEventListener("sentinel:cash-ledger-changed",refresh);
+  },[loadBuffer]);
 
   const saveBrokerCash=async()=>{
     const value=Number(String(cashInput).replace(/,/g,""));
@@ -44,7 +54,6 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
       const j=await r.json();if(!r.ok)throw new Error(j.error||"Save failed");
       cashEditingRef.current=false;
       setCashInput(value.toFixed(2));
-      await loadBuffer();
       if(typeof window!=="undefined")window.dispatchEvent(new Event("sentinel:cash-ledger-changed"));
       setCashMessage(t(`Saved broker investable USD at ${money(value)}. This is the total balance, not an amount to add.`,`บันทึกยอด USD ที่ลงทุนได้จากโบรกเกอร์เป็น ${money(value)} แล้ว ตัวเลขนี้คือยอดรวม ไม่ใช่จำนวนเงินที่จะบวกเพิ่ม`));
     } catch(e:any){setCashMessage(e?.message||"Save failed")}finally{setCashBusy(false)}
@@ -59,14 +68,14 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
     try{
       const r=await fetch("/api/portfolio/cash",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"WITHDRAW_DIVIDEND",amount:value,entry_date:new Date().toISOString().slice(0,10),notes:"Dividend withdrawn for personal use"})});
       const j=await r.json();if(!r.ok)throw new Error(j.error||"Withdrawal failed");
-      await loadBuffer();
+      if(typeof window!=="undefined")window.dispatchEvent(new Event("sentinel:cash-ledger-changed"));
       setDividendMessage(t("Dividend withdrawn. It is now realized investment profit and is no longer investable Cash Buffer.","ถอนปันผลแล้ว เงินนี้ถูกนับเป็นกำไรจากการลงทุนที่รับรู้แล้วและไม่นับเป็น Cash Buffer สำหรับลงทุนต่อ"));
     } catch(e:any){setDividendMessage(e?.message||"Withdrawal failed")}finally{setDividendBusy(false)}
   };
 
   return (
     <section className="portfolio-truth-summary" aria-label={t("Verified portfolio summary", "สรุปพอร์ตที่ตรวจสอบแล้ว")}>
-      <div className="grid cols-3">
+      {!cashOnly&&<div className="grid cols-3">
         <div className="metric">
           <div className="label">{t("Verified Holdings Value", "มูลค่าหลักทรัพย์ที่ยืนยันแล้ว")}</div>
           <div className="value">{fund.loading ? "…" : fund.verified ? money(fund.securitiesValue) : "—"}</div>
@@ -84,14 +93,14 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
           </div>
           <div className="sub">{t("Cost basis remains internal for P/L calculation", "เก็บต้นทุนไว้ภายในเพื่อคำนวณกำไร/ขาดทุน")}</div>
         </div>
-      </div>
+      </div>}
 
       <div className="card" style={{marginTop:14,padding:18,borderColor:"rgba(49,217,243,.35)"}}>
         <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
           <div>
-            <div className="label">{t("CASH BUFFER CONTROL","ควบคุม CASH BUFFER")}</div>
-            <h3 className="sub" style={{margin:"6px 0 3px"}}>{t("Investment USD Cash","เงินลงทุน USD")}</h3>
-            <div className="muted" style={{fontSize:12}}>{t("Enter the broker's TOTAL investable USD cash. BUY/SELL trades do not change this field automatically; use the actual broker number after settlement/fees.","กรอกยอด USD ที่ลงทุนได้รวมตามโบรกเกอร์จริง รายการ BUY/SELL จะไม่เปลี่ยนช่องนี้อัตโนมัติ ให้ใช้ตัวเลขจริงหลัง settlement/ค่าธรรมเนียม")}</div>
+            <div className="label">{t("CASH BUFFER & CASH ACTIVITY","CASH BUFFER และรายการเงินสด")}</div>
+            <h3 className="sub" style={{margin:"6px 0 3px"}}>{t("One cash center, one ledger","ศูนย์เงินสดเดียว ใช้ Ledger เดียวกัน")}</h3>
+            <div className="muted" style={{fontSize:12}}>{t("Choose a topic below. Balance reconciliation, external cash flows and dividends all update the same authoritative cash ledger.","เลือกหัวข้อด้านล่าง การกระทบยอด เงินเข้า–ออกจากภายนอก และปันผลจะอัปเดตสมุดเงินสดชุดเดียวกัน")}</div>
           </div>
           <div style={{textAlign:"right"}}>
             <div className="label">{t("Total Cash Buffer","Cash Buffer รวม")}</div>
@@ -100,6 +109,23 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
           </div>
         </div>
 
+        <div className="grid cols-4" style={{marginTop:14}}>
+          <div className="metric"><div className="label">{t("Broker USD cash","เงินสด USD ในโบรกเกอร์")}</div><div className="value" style={{fontSize:18}}>{buffer?money(Number(buffer.investmentCash??buffer.cashBalance??0)):"—"}</div></div>
+          <div className="metric"><div className="label">{t("Available dividend","ปันผลพร้อมใช้")}</div><div className="value pos" style={{fontSize:18}}>{buffer?money(Number(buffer.dividendAvailable??0)):"—"}</div></div>
+          <div className="metric"><div className="label">{t("Reserve instruments","สินทรัพย์สำรอง")}</div><div className="value" style={{fontSize:18}}>{buffer?money(Number(buffer.reserveMarketValue??0)):"—"}</div></div>
+          <div className="metric"><div className="label">{t("Policy Cash Floor","Cash Floor ตามนโยบาย")}</div><div className="value" style={{fontSize:18}}>{buffer?pct(Number(buffer.cashFloorPct??buffer.targetPct??0)):"—"}</div></div>
+        </div>
+
+        <div className="tabs cash-center-tabs" role="tablist" aria-label={t("Cash center topic","หัวข้อศูนย์เงินสด")} style={{marginTop:14,overflowX:"auto"}}>
+          {([
+            ["balance",t("USD Cash balance","ยอด USD Cash")],
+            ["flows",t("Cash in / out","เงินเข้า–ออก")],
+            ["dividends",t("Dividends","เงินปันผล")],
+          ] as Array<[CashView,string]>).map(([id,label])=><button key={id} type="button" role="tab" aria-selected={cashView===id} className={`tab ${cashView===id?"active":""}`} onClick={()=>setCashView(id)}>{label}</button>)}
+        </div>
+
+        {cashView==="balance"&&<div role="tabpanel" aria-label={t("USD Cash balance","ยอด USD Cash")}>
+        <div className="notice" style={{marginTop:14,borderColor:"rgba(49,217,243,.35)"}}><strong>{t("Current broker balance — not Cash Floor","ยอดเงินสดจริงในโบรกเกอร์ — ไม่ใช่ Cash Floor")}</strong><br/>{t("Enter the TOTAL investable USD cash after settlement and fees. Saving replaces the current balance by posting only the reconciliation difference.","กรอกยอด USD ที่ลงทุนได้รวมหลัง settlement และค่าธรรมเนียม การบันทึกจะแทนที่ยอดปัจจุบันโดยสร้างเฉพาะส่วนต่างเพื่อกระทบยอด")}</div>
         <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:14}}>
           <div style={{position:"relative",minWidth:180,flex:"0 1 240px"}}>
             <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontWeight:800}}>$</span>
@@ -121,8 +147,12 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
         </div>
         <div className="muted" style={{fontSize:11.5,marginTop:8}}>{t("You can replace this with a lower or higher balance at any time. Example: change 3,109.16 to 1,177.16 and press Update USD Cash.","แก้เป็นยอดที่ต่ำกว่าหรือสูงกว่าเดิมได้ตลอด เช่น เปลี่ยน 3,109.16 เป็น 1,177.16 แล้วกด บันทึก USD Cash")}</div>
         {cashMessage&&<div className="notice" style={{marginTop:10}}>{cashMessage}</div>}
+        {buffer?.reserveHoldings?.length>0&&<div className="muted" style={{marginTop:12,fontSize:12}}>{t("Reserve holdings:","สินทรัพย์สำรอง:")} {buffer.reserveHoldings.map((r:any)=>`${r.ticker} ${money(Number(r.marketValue||0))}`).join(" · ")}</div>}
+        </div>}
 
-        <div className="card" style={{marginTop:16,padding:16,background:"rgba(255,255,255,.02)"}}>
+        {cashView==="flows"&&<div role="tabpanel" aria-label={t("Cash in and out","เงินเข้าและออก")} style={{marginTop:14}}><CashLedgerPanel lang={lang} refreshKey={refreshKey} embedded/></div>}
+
+        {cashView==="dividends"&&<div role="tabpanel" aria-label={t("Dividends","เงินปันผล")} style={{marginTop:16,paddingTop:14,borderTop:"1px solid var(--border)"}}>
           <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
             <div>
               <div className="label">{t("DIVIDEND CASH","เงินปันผล")}</div>
@@ -142,12 +172,10 @@ export default function PortfolioTruthSummary({ lang, refreshKey = 0 }: { lang: 
             <button className="btn ghost" type="button" disabled={dividendBusy||Number(buffer?.dividendAvailable??0)<=0} onClick={()=>setDividendInput(String(Number(buffer?.dividendAvailable??0).toFixed(2)))}>{t("Use all","ถอนทั้งหมด")}</button>
           </div>
           {dividendMessage&&<div className="notice" style={{marginTop:10}}>{dividendMessage}</div>}
-        </div>
-
-        {buffer?.reserveHoldings?.length>0&&<div className="muted" style={{marginTop:12,fontSize:12}}>{t("Reserve holdings:","สินทรัพย์สำรอง:")} {buffer.reserveHoldings.map((r:any)=>`${r.ticker} ${money(Number(r.marketValue||0))}`).join(" · ")}</div>}
+        </div>}
       </div>
 
-      {!fund.loading && (fund.error || !fund.verified) && (
+      {!cashOnly&&!fund.loading && (fund.error || !fund.verified) && (
         <div className="notice" style={{ marginTop: 12 }}>
           <strong>{t("Portfolio valuation withheld", "ระงับการประเมินมูลค่าพอร์ต")}</strong>
           <div style={{ marginTop: 5 }}>{fund.error || t("Some required market prices are not verified.", "ราคาตลาดที่จำเป็นบางรายการยังไม่ได้รับการยืนยัน")}</div>

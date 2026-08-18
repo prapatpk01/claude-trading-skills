@@ -7,7 +7,6 @@ import PortfolioTransactionOverride from "./PortfolioTransactionOverride";
 import HoldingsMarketMonitor from "./HoldingsMarketMonitor";
 import PortfolioLedgerPanel from "./PortfolioLedgerPanel";
 import DividendCalendarPanel from "./DividendCalendarPanel";
-import CashLedgerPanel from "./CashLedgerPanel";
 import CashBufferPanel from "./CashBufferPanel";
 import DividendLedgerPanel from "./DividendLedgerPanel";
 import PortfolioOptimizerPanel from "./PortfolioOptimizerPanel";
@@ -80,9 +79,9 @@ export default function HoldingsDashboardV12({lang,refreshKey,onRefresh}:{lang:A
 
   {show("income")&&<section id="holdings-income" style={{scrollMarginTop:150}}>
    <SectionHeader step="04" title={t("Cash, Liquidity & Income Center","ศูนย์เงินสด สภาพคล่อง และรายได้")} subtitle={t("Track cash movements, SGOV buffer policy, dividend receipts and upcoming income events.","ติดตามกระแสเงินสด นโยบาย SGOV Buffer เงินปันผลที่ได้รับ และกำหนดการรายได้")}/>
+   {tab==="income"&&<PortfolioTruthSummary lang={lang} refreshKey={refreshKey} cashOnly/>}
    <DividendCalendarPanel lang={lang}/>
    <section className="portfolio-operations-grid">
-    <CashLedgerPanel lang={lang} refreshKey={refreshKey}/>
     <CashBufferPanel lang={lang} refreshKey={refreshKey}/>
     <DividendLedgerPanel lang={lang} refreshKey={refreshKey}/>
    </section>

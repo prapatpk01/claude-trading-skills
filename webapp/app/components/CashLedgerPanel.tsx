@@ -6,7 +6,7 @@ import type { AppLang } from "../page";
 type Entry = { id:string; entry_type:string; amount:number|string; currency:string; entry_date:string; ticker?:string|null; transaction_id?:string|null; dividend_id?:string|null; notes?:string|null };
 type FlowType = "ADD_CAPITAL" | "WITHDRAW_AUTO" | "WITHDRAW_CAPITAL" | "FEE" | "ADJUSTMENT";
 
-export default function CashLedgerPanel({ lang, refreshKey }: { lang: AppLang; refreshKey: number }) {
+export default function CashLedgerPanel({ lang, refreshKey, embedded = false }: { lang: AppLang; refreshKey: number; embedded?: boolean }) {
   const [data,setData]=useState<any>(null); const [loading,setLoading]=useState(false); const [error,setError]=useState<string|null>(null);
   const [form,setForm]=useState<{ flow_type:FlowType; amount:string; entry_date:string; notes:string }>({ flow_type:"ADD_CAPITAL", amount:"", entry_date:new Date().toISOString().slice(0,10), notes:"" });
   const [busy,setBusy]=useState(false);
@@ -16,6 +16,12 @@ export default function CashLedgerPanel({ lang, refreshKey }: { lang: AppLang; r
   const audit=useMemo(()=>({ tradesLinked:(data?.unlinkedTrades??0)===0, dividendsLinked:(data?.unlinkedDividends??0)===0, hasOpeningBalance:rows.some(r=>["DEPOSIT","ADJUSTMENT"].includes(r.entry_type)) }),[data,rows]);
   const t=(en:string,th:string)=>lang==="th"?th:en;
   const emitCashChange=()=>{ if(typeof window!=="undefined") window.dispatchEvent(new Event("sentinel:cash-ledger-changed")); };
+  useEffect(()=>{
+    if(typeof window==="undefined")return;
+    const refresh=()=>void load();
+    window.addEventListener("sentinel:cash-ledger-changed",refresh);
+    return()=>window.removeEventListener("sentinel:cash-ledger-changed",refresh);
+  },[load]);
 
   const flowHelp = form.flow_type === "ADD_CAPITAL"
     ? t("New money from outside the fund. Example: if you receive $300 of new capital, enter 300 here. This is investment capital, not dividend or profit.","เงินใหม่จากภายนอกกองทุน เช่น ได้รับเพิ่มทุน $300 ให้กรอก 300 ตรงนี้ เงินนี้เป็นเงินลงทุน ไม่ใช่ปันผลหรือกำไร")
@@ -27,16 +33,17 @@ export default function CashLedgerPanel({ lang, refreshKey }: { lang: AppLang; r
           ? t("Reconciliation/correction only. Do not use ADJUSTMENT for new external capital or normal withdrawals.","ใช้เฉพาะปรับยอด/กระทบยอด ไม่ใช้ ADJUSTMENT สำหรับเงินเพิ่มทุนใหม่หรือการถอนปกติ")
           : t("Broker or fund fee paid from cash.","ค่าธรรมเนียมที่จ่ายออกจากเงินสดของกองทุน");
 
-  return <div className="card" style={{marginTop:18}}>
-    <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}><div><h2 className="section" style={{margin:0}}>💵 {t("Fund Cash Flows & Audit","กระแสเงินเข้าออกกองทุนและการตรวจสอบ")}</h2><p className="muted" style={{margin:"6px 0 0"}}>{t("BUY and SELL cash movements post automatically. Use this form only for money entering or leaving the fund from outside, fees, or a genuine reconciliation adjustment.","เงินจากการ BUY/SELL บันทึกอัตโนมัติ ใช้แบบฟอร์มนี้เฉพาะเงินที่เข้า/ออกกองทุนจากภายนอก ค่าธรรมเนียม หรือการปรับยอดเพื่อกระทบยอดจริง")}</p></div><button className="btn ghost sm" onClick={load} disabled={loading}>{loading?"…":"↻ Refresh"}</button></div>
+  const content=<>
+    {!embedded&&<div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}><div><h2 className="section" style={{margin:0}}>💵 {t("Fund Cash Flows & Audit","กระแสเงินเข้าออกกองทุนและการตรวจสอบ")}</h2><p className="muted" style={{margin:"6px 0 0"}}>{t("BUY and SELL cash movements post automatically. Use this form only for money entering or leaving the fund from outside, fees, or a genuine reconciliation adjustment.","เงินจากการ BUY/SELL บันทึกอัตโนมัติ ใช้แบบฟอร์มนี้เฉพาะเงินที่เข้า/ออกกองทุนจากภายนอก ค่าธรรมเนียม หรือการปรับยอดเพื่อกระทบยอดจริง")}</p></div><button className="btn ghost sm" onClick={load} disabled={loading}>{loading?"…":"↻ Refresh"}</button></div>}
+    {embedded&&<div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap"}}><div><h3 className="sub" style={{margin:0}}>{t("Record external cash activity","บันทึกเงินเข้า–ออกจากภายนอก")}</h3><p className="muted" style={{margin:"5px 0 0",fontSize:12}}>{t("Trades and dividends are linked automatically. Record only outside capital, withdrawals, fees or a real reconciliation correction.","รายการซื้อขายและปันผลเชื่อมอัตโนมัติ ให้กรอกเฉพาะเงินทุนภายนอก การถอน ค่าธรรมเนียม หรือการกระทบยอดจริง")}</p></div><button className="btn ghost sm" type="button" onClick={load} disabled={loading}>{loading?"…":"↻ Refresh"}</button></div>}
     {error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}
 
-    <div className="grid cols-4" style={{marginTop:14}}>
+    {!embedded&&<div className="grid cols-4" style={{marginTop:14}}>
       <Metric label={t("Ledger cash","เงินสดตามสมุด")} value={money(data?.balance??0)} accent={(data?.balance??0)>=0?"pos":"neg"}/>
       <Metric label={t("Investment USD cash","เงินสดจากเงินลงทุน")} value={money(data?.investmentCash??0)}/>
       <Metric label={t("Available dividend","ปันผลที่พร้อมถอน")} value={money(data?.dividendAvailable??0)} accent="pos"/>
       <Metric label={t("Net external capital","เงินทุนภายนอกสุทธิ")} value={money(data?.netExternalCapital??0)} />
-    </div>
+    </div>}
     <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
       <span className={cls("pill",audit.tradesLinked?"buy":"sell")}>{t("Trade linkage","เชื่อมรายการซื้อขาย")}: {audit.tradesLinked?"PASS":"FAILED"}</span>
       <span className={cls("pill",audit.dividendsLinked?"buy":"sell")}>{t("Dividend linkage","เชื่อมรายการปันผล")}: {audit.dividendsLinked?"PASS":"FAILED"}</span>
@@ -60,7 +67,7 @@ export default function CashLedgerPanel({ lang, refreshKey }: { lang: AppLang; r
           : form.flow_type === "WITHDRAW_CAPITAL" ? {...base,entry_type:"WITHDRAWAL"}
           : form.flow_type === "FEE" ? {...base,entry_type:"FEE"}
           : {...base,entry_type:"ADJUSTMENT"};
-        const r=await fetch("/api/portfolio/cash",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||"Save failed");setForm({...form,amount:"",notes:""});await load();emitCashChange();
+        const r=await fetch("/api/portfolio/cash",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||"Save failed");setForm({...form,amount:"",notes:""});emitCashChange();
       }catch(e:any){setError(e.message)}finally{setBusy(false)}
     }}>
       <select value={form.flow_type} onChange={e=>setForm({...form,flow_type:e.target.value as FlowType})}>
@@ -74,8 +81,12 @@ export default function CashLedgerPanel({ lang, refreshKey }: { lang: AppLang; r
     </form>
     <p className="muted" style={{fontSize:12,margin:"7px 0 0"}}>{flowHelp}</p>
 
-    <div className="table-wrap" style={{marginTop:14,maxHeight:420,overflowY:"auto"}}><table className="tbl"><thead><tr><th>{t("Date","วันที่")}</th><th>{t("Type","ประเภท")}</th><th>Ticker</th><th className="num">{t("Amount","จำนวนเงิน")}</th><th>{t("Source","ที่มา")}</th><th></th></tr></thead><tbody>{rows.map(r=>{const amount=Number(r.amount);const system=!!(r.transaction_id||r.dividend_id)||["BUY","SELL","DIVIDEND","TAX"].includes(r.entry_type);const note=String(r.notes??"").replace("[DIVIDEND_WITHDRAWAL]","").replace("[CAPITAL_WITHDRAWAL]","").trim();return <tr key={r.id}><td>{r.entry_date}</td><td><strong>{r.entry_type}</strong>{String(r.notes??"").includes("[DIVIDEND_WITHDRAWAL]")&&<small style={{display:"block",color:"var(--muted)"}}>{t("dividend","ปันผล")}</small>}{String(r.notes??"").includes("[CAPITAL_WITHDRAWAL]")&&<small style={{display:"block",color:"var(--muted)"}}>{t("investment capital","เงินลงทุน")}</small>}</td><td>{r.ticker??"—"}</td><td className={cls("num",amount>=0?"pos":"neg")}>{money(amount)}</td><td className="muted" style={{fontSize:11.5}}>{system?t("Automatic","อัตโนมัติ"):note||t("Manual","กรอกเอง")}</td><td>{!system&&<button type="button" className="btn danger sm" onClick={async()=>{if(!window.confirm(t("Delete this cash entry?","ลบรายการเงินสดนี้หรือไม่?")))return;const res=await fetch(`/api/portfolio/cash?id=${r.id}`,{method:"DELETE"});const j=await res.json().catch(()=>({}));if(!res.ok){setError(j.error||"Delete failed");return;}await load();emitCashChange();}}>✕</button>}</td></tr>})}{!rows.length&&!loading&&<tr><td colSpan={6} className="muted">{t("No cash entries yet.","ยังไม่มีรายการเงินสด")}</td></tr>}</tbody></table></div>
+    <details style={{marginTop:14}} open={embedded?undefined:true}>
+      <summary style={{cursor:"pointer",fontWeight:750,color:"var(--text)"}}>{t(`Cash ledger history (${rows.length})`,`ประวัติสมุดเงินสด (${rows.length})`)}</summary>
+      <div className="table-wrap" style={{marginTop:10,maxHeight:420,overflowY:"auto"}}><table className="tbl"><thead><tr><th>{t("Date","วันที่")}</th><th>{t("Type","ประเภท")}</th><th>Ticker</th><th className="num">{t("Amount","จำนวนเงิน")}</th><th>{t("Source","ที่มา")}</th><th></th></tr></thead><tbody>{rows.map(r=>{const amount=Number(r.amount);const system=!!(r.transaction_id||r.dividend_id)||["BUY","SELL","DIVIDEND","TAX"].includes(r.entry_type);const note=String(r.notes??"").replace("[DIVIDEND_WITHDRAWAL]","").replace("[CAPITAL_WITHDRAWAL]","").trim();return <tr key={r.id}><td>{r.entry_date}</td><td><strong>{r.entry_type}</strong>{String(r.notes??"").includes("[DIVIDEND_WITHDRAWAL]")&&<small style={{display:"block",color:"var(--muted)"}}>{t("dividend","ปันผล")}</small>}{String(r.notes??"").includes("[CAPITAL_WITHDRAWAL]")&&<small style={{display:"block",color:"var(--muted)"}}>{t("investment capital","เงินลงทุน")}</small>}</td><td>{r.ticker??"—"}</td><td className={cls("num",amount>=0?"pos":"neg")}>{money(amount)}</td><td className="muted" style={{fontSize:11.5}}>{system?t("Automatic","อัตโนมัติ"):note||t("Manual","กรอกเอง")}</td><td>{!system&&<button type="button" className="btn danger sm" onClick={async()=>{if(!window.confirm(t("Delete this cash entry?","ลบรายการเงินสดนี้หรือไม่?")))return;const res=await fetch(`/api/portfolio/cash?id=${r.id}`,{method:"DELETE"});const j=await res.json().catch(()=>({}));if(!res.ok){setError(j.error||"Delete failed");return;}emitCashChange();}}>✕</button>}</td></tr>})}{!rows.length&&!loading&&<tr><td colSpan={6} className="muted">{t("No cash entries yet.","ยังไม่มีรายการเงินสด")}</td></tr>}</tbody></table></div>
+    </details>
     <p className="notice" style={{marginTop:12}}>{t("Fund cash equation: external capital + sale proceeds + net dividends − purchases − withdrawals − fees ± reconciliation adjustments = ledger cash. A balance reconciliation changes the ledger to match the broker; it is not a new capital contribution.","สมการเงินสดกองทุน: เงินเพิ่มทุนภายนอก + เงินจากการขาย + ปันผลสุทธิ − เงินซื้อสินทรัพย์ − เงินถอน − ค่าธรรมเนียม ± รายการกระทบยอด = เงินสดตามสมุด การกระทบยอดเป็นเพียงการทำให้ตรงกับโบรกเกอร์ ไม่ใช่การเพิ่มทุนใหม่")}</p>
-  </div>;
+  </>;
+  return embedded?<div style={{paddingTop:4}}>{content}</div>:<div className="card" style={{marginTop:18}}>{content}</div>;
 }
 function Metric({label,value,accent}:{label:string;value:string;accent?:string}){return <div className="metric"><div className="label">{label}</div><div className={cls("value",accent)} style={{fontSize:19}}>{value}</div></div>}
