@@ -151,9 +151,23 @@ forbidTokens("lib/analyze.ts", [
   ["base=round2(price)", "spot must never be assigned as Base Fair Value"],
 ]);
 
-requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
+requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude", "approved-three-index-universe"]);
 requireTokens("lib/research/investmentDiscovery.ts", ["runInvestmentResearchOS", "buildRotatingMarketUniverse", "researchQueue", "sourceModels", "RESEARCH_ENGINES", "buildEngineUniverses", "engineReports", "lifecycleStage", "valuationGapPct", "rotationCadence"]);
-requireTokens("lib/research/marketUniverse.ts", ["loadSecSymbolUniverse", "SEC EDGAR listed-registrant master universe", '"3D"', '"7D"', '"1M"', '"3M"']);
+requireTokens("lib/research/marketUniverse.ts", [
+  "loadThreeIndexUniverse",
+  "S&P 500",
+  "Nasdaq-100",
+  "Russell 2000",
+  "No SEC/full-market discovery",
+  '"3D"',
+  '"7D"',
+  '"1M"',
+  '"3M"',
+]);
+forbidTokens("lib/research/marketUniverse.ts", [
+  ["loadSecSymbolUniverse", "automatic CIO research must not widen to the SEC/full-US-market master universe"],
+  ["SEC EDGAR listed-registrant master universe", "automatic CIO research must remain inside the approved three-index universe"],
+]);
 requireTokens("lib/thomasValuation.ts", ["resolveThomasValuation", "THOMAS_DCF_MULTI_ANCHOR", "YAHOO_ANALYST_CONSENSUS", "saveThomasValuationLedger"]);
 requireTokens("app/api/committee/swing-scan/route.ts", ["runDeskScan"]);
 forbidTokens("app/api/committee/swing-scan/route.ts", [
