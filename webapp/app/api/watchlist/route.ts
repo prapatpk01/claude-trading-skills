@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const STAGES = new Set(["RESEARCH","WATCH","READY","COMMITTEE","PROMOTED","REJECTED","ARCHIVED"]);
 const optNum=(v:any):number|null=>{if(v===null||v===undefined||String(v).trim()==="")return null;const n=Number(v);return Number.isFinite(n)?n:null};
+const optPositiveNum=(v:any):number|null=>{const n=optNum(v);return n!=null&&n>0?n:null};
 const cleanTicker=(v:any)=>String(v??"").trim().toUpperCase();
 const cleanStage=(v:any)=>{const s=String(v??"RESEARCH").trim().toUpperCase();return STAGES.has(s)?s:null};
 
@@ -17,14 +18,15 @@ function gatewayResponse(result:{status:number;body:any}) {
 
 export async function GET(){
  const sb=getSupabase();
- if(sb){const{data,error}=await sb.from("watchlist").select("*").order("updated_at",{ascending:false});if(error)return NextResponse.json({error:error.message},{status:500});return NextResponse.json({watchlist:data,backend:"supabase",version:14.2},{headers:{"Cache-Control":"no-store"}})}
- return NextResponse.json({watchlist:memStore.watchlist,backend:"memory",version:14.2});
+ const normalize=(rows:any[])=>rows.map(row=>({...row,target_price:optPositiveNum(row?.target_price)}));
+ if(sb){const{data,error}=await sb.from("watchlist").select("*").order("updated_at",{ascending:false});if(error)return NextResponse.json({error:error.message},{status:500});return NextResponse.json({watchlist:normalize(data??[]),backend:"supabase",version:14.3},{headers:{"Cache-Control":"no-store"}})}
+ return NextResponse.json({watchlist:normalize(memStore.watchlist),backend:"memory",version:14.3});
 }
 
 export async function POST(req:NextRequest){
  const body=await req.json().catch(()=>({}));const ticker=cleanTicker(body.ticker);if(!/^[A-Z.\-]{1,10}$/.test(ticker))return NextResponse.json({error:"Enter a valid ticker symbol (e.g. NVDA)."},{status:400});
  const stage=cleanStage(body.stage);if(!stage)return NextResponse.json({error:"Invalid watchlist stage"},{status:400});
- const target=optNum(body.target_price);const now=new Date().toISOString();
+ const target=optPositiveNum(body.target_price);const now=new Date().toISOString();
  const row={ticker,reason:String(body.reason??"").trim()||null,alert_price:optNum(body.alert_price)??target,target_price:target,stop_price:optNum(body.stop_price),entry_price:optNum(body.entry_price),source:String(body.source??"").trim()||null,stage,updated_at:now,promoted_at:stage==="PROMOTED"?now:null,archived_at:stage==="ARCHIVED"?now:null};
  const sb=getSupabaseAdmin();
  if(sb){const{data,error}=await sb.from("watchlist").upsert(row,{onConflict:"ticker"}).select().single();if(error)return NextResponse.json({error:`Supabase: ${error.message}`},{status:500});return NextResponse.json({item:data,version:14.2,writeAuth:"supabase-secret"});}

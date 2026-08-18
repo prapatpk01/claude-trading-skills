@@ -148,6 +148,8 @@ section("Filters reject rather than down-weight");
   ok("an extended chart is rejected", result.setups.length === 0);
   ok("the rejection names the entry filter", result.rejected[0]?.filter === "ENTRY RANGE", JSON.stringify(result.rejected[0]));
   ok("it quotes how far above the pivot price sits", /% above the/.test(result.rejected[0].reason), result.rejected[0].reason);
+  ok("the rejected trade is retained as ranked near-ready research", result.nearReady.some((row) => row.ticker === "EXT"));
+  ok("near-ready research never invents a valuation target", result.nearReady[0]?.technicalTarget === null && result.nearReady[0]?.valuationStatus === "PENDING");
 }
 {
   const result = runSwingScan([{ ticker: "DWN", candles: downtrend(), catalystScore: 20 }], benchmarks, 5);
@@ -211,6 +213,7 @@ section("Ranking and output shape");
     result.setups[0].momentumScore >= result.setups.at(-1).momentumScore,
     result.setups.map((s) => `${s.ticker}:${s.momentumScore}`).join(" "));
   ok("the scan reports its universe size", result.universeSize === 3);
+  ok("the four-stage funnel is published", result.engineVersion === "2.0" && result.bucketCounts.tradeReady === 3);
   ok("the methodology states the weighting", /40/.test(result.methodology) && /25/.test(result.methodology));
   ok("disclosures say rejections keep their reason", result.disclosures.some((d) => /keep their reason/i.test(d)));
   ok("disclosures say win probability is not quoted", result.disclosures.some((d) => /Win probability is not quoted/i.test(d)));
