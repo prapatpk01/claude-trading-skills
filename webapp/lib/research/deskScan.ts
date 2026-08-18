@@ -1,38 +1,29 @@
 // The research desk's own sourcing run.
 //
-// Until now a new name reached the committee only if a person opened the
-// analysis workspace, researched a ticker and pressed "refer". If nobody did
-// that, the meeting reviewed the existing book and proposed nothing — which
-// reads, correctly, as a fund that never has an idea.
-//
-// This module is the desk doing its own job: it takes a universe, fetches the
-// history and the catalyst read, and runs Maya's momentum model with Aisha's
-// catalyst component through the four hard filters in lib/team/swing.ts. It
-// fetches; every judgement stays in the engine.
-//
-// Both the standalone scanner route and the committee meeting call this, so
-// the names the meeting debates are produced by the same code the scanner
-// page shows — there is one scan in the fund, not two.
+// Automatic discovery is deliberately bounded to the CIO-approved universe:
+// S&P 500 + Nasdaq-100 + Russell 2000. A user may still explicitly type a ticker
+// for one-off analysis, but the desk itself never widens discovery to every US
+// listing or to the SEC registrant master list.
 
 import { dailyCandles } from "@/lib/marketData";
 import { getSecFundamentals } from "@/lib/sec";
 import { runSwingScan, type SwingCandidate, type SwingScanResult } from "@/lib/team/swing";
 import { assessCatalyst } from "@/lib/team/catalyst";
 import { projectEarningsDates } from "@/lib/research";
-import { MOMENTUM_V62_UNIVERSE } from "@/lib/momentumV62";
-import { SECTOR_UNIVERSES, universeForSector } from "@/lib/sectorUniverse";
+import { universeForSector } from "@/lib/sectorUniverse";
+import { buildRotatingMarketUniverse, loadThreeIndexUniverse } from "@/lib/research/marketUniverse";
 import type { Candle } from "@/lib/types";
 
 /** Names the desk will not source into: liquidity instruments and benchmarks. */
 const NEVER_SOURCE = new Set(["SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
 
 export interface DeskScanOptions {
-  /** Explicit names to scan. When empty the sector universe is used. */
+  /** Explicit names to scan. Explicit user analysis is not automatic discovery. */
   tickers?: string[] | null;
   sector?: string;
   /** How many setups to carry out of the scan. */
   topN?: number;
-  /** How many names to pull history for. Lower it when the caller is on a clock. */
+  /** How many approved-index names to pull history for in this request. */
   universeLimit?: number;
   /** How many of those get a catalyst read, which costs an SEC call each. */
   catalystLimit?: number;
@@ -44,7 +35,7 @@ export interface DeskScanOutcome {
   result: SwingScanResult;
   warnings: string[];
   universe: string[];
-  universeSource: "explicit" | "sector" | "balanced-us-equity-universe";
+  universeSource: "explicit" | "sector-approved-index" | "approved-three-index-universe";
   sector: string;
 }
 
@@ -78,36 +69,28 @@ export function normalizeTickers(raw: string | string[] | null | undefined): str
   return out;
 }
 
-/**
- * Daily rotating, sector-balanced discovery universe. The old scanner took the
- * first 36 names from a fixed high-beta list, so the same mega-cap leaders kept
- * monopolising the research queue. This interleaves every sector first, then
- * fills from the momentum universe; the within-sector starting point rotates
- * each UTC day while a scan stays reproducible for that day.
- */
-export function buildDiscoveryUniverse(asOf = new Date()): string[] {
+/** Deterministic daily rotation for a caller-provided approved ticker set. */
+export function buildDiscoveryUniverse(approvedTickers: string[], asOf = new Date()): string[] {
+  const clean = Array.from(new Set(approvedTickers.map(ticker => String(ticker).trim().toUpperCase()).filter(ticker => /^[A-Z.\-]{1,10}$/.test(ticker))));
+  if (!clean.length) return [];
   const seed = Math.floor(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate()) / 86_400_000);
-  const pools = Object.values(SECTOR_UNIVERSES).map((pool, i) => {
-    const offset = (seed + i * 3) % pool.length;
-    return [...pool.slice(offset), ...pool.slice(0, offset)];
-  });
-  const sectorOffset = seed % pools.length;
-  const orderedPools = [...pools.slice(sectorOffset), ...pools.slice(0, sectorOffset)];
-  const broad: string[] = [];
-  const longest = Math.max(...orderedPools.map((pool) => pool.length));
-  for (let row = 0; row < longest; row++) {
-    for (const pool of orderedPools) if (pool[row]) broad.push(pool[row]);
-  }
-  const momentumOffset = seed % MOMENTUM_V62_UNIVERSE.length;
-  const momentum = [...MOMENTUM_V62_UNIVERSE.slice(momentumOffset), ...MOMENTUM_V62_UNIVERSE.slice(0, momentumOffset)];
-  return Array.from(new Set([...broad, ...momentum]));
+  return clean
+    .map(ticker => {
+      let hash = 2166136261;
+      const value = `${seed}:${ticker}`;
+      for (let i = 0; i < value.length; i += 1) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+      return { ticker, rank: hash >>> 0 };
+    })
+    .sort((left, right) => left.rank - right.rank || left.ticker.localeCompare(right.ticker))
+    .map(row => row.ticker);
 }
 
 /**
  * Run the desk's scan.
  *
- * Throws only if the universe cannot be assembled; a data source that does not
- * answer produces a warning and a smaller scan, never a silent pass.
+ * Automatic scans only use the three approved indexes. If one provider cannot
+ * be reached, the warning is surfaced and the desk remains inside the index
+ * families that did load; it never falls back to the full US market.
  */
 export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskScanOutcome> {
   const {
@@ -120,15 +103,32 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
   } = options;
 
   const warnings: string[] = [];
-  const explicit = tickers?.length ? tickers : null;
+  const explicit = tickers?.length ? normalizeTickers(tickers) : null;
   const blocked = new Set([...NEVER_SOURCE, ...Array.from(exclude, (t) => String(t).toUpperCase())]);
 
-  const base = explicit ?? (sector === "All" ? buildDiscoveryUniverse() : universeForSector(sector));
-  // An explicit request is honoured as given; a universe scan skips what the
-  // fund already owns, since an existing line is an ADD motion, not a new one.
+  let base: string[] = [];
+  let universeSource: DeskScanOutcome["universeSource"];
+  if (explicit) {
+    base = explicit;
+    universeSource = "explicit";
+  } else if (sector === "All") {
+    const market = await buildRotatingMarketUniverse({ exclude: blocked, detailedLimit: universeLimit });
+    warnings.push(...market.warnings);
+    base = market.queue.map(row => row.ticker);
+    universeSource = "approved-three-index-universe";
+  } else {
+    const approved = await loadThreeIndexUniverse();
+    warnings.push(...approved.warnings);
+    const allowed = new Set(approved.masterTickers);
+    base = buildDiscoveryUniverse(universeForSector(sector).filter(ticker => allowed.has(ticker.toUpperCase())));
+    universeSource = "sector-approved-index";
+  }
+
+  // Explicit one-off analysis is honoured as supplied. Automatic discovery
+  // skips holdings/reserves and is already guaranteed to be inside the approved indexes.
   const universe = (explicit ? base : base.filter((t) => !blocked.has(t.toUpperCase()))).slice(0, universeLimit);
   if (!universe.length) {
-    throw new Error(explicit ? "No valid US-listed ticker symbols were supplied." : `No universe is configured for sector ${sector}.`);
+    throw new Error(explicit ? "No valid US-listed ticker symbols were supplied." : `No approved-index research names are available for sector ${sector}.`);
   }
 
   // The regime filter runs before anything else, so the benchmarks come first.
@@ -149,8 +149,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
   const shortlist = viable.slice(0, catalystLimit);
 
   // Catalyst reads cost an SEC call each, so only the shortlist gets one. A
-  // name without one is scored over the components that were measured, and
-  // Rule #5 keeps the unread catalyst in the denominator rather than excusing it.
+  // name without one is scored zero for that component under Rule #5.
   const candidates: SwingCandidate[] = await mapLimit(shortlist, 4, async ({ ticker, candles }) => {
     try {
       const sec = await getSecFundamentals(ticker);
@@ -185,7 +184,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
     result: runSwingScan(candidates, { spy, qqq, vix }, topN),
     warnings,
     universe,
-    universeSource: explicit ? "explicit" : sector === "All" ? "balanced-us-equity-universe" : "sector",
+    universeSource,
     sector,
   };
 }
