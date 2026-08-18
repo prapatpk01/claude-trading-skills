@@ -15,6 +15,15 @@ export type FundHolding = {
 
 type PreliminaryHolding = Omit<FundHolding, "weightPct">;
 
+export type RiskScoreComponents = {
+  concentration: number | null;
+  diversification: number | null;
+  liquidityPolicy: number | null;
+  drawdown: number | null;
+  volatility: number | null;
+  coveragePct: number;
+};
+
 export type FundSnapshot = {
   loading: boolean;
   error: string | null;
@@ -42,6 +51,7 @@ export type FundSnapshot = {
   ytdReturnPct: number | null;
   benchmarkYtdPct: number | null;
   riskScore: number;
+  riskScoreComponents: RiskScoreComponents;
   portfolioHealth: number;
   qualityScore: number;
   liquidityScore: number;
@@ -54,6 +64,25 @@ const finite = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+
+/**
+ * Portfolio Risk Control is an exposure/risk metric, not a workflow-readiness
+ * metric. Only measured portfolio controls enter this score; missing evidence
+ * is omitted from the weighted average instead of silently becoming zero.
+ */
+function buildRiskControlScore(parts: Array<{ score: number | null; weight: number }>) {
+  const measured = parts.filter((part): part is { score: number; weight: number } => part.score != null && Number.isFinite(part.score));
+  const measuredWeight = measured.reduce((sum, part) => sum + part.weight, 0);
+  if (measuredWeight <= 0) return { score: 50, coveragePct: 0 };
+
+  const weighted = measured.reduce((sum, part) => sum + part.score * part.weight, 0) / measuredWeight;
+  // When evidence is thin, shrink toward a neutral 60 rather than publishing a
+  // high-conviction score from a single factor. This also prevents missing API
+  // data from masquerading as a 0/100 risk failure.
+  const confidence = Math.min(1, measuredWeight / 0.5);
+  const score = clamp(weighted * confidence + 60 * (1 - confidence));
+  return { score, coveragePct: clamp(measuredWeight * 100) };
+}
 
 async function json(path: string) {
   const response = await fetch(path, {
@@ -141,12 +170,68 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
     const probabilities = horizon?.probabilities ?? {};
     const ytdReturnPct = finite(raw?.analytics?.performance?.changePct);
     const benchmarkYtdPct = finite(raw?.analytics?.performance?.benchmarkChangePct);
-    const riskScore = clamp(finite(raw?.cio?.readinessPct) ?? (100 - Math.abs(50 - macroScore) * .55));
+
     const concentration = holdings.reduce((max, holding) => Math.max(max, holding.weightPct), 0);
     const diversificationScore = clamp(100 - Math.max(0, concentration - 10) * 2.4);
     const portfolioHealth = clamp(55 + diversificationScore * .22 + macroScore * .18 + Math.min(10, holdings.length * .45));
     const qualityScore = clamp(62 + diversificationScore * .18 + macroScore * .2);
     const liquidityScore = clamp(55 + Math.min(35, cashBufferPct * 1.7));
+
+    // ── Portfolio Risk Control ───────────────────────────────────────────────
+    // This deliberately does NOT use cio.readinessPct. CIO readiness measures
+    // whether committee/workflow evidence is complete, not whether portfolio
+    // risk is controlled. The old mapping is what could produce a misleading 0.
+    const pricedHoldings = holdings.filter((holding) => holding.price > 0 && holding.marketValue > 0);
+    const pricingCoverage = holdings.length > 0 ? pricedHoldings.length / holdings.length : 0;
+    const structuralRiskMeasured = holdings.length > 0 && pricingCoverage >= .6;
+
+    const concentrationControl = structuralRiskMeasured
+      ? clamp(100 - Math.max(0, concentration - 10) * 3.2)
+      : null;
+
+    const pricedValue = pricedHoldings.reduce((sum, holding) => sum + holding.marketValue, 0);
+    const hhi = pricedValue > 0
+      ? pricedHoldings.reduce((sum, holding) => {
+          const fraction = holding.marketValue / pricedValue;
+          return sum + fraction * fraction;
+        }, 0)
+      : 0;
+    const effectivePositions = hhi > 0 ? 1 / hhi : 0;
+    const diversificationControl = structuralRiskMeasured && holdings.length > 0
+      ? clamp((effectivePositions / Math.min(10, holdings.length)) * 100)
+      : null;
+
+    // Meeting the required cash-buffer floor receives full credit. Being below
+    // the floor scales the score proportionally; excess cash is not penalized.
+    const liquidityPolicyControl = totalNav > 0 && targetCashPct > 0
+      ? clamp(Math.min(1, Math.max(0, cashBufferPct) / targetCashPct) * 100)
+      : null;
+
+    const maxDrawdownPct = finite(raw?.analytics?.performance?.maxDrawdownPct);
+    const drawdownControl = maxDrawdownPct == null
+      ? null
+      : clamp(100 - Math.max(0, Math.abs(maxDrawdownPct) - 5) * 3);
+
+    const annualizedVolatilityPct = finite(raw?.analytics?.performance?.annualizedVolatilityPct);
+    const volatilityControl = annualizedVolatilityPct == null
+      ? null
+      : clamp(100 - Math.max(0, annualizedVolatilityPct - 15) * 2.5);
+
+    const risk = buildRiskControlScore([
+      { score: concentrationControl, weight: .30 },
+      { score: diversificationControl, weight: .20 },
+      { score: liquidityPolicyControl, weight: .25 },
+      { score: drawdownControl, weight: .15 },
+      { score: volatilityControl, weight: .10 },
+    ]);
+    const riskScoreComponents: RiskScoreComponents = {
+      concentration: concentrationControl,
+      diversification: diversificationControl,
+      liquidityPolicy: liquidityPolicyControl,
+      drawdown: drawdownControl,
+      volatility: volatilityControl,
+      coveragePct: risk.coveragePct,
+    };
 
     return {
       loading, error, verified, holdings, openPositions: holdings.length, totalNav, securitiesValue,
@@ -156,7 +241,7 @@ export function useFundSnapshot(refreshKey = 0): FundSnapshot {
       macroVision: String(raw?.macro?.vision?.en ?? "Market evidence is mixed. Maintain balanced risk and deploy selectively."),
       macroConfidence: String(raw?.macro?.confidence ?? "LOW"),
       bullishPct: finite(probabilities?.bull), neutralPct: finite(probabilities?.base), bearishPct: finite(probabilities?.bear),
-      ytdReturnPct, benchmarkYtdPct, riskScore, portfolioHealth, qualityScore, liquidityScore,
+      ytdReturnPct, benchmarkYtdPct, riskScore: risk.score, riskScoreComponents, portfolioHealth, qualityScore, liquidityScore,
       ledger: Array.isArray(raw?.portfolio?.ledger) ? raw.portfolio.ledger : [], raw,
     };
   }, [raw, loading, error]);
