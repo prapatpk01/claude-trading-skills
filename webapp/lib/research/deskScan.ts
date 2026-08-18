@@ -20,7 +20,7 @@ import { runSwingScan, type SwingCandidate, type SwingScanResult } from "@/lib/t
 import { assessCatalyst } from "@/lib/team/catalyst";
 import { projectEarningsDates } from "@/lib/research";
 import { MOMENTUM_V62_UNIVERSE } from "@/lib/momentumV62";
-import { universeForSector } from "@/lib/sectorUniverse";
+import { SECTOR_UNIVERSES, universeForSector } from "@/lib/sectorUniverse";
 import type { Candle } from "@/lib/types";
 
 /** Names the desk will not source into: liquidity instruments and benchmarks. */
@@ -44,7 +44,7 @@ export interface DeskScanOutcome {
   result: SwingScanResult;
   warnings: string[];
   universe: string[];
-  universeSource: "explicit" | "sector" | "high-beta-liquid-universe";
+  universeSource: "explicit" | "sector" | "balanced-us-equity-universe";
   sector: string;
 }
 
@@ -79,6 +79,31 @@ export function normalizeTickers(raw: string | string[] | null | undefined): str
 }
 
 /**
+ * Daily rotating, sector-balanced discovery universe. The old scanner took the
+ * first 36 names from a fixed high-beta list, so the same mega-cap leaders kept
+ * monopolising the research queue. This interleaves every sector first, then
+ * fills from the momentum universe; the within-sector starting point rotates
+ * each UTC day while a scan stays reproducible for that day.
+ */
+export function buildDiscoveryUniverse(asOf = new Date()): string[] {
+  const seed = Math.floor(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate()) / 86_400_000);
+  const pools = Object.values(SECTOR_UNIVERSES).map((pool, i) => {
+    const offset = (seed + i * 3) % pool.length;
+    return [...pool.slice(offset), ...pool.slice(0, offset)];
+  });
+  const sectorOffset = seed % pools.length;
+  const orderedPools = [...pools.slice(sectorOffset), ...pools.slice(0, sectorOffset)];
+  const broad: string[] = [];
+  const longest = Math.max(...orderedPools.map((pool) => pool.length));
+  for (let row = 0; row < longest; row++) {
+    for (const pool of orderedPools) if (pool[row]) broad.push(pool[row]);
+  }
+  const momentumOffset = seed % MOMENTUM_V62_UNIVERSE.length;
+  const momentum = [...MOMENTUM_V62_UNIVERSE.slice(momentumOffset), ...MOMENTUM_V62_UNIVERSE.slice(0, momentumOffset)];
+  return Array.from(new Set([...broad, ...momentum]));
+}
+
+/**
  * Run the desk's scan.
  *
  * Throws only if the universe cannot be assembled; a data source that does not
@@ -89,7 +114,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
     tickers = null,
     sector = "All",
     topN = 5,
-    universeLimit = 36,
+    universeLimit = 48,
     catalystLimit = 24,
     exclude = [],
   } = options;
@@ -98,7 +123,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
   const explicit = tickers?.length ? tickers : null;
   const blocked = new Set([...NEVER_SOURCE, ...Array.from(exclude, (t) => String(t).toUpperCase())]);
 
-  const base = explicit ?? (sector === "All" ? MOMENTUM_V62_UNIVERSE : universeForSector(sector));
+  const base = explicit ?? (sector === "All" ? buildDiscoveryUniverse() : universeForSector(sector));
   // An explicit request is honoured as given; a universe scan skips what the
   // fund already owns, since an existing line is an ADD motion, not a new one.
   const universe = (explicit ? base : base.filter((t) => !blocked.has(t.toUpperCase()))).slice(0, universeLimit);
@@ -160,7 +185,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
     result: runSwingScan(candidates, { spy, qqq, vix }, topN),
     warnings,
     universe,
-    universeSource: explicit ? "explicit" : sector === "All" ? "high-beta-liquid-universe" : "sector",
+    universeSource: explicit ? "explicit" : sector === "All" ? "balanced-us-equity-universe" : "sector",
     sector,
   };
 }

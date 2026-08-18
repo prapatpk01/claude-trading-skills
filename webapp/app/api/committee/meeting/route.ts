@@ -530,7 +530,7 @@ export async function GET(req: NextRequest) {
       ]);
       scanRegime = scan.result.regime;
       scanUniverseSize = scan.result.universeSize;
-      scanRejected = scan.result.rejected.length;
+      scanRejected = scan.result.bucketCounts.rejected;
       scanWarnings.push(...scan.warnings);
       const rejectionCount = (...filters: string[]) => scan.result.rejected.filter(row => filters.includes(row.filter)).length;
       const dataRegimeRejected = rejectionCount("DATA", "MARKET REGIME");
@@ -543,7 +543,13 @@ export async function GET(req: NextRequest) {
         { stage: "Structure & entry", owner: "Maya", analyzed: afterDataRegime, passed: afterStructureEntry, rejected: structureEntryRejected, note: "Accumulation/base structure, pivot and maximum extension from entry." },
         { stage: "Reward & risk", owner: "Priya + Kai", analyzed: afterStructureEntry, passed: scan.result.setups.length, rejected: rewardRiskRejected, note: "7–15 day target band, stop geometry and minimum 1:3 reward/risk." },
       ];
-      scanNearMisses = scan.result.rejected.slice(0, 8).map(row => ({ ticker: row.ticker, engine: "Tactical swing", gate: row.filter, reason: row.reason, score: null }));
+      scanNearMisses = [...scan.result.nearReady, ...scan.result.research].slice(0, 8).map(row => ({
+        ticker: row.ticker,
+        engine: row.bucket === "NEAR_READY" ? "Tactical swing · near ready" : "Tactical swing · research",
+        gate: row.primaryBlocker,
+        reason: row.trigger,
+        score: row.rankScore,
+      }));
 
       const sourced = scan.result.setups.filter((s) => !referred.has(s.ticker.toUpperCase()));
       proposals = sourced.map((s) => ({

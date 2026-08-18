@@ -16,10 +16,19 @@ type Setup = {
   targetMethod: string; pivot: number; extensionPct: number;
   notes: { momentum: string; volume: string; catalyst: string; thesis: string };
 };
+type ResearchCandidate = {
+  ticker: string; bucket: "NEAR_READY" | "RESEARCH" | "REJECT"; rankScore: number; coveragePct: number;
+  price: number | null; setupType: string; timeframe: string; technicalTarget: number | null;
+  valuationStatus: "PENDING"; primaryBlocker: string; whyNow: string; trigger: string;
+};
 type Result = {
   asOf: string;
   regime: { score: number; stance: string; vix: number | null; spyAboveEma20: boolean | null; qqqAboveEma20: boolean | null; note: string; defensiveOnly: boolean };
   setups: Setup[];
+  nearReady: ResearchCandidate[];
+  research: ResearchCandidate[];
+  bucketCounts: { tradeReady: number; nearReady: number; research: number; rejected: number };
+  engineVersion: string;
   rejected: { ticker: string; filter: string; reason: string }[];
   universeSize: number; evaluated: number;
   weights: { momentum: number; volume: number; structure: number; catalyst: number };
@@ -77,15 +86,15 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
   const r = result?.regime;
 
   return (
-    <section className="card" data-swing-version="1.0" style={{ borderTop: "2px solid var(--accent)" }}>
+    <section className="card" data-swing-version="2.0" style={{ borderTop: "2px solid var(--accent)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div>
-          <span className="tag">{tr(lang, "TACTICAL LENS · SWING TIMING", "มุมมอง Tactical · จังหวะสวิง")}</span>
-          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Momentum-Centric Alpha Score — 7 to 15 day swing", "คะแนน Alpha เน้นโมเมนตัม — สวิง 7 ถึง 15 วัน")}</h3>
+          <span className="tag">{tr(lang, "RESEARCH DISCOVERY · SWING SCAN V2", "ระบบค้นคว้า · สแกนสวิง V2")}</span>
+          <h3 className="sub" style={{ margin: "10px 0 6px" }}>{tr(lang, "Discovery → ranking → setup readiness → execution", "ค้นพบ → จัดอันดับ → ตรวจความพร้อม → ส่งเพื่อพิจารณา")}</h3>
           <p className="muted" style={{ margin: 0, maxWidth: 780, fontSize: 13 }}>
             {tr(lang,
-              "Momentum 40, volume accumulation 25, structure 20, catalyst drift 15. Four filters reject rather than down-weight: a hostile tape, an extended chart, a target outside 10–25%, or reward:risk under 1:3.",
-              "โมเมนตัม 40 · การสะสมปริมาณ 25 · โครงสร้าง 20 · แรงส่งจากปัจจัยพื้นฐาน 15 · ฟิลเตอร์ 4 ข้อตัดทิ้ง ไม่ใช่หักคะแนน: ตลาดไม่เอื้อ กราฟยืดเกินไป เป้าหมายนอกกรอบ 10–25% หรือ R:R ต่ำกว่า 1:3")}
+              "The scanner ranks the full candidate set first, then separates trade-ready setups from near-ready and research inventory. Only trade-ready names can be referred to committee.",
+              "ระบบจัดอันดับหุ้นทั้งชุดก่อน แล้วแยกเป็น พร้อมเสนอ · ใกล้พร้อม · ต้องวิจัยต่อ เฉพาะหุ้นที่ผ่าน Execution Gate เท่านั้นจึงส่งเข้าคณะกรรมการได้")}
           </p>
         </div>
         <span className="tag">{tr(lang, "REJECTIONS KEEP THEIR REASON", "การตัดทิ้งเก็บเหตุผล")}</span>
@@ -116,14 +125,21 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
 
           <p className="muted" style={{ marginTop: 14, fontSize: 12 }}>
             {tr(lang,
-              `${result.universeSize} name(s) scanned, ${result.setups.length} qualified, ${result.rejected.length} rejected with a reason.`,
-              `สแกน ${result.universeSize} ตัว · ผ่าน ${result.setups.length} ตัว · ตัดทิ้ง ${result.rejected.length} ตัวพร้อมเหตุผล`)}
+              `${result.universeSize} names scanned through the v${result.engineVersion} four-stage funnel.`,
+              `สแกน ${result.universeSize} ตัวผ่าน funnel 4 ขั้นของระบบ v${result.engineVersion}`)}
           </p>
+
+          <div className="grid cols-4" style={{ marginTop: 10 }}>
+            <M label={tr(lang, "TRADE READY", "พร้อมเสนอ")} value={String(result.bucketCounts.tradeReady)} />
+            <M label={tr(lang, "NEAR READY", "ใกล้พร้อม")} value={String(result.bucketCounts.nearReady)} />
+            <M label={tr(lang, "RESEARCH", "วิจัยต่อ")} value={String(result.bucketCounts.research)} />
+            <M label={tr(lang, "REJECT", "ตัดออก")} value={String(result.bucketCounts.rejected)} />
+          </div>
 
           {result.setups.length === 0 && (
             <div className="notice" style={{ marginTop: 12 }}>
               {tr(lang, "No setup cleared all four filters. That is an answer, not a failure — the alternative is showing a trade the desk would not take.",
-                "ไม่มีเซ็ตอัพผ่านครบทั้ง 4 ฟิลเตอร์ นี่คือคำตอบ ไม่ใช่ความล้มเหลว ทางเลือกอื่นคือแสดงเทรดที่โต๊ะนี้จะไม่เข้า")}
+                "ยังไม่มีเซ็ตอัพผ่าน Execution Gate ครบ ระบบยังแสดงหุ้นใกล้พร้อมและหุ้นที่ต้องวิจัยต่อด้านล่าง โดยไม่ปลอมให้เป็นคำสั่งซื้อ")}
             </div>
           )}
 
@@ -137,7 +153,6 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
                 </div>
                 <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
                   <M label={tr(lang, "Expected return", "ผลตอบแทนคาดหวัง")} value={`+${s.expectedReturnPct}%`} />
-                  <M label="R:R" value={`1:${s.riskReward}`} />
                   <M label={tr(lang, "Win probability", "ความน่าจะชนะ")} value={s.winProbabilityPct == null ? tr(lang, "not quoted", "ไม่ระบุ") : `${s.winProbabilityPct}%`} />
                 </div>
               </div>
@@ -191,7 +206,7 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
                   </div>
                   {s.unmeasured.length > 0 && (
                     <div className="notice" style={{ marginTop: 10, fontSize: 13 }}>
-                      <b>{tr(lang, "Excluded from the denominator", "ตัดออกจากตัวหาร")}:</b> {s.unmeasured.join(" · ")}. {tr(lang, "Not scored zero.", "ไม่ได้ให้ 0 คะแนน")}
+                      <b>{tr(lang, "Unmeasured — scores zero", "วัดไม่ได้ — ให้ 0 คะแนน")}:</b> {s.unmeasured.join(" · ")}. {tr(lang, "The 100-point denominator is unchanged.", "ตัวหาร 100 คะแนนไม่เปลี่ยน")}
                     </div>
                   )}
                   <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>{s.winProbabilityNote}</p>
@@ -199,6 +214,26 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
               )}
             </article>
           ))}
+
+          {result.nearReady.length > 0 && (
+            <ResearchBucket
+              lang={lang}
+              title={tr(lang, "NEAR READY — one execution blocker", "ใกล้พร้อม — ติด Execution Gate 1 จุด")}
+              subtitle={tr(lang, "Monitor the stated trigger; these are not committee-ready yet.", "ติดตาม trigger ที่ระบุ หุ้นกลุ่มนี้ยังส่งเข้าคณะกรรมการไม่ได้")}
+              rows={result.nearReady}
+              tone="#fbbf24"
+            />
+          )}
+
+          {result.research.length > 0 && (
+            <ResearchBucket
+              lang={lang}
+              title={tr(lang, "RESEARCH QUEUE — momentum exists, underwriting incomplete", "คิววิจัย — มีสัญญาณ แต่หลักฐานยังไม่ครบ")}
+              subtitle={tr(lang, "Investment team owns the next evidence step; valuation remains pending until defensible.", "ทีม Investment ต้องเติมหลักฐานขั้นถัดไป และ Valuation จะเป็น Pending จนกว่าจะประเมินได้อย่างมีเหตุผล")}
+              rows={result.research}
+              tone="#60a5fa"
+            />
+          )}
 
           {result.rejected.length > 0 && (
             <div style={{ marginTop: 16 }}>
@@ -240,4 +275,21 @@ export default function SwingScanPanel({ lang, onRefer }: { lang: AppLang; onRef
 
 function M({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return <div className="metric"><span>{label}</span><strong style={{ fontSize: 17 }}>{value}</strong>{sub && <small className="muted">{sub}</small>}</div>;
+}
+
+function ResearchBucket({ lang, title, subtitle, rows, tone }: { lang: AppLang; title: string; subtitle: string; rows: ResearchCandidate[]; tone: string }) {
+  return <section style={{ marginTop: 18 }}>
+    <h4 className="sub" style={{ margin: 0, color: tone }}>{title}</h4>
+    <p className="muted" style={{ margin: "6px 0 10px", fontSize: 12 }}>{subtitle}</p>
+    <div style={{ display: "grid", gap: 10 }}>
+      {rows.map((row, i) => <article key={row.ticker} className="card" style={{ margin: 0, padding: 13, borderLeft: `3px solid ${tone}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div><span className="tag">#{i + 1} · {row.bucket}</span><h4 style={{ margin: "7px 0 2px" }}>{row.ticker}</h4><small className="muted">{tr(lang, "Research rank", "คะแนนจัดอันดับ")} {row.rankScore}/100 · {tr(lang, "coverage", "ความครอบคลุม")} {row.coveragePct}%</small></div>
+          <div style={{ textAlign: "right" }}><small className="muted">VALUATION</small><strong style={{ display: "block", color: "#fbbf24" }}>{tr(lang, "PENDING", "รอประเมิน")}</strong><small className="muted">{row.timeframe}</small></div>
+        </div>
+        <p style={{ margin: "10px 0 5px", fontSize: 13 }}><b>{tr(lang, "Why now", "เหตุผลที่ค้นพบ")}:</b> {row.whyNow}</p>
+        <p className="muted" style={{ margin: 0, fontSize: 12 }}><b style={{ color: tone }}>{row.primaryBlocker}</b> · {tr(lang, "Trigger needed", "สิ่งที่ต้องเกิดก่อน")}: {row.trigger}</p>
+      </article>)}
+    </div>
+  </section>;
 }

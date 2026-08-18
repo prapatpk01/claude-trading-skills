@@ -6,13 +6,13 @@
 // scan: momentum dominates at 40, volume accumulation 25, structure 20,
 // catalyst drift 15.
 //
-// Two things separate this from a screen.
+// Two things separate execution qualification from discovery ranking.
 //
 //   The four accuracy filters are HARD. A chart that is extended, a setup whose
 //   reward:risk does not reach 1:3, a target outside the 10–25% band — these are
-//   rejected outright and keep their reason. They are not scored down and
-//   presented anyway, because a scanner that ranks a setup it would not take is
-//   a scanner nobody can act on.
+//   rejected as trades and keep their reason. V2 retains them in a separate
+//   research funnel so the desk can monitor the trigger without mislabelling a
+//   near miss as a setup it would take.
 //
 //   Rule #5 holds throughout, in the fund's own stricter form: a component that
 //   cannot be measured scores ZERO and stays in the denominator, and is named.
@@ -123,6 +123,29 @@ export interface SwingScanResult {
   weights: typeof ALPHA_WEIGHTS;
   methodology: string;
   disclosures: string[];
+  /** Ranked research inventory that missed one execution gate. Never trade-ready. */
+  nearReady: SwingResearchCandidate[];
+  /** Strong/interesting tape that still needs a base, catalyst or regime trigger. */
+  research: SwingResearchCandidate[];
+  bucketCounts: { tradeReady: number; nearReady: number; research: number; rejected: number };
+  engineVersion: "2.0";
+}
+
+export type SwingResearchBucket = "NEAR_READY" | "RESEARCH" | "REJECT";
+
+export interface SwingResearchCandidate {
+  ticker: string;
+  bucket: SwingResearchBucket;
+  rankScore: number;
+  coveragePct: number;
+  price: number | null;
+  setupType: BaseType;
+  timeframe: "7–15 days";
+  technicalTarget: number | null;
+  valuationStatus: "PENDING";
+  primaryBlocker: SwingRejection["filter"];
+  whyNow: string;
+  trigger: string;
 }
 
 export interface SwingCandidate {
@@ -359,7 +382,7 @@ function scoreCandidate(c: SwingCandidate, spy: Candle[], regime: SwingRegime): 
   const catalystRaw = c.catalystScore ?? null;
   push("CATALYST DRIFT", "Multi-week fundamental driver", catalystRaw == null ? null : Math.round((catalystRaw / 25) * 15 * 10) / 10, 15,
     catalystRaw == null
-      ? "No catalyst was assessed for this name, so the component is excluded from the denominator rather than scored zero."
+      ? "No catalyst was assessed for this name, so the component scores zero and remains in the 100-point denominator."
       : `${c.catalystNote ?? "Catalyst assessed"} (${catalystRaw}/25 on the catalyst desk's scale).`);
 
   /* ── the published score ── */
@@ -488,6 +511,82 @@ function scoreCandidate(c: SwingCandidate, spy: Candle[], regime: SwingRegime): 
   };
 }
 
+/**
+ * Research ranking is deliberately separate from execution qualification.
+ * A hard-gate miss must not become a trade, but it also must not disappear.
+ * This second pass preserves the candidate, explains the blocker and gives the
+ * Investment team a ranked queue of names to monitor or underwrite next.
+ */
+function rankResearchCandidate(c: SwingCandidate, spy: Candle[], rejection: SwingRejection): SwingResearchCandidate {
+  const closes = c.candles.map((x) => x.close);
+  const price = closes.at(-1) ?? null;
+  if (c.candles.length < 80 || price == null || price <= 0) {
+    return {
+      ticker: c.ticker, bucket: "REJECT", rankScore: 0, coveragePct: 0, price: null,
+      setupType: "None", timeframe: "7–15 days", technicalTarget: null,
+      valuationStatus: "PENDING", primaryBlocker: "DATA",
+      whyNow: "Price history is not sufficient for a defensible momentum or structure read.",
+      trigger: rejection.reason,
+    };
+  }
+
+  const rs30 = relativeStrength(c.candles, spy, 30);
+  const rsiNow = rsi(closes, 14);
+  const sep = macdSeparation(closes, price);
+  const expanding = macdExpanding(closes);
+  const avg5 = avgVolume(c.candles, 5);
+  const avg20 = avgVolume(c.candles, 20);
+  const surge = avg5 != null && avg20 != null && avg20 > 0 ? avg5 / avg20 : null;
+  const ud = upDownVolumeRatio(c.candles, 10);
+  const base = readBase(c.candles);
+  const e10 = ema(closes, 10);
+  const e20 = ema(closes, 20);
+  const e50 = ema(closes, 50);
+  const trendAligned = e10 != null && e20 != null && e50 != null && price > e10 && e10 > e20 && e20 > e50;
+
+  let score = 0;
+  if (rs30 != null) score += Math.max(0, Math.min(18, (rs30 - 1) * 180));
+  if (rsiNow != null) score += rsiNow >= RSI_FLOOR && rsiNow <= RSI_CEILING ? 12 : rsiNow > RSI_CEILING ? 4 : 0;
+  if (sep != null) score += (sep > 0 ? Math.min(6, sep * 3) : 0) + (expanding ? 4 : 0);
+  if (surge != null) score += surge >= VOLUME_SURGE ? 13 : Math.max(0, (surge - 1) * 26);
+  if (ud != null) score += ud >= UD_RATIO_FLOOR ? 12 : Math.max(0, (ud - 1) * 24);
+  score += base.type === "High-Tight Flag" ? 12 : base.type === "VCP" ? 11 : base.type === "Flat Base" ? 9 : 0;
+  score += trendAligned ? 8 : price > (e20 ?? price) ? 3 : 0;
+  if (c.catalystScore != null) score += Math.max(0, Math.min(15, (c.catalystScore / 25) * 15));
+  const rankScore = Math.max(0, Math.min(100, Math.round(score)));
+  const coveragePct = c.catalystScore == null ? 85 : 100;
+
+  const executionMiss = rejection.filter === "ENTRY RANGE" || rejection.filter === "SWING TARGET" || rejection.filter === "RISK:REWARD";
+  const bucket: SwingResearchBucket = rejection.filter === "DATA"
+    ? "REJECT"
+    : executionMiss && rankScore >= 40
+      ? "NEAR_READY"
+      : rankScore >= 32
+        ? "RESEARCH"
+        : "REJECT";
+  const signal = [
+    rs30 == null ? null : `RS ${r2(rs30)} vs SPY`,
+    rsiNow == null ? null : `RSI ${r1(rsiNow)}`,
+    surge == null ? null : `5D volume ${r2(surge)}x 20D`,
+    trendAligned ? "10/20/50 EMA trend aligned" : null,
+  ].filter(Boolean).join(" · ");
+
+  return {
+    ticker: c.ticker,
+    bucket,
+    rankScore,
+    coveragePct,
+    price: r2(price),
+    setupType: base.type,
+    timeframe: "7–15 days",
+    technicalTarget: null,
+    valuationStatus: "PENDING",
+    primaryBlocker: rejection.filter,
+    whyNow: signal || "Candidate remains in the discovery queue, but momentum confirmation is incomplete.",
+    trigger: rejection.reason,
+  };
+}
+
 /* ────────────────────────────── the scan ──────────────────────────── */
 
 export function runSwingScan(
@@ -498,16 +597,24 @@ export function runSwingScan(
   const regime = readSwingRegime(benchmarks.spy, benchmarks.qqq, benchmarks.vix);
   const setups: SwingSetup[] = [];
   const rejected: SwingRejection[] = [];
+  const researchInventory: SwingResearchCandidate[] = [];
 
   for (const candidate of candidates) {
     const { setup, rejection } = scoreCandidate(candidate, benchmarks.spy, regime);
     if (setup) setups.push(setup);
-    if (rejection) rejected.push(rejection);
+    if (rejection) {
+      rejected.push(rejection);
+      researchInventory.push(rankResearchCandidate(candidate, benchmarks.spy, rejection));
+    }
   }
 
   // Rank on the published score, then on reward:risk — two setups scoring the
   // same are separated by the one that pays more for the same risk.
   setups.sort((a, b) => b.momentumScore - a.momentumScore || b.riskReward - a.riskReward);
+  researchInventory.sort((a, b) => b.rankScore - a.rankScore || a.ticker.localeCompare(b.ticker));
+  const nearReadyAll = researchInventory.filter((row) => row.bucket === "NEAR_READY");
+  const researchAll = researchInventory.filter((row) => row.bucket === "RESEARCH");
+  const rejectedAll = researchInventory.filter((row) => row.bucket === "REJECT");
 
   return {
     asOf: new Date().toISOString(),
@@ -523,9 +630,18 @@ export function runSwingScan(
       "Rule #5: an unmeasurable component scores zero and stays in the denominator, and is named. Coverage is published beside the score so a low reading caused by missing evidence is distinguishable from one caused by weakness.",
     disclosures: [
       "Every figure is measured from daily candles. Nothing is estimated to fill a gap.",
-      "Rejections keep their reason. A setup that fails a filter is not shown with a lower score — it is not a setup this desk would take.",
+      "Rejections keep their reason. A setup that fails an execution filter cannot reach committee, but V2 retains qualified near misses as research inventory with the required trigger.",
       "Win probability is not quoted. The fund has no closed-trade sample per score band, and an estimate printed next to measured numbers reads as measured.",
       "Targets are structural: the 1.618 Fibonacci extension of the base, or its measured move. They are not price forecasts.",
     ],
+    nearReady: nearReadyAll.slice(0, Math.max(6, topN * 2)),
+    research: researchAll.slice(0, Math.max(6, topN * 2)),
+    bucketCounts: {
+      tradeReady: setups.length,
+      nearReady: nearReadyAll.length,
+      research: researchAll.length,
+      rejected: rejectedAll.length,
+    },
+    engineVersion: "2.0",
   };
 }
