@@ -506,7 +506,9 @@ export async function GET(req: NextRequest) {
     let scanUniverseSize = 0;
     let scanRejected = 0;
     const scanWarnings: string[] = [];
-    let researchOS: any = { universeSize: 0, universeSource: null, rotationWindows: [], analyzed: 0, rejected: 0, warnings: [], models: [], methodology: null };
+    let scanStages: Array<{ stage: string; owner: string; analyzed: number; passed: number; rejected: number; note: string }> = [];
+    let scanNearMisses: Array<{ ticker: string; engine: string; gate: string; reason: string; score: number | null }> = [];
+    let researchOS: any = { universeSize: 0, universeSource: null, rotationWindows: [], analyzed: 0, rejected: 0, warnings: [], models: [], engineReports: [], methodology: null };
     try {
       const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
       const referred = new Set(ideas.map((i) => i.ticker));
@@ -530,6 +532,18 @@ export async function GET(req: NextRequest) {
       scanUniverseSize = scan.result.universeSize;
       scanRejected = scan.result.rejected.length;
       scanWarnings.push(...scan.warnings);
+      const rejectionCount = (...filters: string[]) => scan.result.rejected.filter(row => filters.includes(row.filter)).length;
+      const dataRegimeRejected = rejectionCount("DATA", "MARKET REGIME");
+      const structureEntryRejected = rejectionCount("STRUCTURE", "ENTRY RANGE");
+      const rewardRiskRejected = rejectionCount("SWING TARGET", "RISK:REWARD");
+      const afterDataRegime = Math.max(0, scan.result.universeSize - dataRegimeRejected);
+      const afterStructureEntry = Math.max(0, afterDataRegime - structureEntryRejected);
+      scanStages = [
+        { stage: "Tape & data", owner: "Daniel + Maya", analyzed: scan.result.universeSize, passed: afterDataRegime, rejected: dataRegimeRejected, note: "Live benchmark regime, price-history sufficiency and relative-strength eligibility." },
+        { stage: "Structure & entry", owner: "Maya", analyzed: afterDataRegime, passed: afterStructureEntry, rejected: structureEntryRejected, note: "Accumulation/base structure, pivot and maximum extension from entry." },
+        { stage: "Reward & risk", owner: "Priya + Kai", analyzed: afterStructureEntry, passed: scan.result.setups.length, rejected: rewardRiskRejected, note: "7–15 day target band, stop geometry and minimum 1:3 reward/risk." },
+      ];
+      scanNearMisses = scan.result.rejected.slice(0, 8).map(row => ({ ticker: row.ticker, engine: "Tactical swing", gate: row.filter, reason: row.reason, score: null }));
 
       const sourced = scan.result.setups.filter((s) => !referred.has(s.ticker.toUpperCase()));
       proposals = sourced.map((s) => ({
@@ -594,8 +608,27 @@ export async function GET(req: NextRequest) {
         rejected: phase1.rejected,
         warnings: phase1.warnings,
         models: phase1.models,
+        engineReports: phase1.engineReports,
         methodology: phase1.methodology,
       };
+      const phase1NearMisses = phase1.researchQueue.slice(0, 8).map(row => {
+        const valuationReason = row.valuationFailures?.[0] ?? (row.researchStatus === "INCOMPLETE" ? "Defensible Fair Value is incomplete; no valuation gap is published." : null);
+        const lifecycleReason = !row.preferredEntryStage ? row.lifecycleReason : null;
+        const returnReason = row.expectedReturnPct != null && row.expectedReturnPct < 8 ? `Valuation room ${row.expectedReturnPct.toFixed(1)}% is below the 8% new-capital gate.` : null;
+        return {
+          ticker: row.ticker,
+          engine: row.researchEngineLabel,
+          gate: valuationReason ? "VALUATION" : lifecycleReason ? "MOMENTUM LIFECYCLE" : returnReason ? "VALUATION GAP" : "RESEARCH GATE",
+          reason: valuationReason ?? lifecycleReason ?? returnReason ?? row.failedGates?.[0] ?? "Candidate remains in research; it has not cleared every hard gate.",
+          score: row.score,
+        };
+      });
+      const seenNearMisses = new Set<string>();
+      scanNearMisses = [...phase1NearMisses, ...scanNearMisses].filter(row => {
+        if (seenNearMisses.has(row.ticker)) return false;
+        seenNearMisses.add(row.ticker);
+        return true;
+      }).slice(0, 8);
       const existingIdeas = new Set(ideas.map(idea => idea.ticker));
       const phase1Proposals = phase1.proposals.filter(proposal => !existingIdeas.has(proposal.ticker));
       const phase1Ideas: IdeaEvidence[] = await mapLimit(phase1Proposals, 4, async proposal => {
@@ -666,10 +699,14 @@ export async function GET(req: NextRequest) {
         // Active Momentum Research V23 plus the tactical swing timing lens.
         proposals,
         scan: {
+          status: proposals.length ? "QUALIFIED" : researchOS.analyzed > 0 || scanUniverseSize > 0 ? "NO_BUY" : "DATA_BLOCKED",
+          asOf: new Date().toISOString(),
           regime: scanRegime,
           universeSize: scanUniverseSize,
           rejected: scanRejected,
-          warnings: scanWarnings,
+          warnings: Array.from(new Set([...scanWarnings, ...(researchOS.warnings ?? [])])),
+          stages: scanStages,
+          nearMisses: scanNearMisses,
           researchOS,
           note: proposals.length
             ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Active Momentum Research analyzed ${researchOS.analyzed}/${researchOS.universeSize} names across ${researchOS.models.length || 0} independent engines, then required an eligible lifecycle stage and defensible Fair Value; the tactical swing lens scanned ${scanUniverseSize}.`

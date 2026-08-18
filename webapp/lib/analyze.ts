@@ -8,16 +8,52 @@ import { macroCalendar } from "./news/calendar";
 import { fetchDividends, inferFrequency, projectNextExDate } from "./dividends";
 import { earningsQuality, sentinelCommittee, type SentinelDecision } from "./team/intelligence";
 
-export interface ThesisScenario { label:"Bull"|"Base"|"Bear"; probability:number; targetPrice:number; narrative:string; }
+export interface ThesisScenario { label:"Bull"|"Base"|"Bear"; probability:number; targetPrice:number|null; narrative:string; }
 export interface ForecastYear { year:string; revenue:number|null; operatingIncome:number|null; netIncome:number|null; operatingCashFlow:number|null; capex:number|null; freeCashFlow:number|null; revenueGrowthPct:number|null; operatingMarginPct:number|null; }
 export interface InstitutionalModel { forecast:ForecastYear[]; assumptions:{revenueGrowthPct:number;terminalRevenueGrowthPct:number;operatingMarginPct:number;fcfConversionPct:number}; sensitivity:{waccPct:number;terminalGrowthPct:number;fairValue:number|null}[]; }
 import { scoreConviction, buildThesisTracker, type ConvictionResult, type ThesisTracker } from "./team/conviction";
 
-export interface AnalysisResult { ticker:string;asOf:string;data:MarketData;technicals:TechnicalSignals;momentum:MomentumScore;swing:SwingSetup|null;dcf:DcfResult|null;assumptions:DcfAssumptions;signal:"BUY"|"HOLD"|"SELL";signalReasons:string[];thesis:ThesisScenario[];valuationNote:string;multiples:MultipleScenarios|null;catalysts:{horizon:string;event:string;impact:string}[];risks:string[];targetPrice:number;upsidePct:number;moves:PriceMoves|null;research:ResearchPack|null;expectedReturnPct:number|null;committee:SentinelDecision;quality:ReturnType<typeof earningsQuality>;institutionalModel:InstitutionalModel;conviction:ConvictionResult;tracker:ThesisTracker; }
+export interface AnalysisResult { ticker:string;asOf:string;data:MarketData;technicals:TechnicalSignals;momentum:MomentumScore;swing:SwingSetup|null;dcf:DcfResult|null;assumptions:DcfAssumptions;signal:"BUY"|"HOLD"|"SELL";signalReasons:string[];thesis:ThesisScenario[];valuationNote:string;valuationReady:boolean;valuationSource:"MULTIPLES"|"DCF"|"THOMAS_GOVERNED"|"PENDING";multiples:MultipleScenarios|null;catalysts:{horizon:string;event:string;impact:string}[];risks:string[];targetPrice:number|null;upsidePct:number|null;moves:PriceMoves|null;research:ResearchPack|null;expectedReturnPct:number|null;committee:SentinelDecision;quality:ReturnType<typeof earningsQuality>;institutionalModel:InstitutionalModel;conviction:ConvictionResult;tracker:ThesisTracker; }
 const round2=(x:number)=>Math.round(x*100)/100;
 const n=(v:any):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
 
-function buildThesis(data:MarketData,dcf:DcfResult|null,mult:MultipleScenarios|null,momentumScore:number){const price=data.quote?.price??0,name=data.overview?.name??data.ticker,sector=data.overview?.sector??"its sector";let bear:number,base:number,bull:number,note:string;if(mult){({bear,base,bull}=mult);note=`${mult.method}. Forward EPS $${mult.forwardEps}; P/E band ${mult.peLow}x / ${mult.peMid}x / ${mult.peHigh}x.`;if(dcf)note+=` DCF cross-check $${dcf.fairValue} at ${(dcf.wacc*100).toFixed(1)}% WACC.`}else if(dcf){base=dcf.fairValue;bull=round2(base*1.25);bear=round2(base*.75);note=`DCF-based. WACC ${(dcf.wacc*100).toFixed(1)}%, terminal growth ${(dcf.terminalGrowth*100).toFixed(1)}%.`}else{base=round2(price);bull=round2(price*1.2);bear=round2(price*.8);note="Insufficient fundamental data — generic ±20% spot band."}const p=scenarioProbabilities(momentumScore,price,base),ret=(x:number)=>price?` (${x>=price?"+":""}${Math.round((x-price)/price*100)}% vs spot)`:"";return{valuationNote:note,scenarios:[{label:"Bull" as const,probability:p.bull,targetPrice:bull,narrative:`${name} sustains above-trend growth in ${sector}, margins expand and the market rewards execution. Target ~$${bull}${ret(bull)}.`},{label:"Base" as const,probability:p.base,targetPrice:base,narrative:`Growth normalizes while competitive position and normalized valuation hold. Target ~$${base}${ret(base)}.`},{label:"Bear" as const,probability:p.bear,targetPrice:bear,narrative:`Demand softens, margins compress and valuation de-rates. Target ~$${bear}${ret(bear)}.`}]};}
+function buildThesis(data:MarketData,dcf:DcfResult|null,mult:MultipleScenarios|null,momentumScore:number){
+  const price=data.quote?.price??0,name=data.overview?.name??data.ticker,sector=data.overview?.sector??"its sector";
+  let bear:number|null=null,base:number|null=null,bull:number|null=null,note:string;
+  let valuationSource:"MULTIPLES"|"DCF"|"PENDING"="PENDING";
+  if(mult){
+    ({bear,base,bull}=mult);
+    valuationSource="MULTIPLES";
+    note=`${mult.method}. Forward EPS $${mult.forwardEps}; P/E band ${mult.peLow}x / ${mult.peMid}x / ${mult.peHigh}x.`;
+    if(dcf)note+=` DCF cross-check $${dcf.fairValue} at ${(dcf.wacc*100).toFixed(1)}% WACC.`;
+  }else if(dcf){
+    base=dcf.fairValue;bull=round2(base*1.25);bear=round2(base*.75);
+    valuationSource="DCF";
+    note=`DCF-based. WACC ${(dcf.wacc*100).toFixed(1)}%, terminal growth ${(dcf.terminalGrowth*100).toFixed(1)}%.`;
+  }else{
+    note="VALUATION PENDING — no defensible DCF or forward-multiple evidence. Spot price is not used as Fair Value.";
+  }
+  const valuationReady=base!=null&&bull!=null&&bear!=null;
+  const p=scenarioProbabilities(momentumScore,price,base??price);
+  const ret=(x:number)=>{
+    if(!price)return"";
+    const gap=(x-price)/price*100;
+    return Math.abs(gap)<.5?" (approximately fully valued)":` (${gap>=0?"+":""}${gap.toFixed(1)}% vs spot)`;
+  };
+  if(!valuationReady){
+    const pending="Fair Value pending — fundamental evidence is insufficient for a governed target. Momentum is not a substitute for valuation.";
+    return{valuationNote:note,valuationReady:false,valuationSource,scenarios:[
+      {label:"Bull" as const,probability:p.bull,targetPrice:null,narrative:`Bull case withheld. ${pending}`},
+      {label:"Base" as const,probability:p.base,targetPrice:null,narrative:pending},
+      {label:"Bear" as const,probability:p.bear,targetPrice:null,narrative:`Bear case withheld. ${pending}`},
+    ]};
+  }
+  return{valuationNote:note,valuationReady:true,valuationSource,scenarios:[
+    {label:"Bull" as const,probability:p.bull,targetPrice:bull!,narrative:`${name} sustains above-trend growth in ${sector}, margins expand and the market rewards execution. Target ~$${bull}${ret(bull!)}.`},
+    {label:"Base" as const,probability:p.base,targetPrice:base!,narrative:`Growth normalizes while competitive position and normalized valuation hold. Target ~$${base}${ret(base!)}.`},
+    {label:"Bear" as const,probability:p.bear,targetPrice:bear!,narrative:`Demand softens, margins compress and valuation de-rates. Target ~$${bear}${ret(bear!)}.`},
+  ]};
+}
 function buildCatalysts(data:MarketData){return[{horizon:"0–3 months",event:data.earnings[0]?.reportedDate?"Next quarterly earnings":"Upcoming earnings report",impact:"Earnings, guidance and estimate revisions can reset the near-term path."},{horizon:"3–6 months",event:"Product / demand cycle updates",impact:"Product ramps, orders and customer capex test the growth thesis."},{horizon:"6–12 months",event:"Sector rotation & macro",impact:`Rates and ${data.overview?.sector??"sector"} capex can reprice the multiple.`}]}
 async function projectedExDates(ticker:string){try{const{events}=await fetchDividends(ticker,3);if(!events.length)return[];const{perYear}=inferFrequency(events),first=projectNextExDate(events,perYear);if(!first||!perYear)return[];const amount=events.at(-1)!.amount,step=Math.max(1,Math.round(12/perYear)),out:any[]=[],d=new Date(first+"T00:00:00Z");for(let i=0;i<4;i++){out.push({date:d.toISOString().slice(0,10),amount});d.setUTCMonth(d.getUTCMonth()+step)}return out}catch{return[]}}
 function buildRisks(data:MarketData){const out:string[]=[];const ov=data.overview,b=data.financials.balance[0],inc=data.financials.income,cf=data.financials.cashflow;if(ov?.peRatio&&ov.peRatio>35)out.push(`Valuation risk — P/E ${ov.peRatio.toFixed(1)}x leaves less room for execution misses.`);if(ov?.beta&&ov.beta>1.3)out.push(`Market sensitivity — beta ${ov.beta.toFixed(2)} amplifies index drawdowns.`);if(b){const debt=(n(b.longTermDebt)??0)+(n(b.shortTermDebt)??0),eq=n(b.totalShareholderEquity),cash=n(b.cashAndEquivalents)??0;if(eq&&debt/eq>1.5)out.push(`Leverage risk — debt/equity ${(debt/eq).toFixed(2)}x.`);if(debt>0&&cash>debt)out.push(`Balance-sheet buffer — net cash $${((cash-debt)/1e9).toFixed(1)}B.`)}const c0=cf[0],i0=inc[0],ocf=n(c0?.operatingCashflow),ni=n(i0?.netIncome);if(ocf!=null&&ni!=null&&ni>0&&ocf<ni*.8)out.push(`Cash conversion risk — OCF is only ${Math.round(ocf/ni*100)}% of net income.`);return[...out,"Competitive/technology risk — share loss or pricing pressure can hit gross margin before revenue.","Macro/rate risk — discount-rate shocks can compress valuation despite execution.","Execution/regulatory risk — guidance, integration, export controls and antitrust can alter the thesis."]}
@@ -25,4 +61,85 @@ function hasCatalystDrift(data:MarketData){return(data.earnings[0]?.surprisePerc
 function cagr(vals:number[]){if(vals.length<2||vals[0]<=0||vals.at(-1)!<=0)return null;return(Math.pow(vals[0]/vals.at(-1)!,1/(vals.length-1))-1)*100}
 function buildInstitutionalModel(data:MarketData,dcf:DcfResult|null):InstitutionalModel{const inc=data.financials.income,cf=data.financials.cashflow,latest=inc[0],latestCf=cf[0];const revs=inc.slice(0,5).map(x=>n(x.totalRevenue)).filter((x):x is number=>x!=null&&x>0);const hist=cagr(revs),growth=Math.max(-5,Math.min(30,hist??8)),termGrowth=Math.max(2,Math.min(8,growth*.35)),baseRev=n(latest?.totalRevenue),opMargin=baseRev&&n(latest?.operatingIncome)!=null?n(latest.operatingIncome)!/baseRev:0.2,niMargin=baseRev&&n(latest?.netIncome)!=null?n(latest.netIncome)!/baseRev:opMargin*.7,ocf=n(latestCf?.operatingCashflow),cap=Math.abs(n(latestCf?.capitalExpenditures)??0),fcf=ocf==null?null:ocf-cap,fcfConv=baseRev&&fcf!=null?fcf/baseRev:Math.max(.05,opMargin*.65);let revenue=baseRev;const forecast:ForecastYear[]=[];for(let i=1;i<=5;i++){const g=(growth+(termGrowth-growth)*(i-1)/4)/100;revenue=revenue==null?null:revenue*(1+g);const oi=revenue==null?null:revenue*opMargin,ni=revenue==null?null:revenue*niMargin,fcfV=revenue==null?null:revenue*fcfConv,ocfV=fcfV==null?null:fcfV+Math.abs(revenue!*(baseRev&&cap?cap/baseRev:.03)),capV=revenue==null?null:-Math.abs(revenue*(baseRev&&cap?cap/baseRev:.03));forecast.push({year:`FY+${i}`,revenue,operatingIncome:oi,netIncome:ni,operatingCashFlow:ocfV,capex:capV,freeCashFlow:fcfV,revenueGrowthPct:g*100,operatingMarginPct:opMargin*100})}const w=dcf?dcf.wacc*100:10,t=dcf?dcf.terminalGrowth*100:3,sensitivity=[] as InstitutionalModel["sensitivity"];for(const dw of[-2,0,2])for(const dt of[-1,0,1])sensitivity.push({waccPct:round2(Math.max(5,w+dw)),terminalGrowthPct:round2(Math.max(0.5,t+dt)),fairValue:dcf?round2(dcf.fairValue*Math.max(.45,Math.min(1.8,(w/(Math.max(5,w+dw)))*((Math.max(.5,t+dt)+4)/(t+4))))):null});return{forecast,assumptions:{revenueGrowthPct:round2(growth),terminalRevenueGrowthPct:round2(termGrowth),operatingMarginPct:round2(opMargin*100),fcfConversionPct:round2(fcfConv*100)},sensitivity}}
 
-export async function buildAnalysis(ticker:string):Promise<AnalysisResult>{const data=await getMarketData(ticker),technicals=computeTechnicals(data),catalystFlag=hasCatalystDrift(data),momentum=computeMomentumScore(technicals,catalystFlag),assumptions=defaultAssumptions(data),dcf=computeDcf(data,assumptions),catalystNote=catalystFlag?`Post-earnings drift: last quarter beat by ${data.earnings[0]?.surprisePercent?.toFixed(1)}%.`:"No fresh earnings surprise flagged.",swing=buildSwingSetup(data,technicals,momentum,catalystNote),multiples=multipleScenarios(data.candles,data.annualEps,data.overview?.eps??null,data.overview?.peRatio??null),{scenarios:thesis,valuationNote}=buildThesis(data,dcf,multiples,momentum.total),price=data.quote?.price??0,targetPrice=thesis.reduce((a,s)=>a+s.targetPrice*s.probability/100,0),blendedUpside=price?((targetPrice-price)/price)*100:null,{signal,reasons}=signalFrom(technicals,blendedUpside),[moves,exDates]=await Promise.all([getPriceMoves(ticker).catch(()=>null),projectedExDates(ticker)]),macro=macroCalendar(new Date(),400).map(e=>({label:e.label,date:e.date,window:e.window,daysAway:e.daysAway})),research=await buildResearch({data,waccPct:dcf?round2(dcf.wacc*100):null,projectedExDates:exDates,macro}).catch(()=>null),expectedReturnPct=price>0?round2(thesis.reduce((a,s)=>a+((s.targetPrice-price)/price)*100*(s.probability/100),0)):null,quality=earningsQuality(data.financials),risks=buildRisks(data),institutionalModel=buildInstitutionalModel(data,dcf),dataQuality=Math.max(20,100-(data.warnings?.length??0)*12),riskScore=Math.max(20,90-risks.length*7),catalystScore=Math.min(100,45+(research?.timeline?.length??0)*5+(catalystFlag?15:0)),committee=sentinelCommittee({dataQuality,qualityScore:quality.score,momentumScore:momentum.total,valuationUpsidePct:blendedUpside,catalystScore,riskScore,portfolioFitScore:70,thesis:thesis[1]?.narrative,evidenceCount:[data.quote,data.financials.income.length,data.financials.cashflow.length,research?.peers?.length,dcf,multiples].filter(Boolean).length,hardBlocks:dataQuality<45?["insufficient data quality"]:[]}),ov=data.overview,ttm=data.ttm,inc0=data.financials.income[0],inc1=data.financials.income[1],bal0=data.financials.balance[0],cf0=data.financials.cashflow[0],revTtm=ttm?.revenue??n(inc0?.totalRevenue),revPrior=n(inc1?.totalRevenue),revGrowth=revTtm!=null&&revPrior!=null&&revPrior>0?round2((revTtm/revPrior-1)*100):null,rev3=data.financials.income.slice(0,4).map(x=>n(x.totalRevenue)).filter((x):x is number=>x!=null&&x>0),revCagr=rev3.length>=3?round2(cagr(rev3)??0):null,epsNow=data.annualEps?.[0]?.eps??null,epsPrior=data.annualEps?.[1]?.eps??null,epsGrowth=epsNow!=null&&epsPrior!=null&&epsPrior>0?round2((epsNow/epsPrior-1)*100):null,opNow=ttm?.operatingIncome??n(inc0?.operatingIncome),opPriorRev=revPrior,opPrior=n(inc1?.operatingIncome),opMarginNow=revTtm&&opNow!=null?round2(opNow/revTtm*100):null,opMarginPrior=opPriorRev&&opPrior!=null?opPrior/opPriorRev*100:null,marginTrendBps=opMarginNow!=null&&opMarginPrior!=null?round2((opMarginNow-opMarginPrior)*100):null,ocf0=n(cf0?.operatingCashflow),capex0=Math.abs(n(cf0?.capitalExpenditures)??0),fcf0=ocf0==null?null:ocf0-capex0,mcap=n(ov?.marketCap),fcfYield=fcf0!=null&&mcap&&mcap>0?round2(fcf0/mcap*100):null,grossDebt=(n(bal0?.longTermDebt)??0)+(n(bal0?.shortTermDebt)??0),cashBs=n(bal0?.cashAndEquivalents)??0,ebitdaProxy=opNow,netDebtEbitda=ebitdaProxy&&ebitdaProxy>0?round2((grossDebt-cashBs)/ebitdaProxy):null,moatSources=research?.moat?.sources??[],moatStrong=moatSources.filter(x=>x.strength==="Wide"||x.strength==="Narrow").length,moatRated=n(research?.moat?.ratedCount),conviction=scoreConviction({roicPct:n(research?.returns?.roicPct),roePct:n(ov?.roe),grossMarginPct:ttm&&ttm.revenue&&ttm.grossProfit!=null?round2(ttm.grossProfit/ttm.revenue*100):null,operatingMarginPct:opMarginNow,moatScore:moatRated?moatStrong:null,moatMax:moatRated,earningsQualityScore:n((quality as any)?.score),revenueGrowthTtmPct:revGrowth,revenueCagr3yPct:revCagr,epsGrowthTtmPct:epsGrowth,marginTrendBps,upsideToFairValuePct:blendedUpside,peVsOwnHistoryPct:null,fcfYieldPct:fcfYield,beta:n(ov?.beta),maxDrawdownPct:null,realizedVolPct:null,sessionsToExit:null,hardBlockCount:null}),tracker=buildThesisTracker({ticker:data.ticker,price:price||null,fairValue:targetPrice||null,conviction,bullNarrative:thesis.find(t=>t.label==="Bull")?.narrative??null,bearNarrative:thesis.find(t=>t.label==="Bear")?.narrative??null,risks,revenueGrowthTtmPct:revGrowth,operatingMarginPct:opMarginNow,roicPct:n(research?.returns?.roicPct),netDebtToEbitda:netDebtEbitda,nextEarningsDate:research?.timeline?.find(t=>t.kind==="Earnings")?.window??null});return{ticker:data.ticker,asOf:new Date().toISOString(),data,technicals,momentum,swing,dcf,assumptions,signal,signalReasons:reasons,thesis,valuationNote,multiples,catalysts:buildCatalysts(data),risks,targetPrice:round2(targetPrice),upsidePct:price?round2((targetPrice-price)/price*100):0,moves,research,expectedReturnPct,committee,quality,institutionalModel,conviction,tracker}}
+export async function buildAnalysis(ticker:string):Promise<AnalysisResult>{
+  const data=await getMarketData(ticker);
+  const technicals=computeTechnicals(data);
+  const catalystFlag=hasCatalystDrift(data);
+  const momentum=computeMomentumScore(technicals,catalystFlag);
+  const assumptions=defaultAssumptions(data);
+  const dcf=computeDcf(data,assumptions);
+  const catalystNote=catalystFlag?`Post-earnings drift: last quarter beat by ${data.earnings[0]?.surprisePercent?.toFixed(1)}%.`:"No fresh earnings surprise flagged.";
+  const swing=buildSwingSetup(data,technicals,momentum,catalystNote);
+  const multiples=multipleScenarios(data.candles,data.annualEps,data.overview?.eps??null,data.overview?.peRatio??null);
+  const thesisPack=buildThesis(data,dcf,multiples,momentum.total);
+  const {scenarios:thesis,valuationNote,valuationReady,valuationSource}=thesisPack;
+  const price=data.quote?.price??0;
+  const targetPrice=valuationReady
+    ?round2(thesis.reduce((total,scenario)=>total+(scenario.targetPrice??0)*scenario.probability/100,0))
+    :null;
+  const blendedUpside=price>0&&targetPrice!=null?((targetPrice-price)/price)*100:null;
+  const {signal,reasons}=signalFrom(technicals,blendedUpside);
+  const [moves,exDates]=await Promise.all([getPriceMoves(ticker).catch(()=>null),projectedExDates(ticker)]);
+  const macro=macroCalendar(new Date(),400).map(e=>({label:e.label,date:e.date,window:e.window,daysAway:e.daysAway}));
+  const research=await buildResearch({data,waccPct:dcf?round2(dcf.wacc*100):null,projectedExDates:exDates,macro}).catch(()=>null);
+  const expectedReturnPct=blendedUpside==null?null:round2(blendedUpside);
+  const quality=earningsQuality(data.financials);
+  const risks=buildRisks(data);
+  const institutionalModel=buildInstitutionalModel(data,dcf);
+  // Score observed evidence, not the absence of warnings. A quiet provider
+  // response with empty statements is not high-quality institutional data.
+  const dataQuality=Math.min(100,
+    (data.quote?.price?15:0)+
+    (data.candles.length>=120?15:data.candles.length>=80?8:0)+
+    (data.financials.income.length>=2?20:data.financials.income.length?10:0)+
+    (data.financials.cashflow.length?15:0)+
+    (data.financials.balance.length?15:0)+
+    (data.quarters.length>=2?10:data.quarters.length?5:0)+
+    (data.overview?10:0)
+  );
+  const riskScore=Math.max(20,90-risks.length*7);
+  const catalystScore=Math.min(100,45+(research?.timeline?.length??0)*5+(catalystFlag?15:0));
+  const committee=sentinelCommittee({
+    dataQuality,qualityScore:quality.score,momentumScore:momentum.total,valuationUpsidePct:blendedUpside,
+    catalystScore,riskScore,portfolioFitScore:70,thesis:thesis[1]?.narrative,
+    evidenceCount:[data.quote,data.financials.income.length,data.financials.cashflow.length,research?.peers?.length,dcf,multiples].filter(Boolean).length,
+    hardBlocks:dataQuality<45?["insufficient data quality"]:[],
+  });
+  const ov=data.overview,ttm=data.ttm,inc0=data.financials.income[0],inc1=data.financials.income[1],bal0=data.financials.balance[0],cf0=data.financials.cashflow[0];
+  const revTtm=ttm?.revenue??n(inc0?.totalRevenue),revPrior=n(inc1?.totalRevenue);
+  const revGrowth=revTtm!=null&&revPrior!=null&&revPrior>0?round2((revTtm/revPrior-1)*100):null;
+  const rev3=data.financials.income.slice(0,4).map(x=>n(x.totalRevenue)).filter((x):x is number=>x!=null&&x>0);
+  const revCagr=rev3.length>=3?round2(cagr(rev3)??0):null;
+  const epsNow=data.annualEps?.[0]?.eps??null,epsPrior=data.annualEps?.[1]?.eps??null;
+  const epsGrowth=epsNow!=null&&epsPrior!=null&&epsPrior>0?round2((epsNow/epsPrior-1)*100):null;
+  const opNow=ttm?.operatingIncome??n(inc0?.operatingIncome),opPriorRev=revPrior,opPrior=n(inc1?.operatingIncome);
+  const opMarginNow=revTtm&&opNow!=null?round2(opNow/revTtm*100):null;
+  const opMarginPrior=opPriorRev&&opPrior!=null?opPrior/opPriorRev*100:null;
+  const marginTrendBps=opMarginNow!=null&&opMarginPrior!=null?round2((opMarginNow-opMarginPrior)*100):null;
+  const ocf0=n(cf0?.operatingCashflow),capex0=Math.abs(n(cf0?.capitalExpenditures)??0),fcf0=ocf0==null?null:ocf0-capex0;
+  const mcap=n(ov?.marketCap),fcfYield=fcf0!=null&&mcap&&mcap>0?round2(fcf0/mcap*100):null;
+  const grossDebt=(n(bal0?.longTermDebt)??0)+(n(bal0?.shortTermDebt)??0),cashBs=n(bal0?.cashAndEquivalents)??0,ebitdaProxy=opNow;
+  const netDebtEbitda=ebitdaProxy&&ebitdaProxy>0?round2((grossDebt-cashBs)/ebitdaProxy):null;
+  const moatSources=research?.moat?.sources??[],moatStrong=moatSources.filter(x=>x.strength==="Wide"||x.strength==="Narrow").length,moatRated=n(research?.moat?.ratedCount);
+  const conviction=scoreConviction({
+    roicPct:n(research?.returns?.roicPct),roePct:n(ov?.roe),
+    grossMarginPct:ttm&&ttm.revenue&&ttm.grossProfit!=null?round2(ttm.grossProfit/ttm.revenue*100):null,
+    operatingMarginPct:opMarginNow,moatScore:moatRated?moatStrong:null,moatMax:moatRated,
+    earningsQualityScore:n((quality as any)?.score),revenueGrowthTtmPct:revGrowth,revenueCagr3yPct:revCagr,
+    epsGrowthTtmPct:epsGrowth,marginTrendBps,upsideToFairValuePct:blendedUpside,peVsOwnHistoryPct:null,
+    fcfYieldPct:fcfYield,beta:n(ov?.beta),maxDrawdownPct:null,realizedVolPct:null,sessionsToExit:null,hardBlockCount:null,
+  });
+  const tracker=buildThesisTracker({
+    ticker:data.ticker,price:price||null,fairValue:targetPrice,conviction,
+    bullNarrative:thesis.find(t=>t.label==="Bull")?.narrative??null,
+    bearNarrative:thesis.find(t=>t.label==="Bear")?.narrative??null,
+    risks,revenueGrowthTtmPct:revGrowth,operatingMarginPct:opMarginNow,roicPct:n(research?.returns?.roicPct),
+    netDebtToEbitda:netDebtEbitda,nextEarningsDate:research?.timeline?.find(t=>t.kind==="Earnings")?.window??null,
+  });
+  return{
+    ticker:data.ticker,asOf:new Date().toISOString(),data,technicals,momentum,swing,dcf,assumptions,
+    signal,signalReasons:reasons,thesis,valuationNote,valuationReady,valuationSource,multiples,
+    catalysts:buildCatalysts(data),risks,targetPrice,upsidePct:blendedUpside==null?null:round2(blendedUpside),
+    moves,research,expectedReturnPct,committee,quality,institutionalModel,conviction,tracker,
+  };
+}

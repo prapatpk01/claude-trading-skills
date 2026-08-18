@@ -37,7 +37,9 @@ function audit(file) {
   }
 
   hit(file, src, /generic\s*[±+\-]?20%\s*spot\s*band/gi,
-    "generic spot-band valuation is forbidden", "warning");
+    "generic spot-band valuation is forbidden");
+  hit(file, src, /base\s*=\s*round2\(price\)/gi,
+    "spot price is assigned as Base Fair Value");
   hit(file, src, /dataQuality\s*=\s*Math\.max\([^\n]*warnings/gi,
     "data-quality score is derived only from warning count", "warning");
   hit(file, src, /quote[^\n]*\?\?[^\n]*avg_cost/gi,

@@ -72,7 +72,24 @@ type Meeting = {
   regime: { score: number; regime: string; icon: string; cashMinPct: number; deployRule: string; note: string } | null;
   stages?: { n: number; name: string; owner: string; ready: boolean; detail: string }[];
   proposals?: Proposal[];
-  scan?: { universeSize: number; rejected: number; warnings: string[]; note: string; researchOS?: { universeSize: number; analyzed: number; rejected: number; models: string[]; methodology: string | null } };
+  scan?: {
+    status: "QUALIFIED" | "NO_BUY" | "DATA_BLOCKED";
+    asOf: string;
+    universeSize: number;
+    rejected: number;
+    warnings: string[];
+    note: string;
+    stages: { stage: string; owner: string; analyzed: number; passed: number; rejected: number; note: string }[];
+    nearMisses: { ticker: string; engine: string; gate: string; reason: string; score: number | null }[];
+    researchOS?: {
+      universeSize: number;
+      analyzed: number;
+      rejected: number;
+      models: string[];
+      engineReports?: { id: string; label: string; purpose: string; universe: number; analyzed: number; qualifiedByEngine: number; selectedForActiveLifecycle: number; rotationMix: string[] }[];
+      methodology: string | null;
+    };
+  };
   motions: Motion[];
   capitalPlan: {
     sourcesUsd: number;
@@ -267,6 +284,8 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
   if (loading && !meeting) return <section className="card"><span className="spinner" /> {tr(lang, "Running the fund meeting and scanning for new ideas…", "กำลังประชุมกองทุนและสแกนหาไอเดียใหม่…")}</section>;
   if (error || !meeting) return <section className="card"><span className="tag">CIO V20</span><h2>{tr(lang, "No decision package was produced", "ยังไม่สามารถสร้างชุดมติได้")}</h2><div className="err">⚠ {error}</div><button className="btn ghost" type="button" onClick={() => setRefreshKey((value) => value + 1)} style={{ marginTop: 12 }}>↻ {tr(lang, "Try again", "ลองใหม่")}</button></section>;
 
+  const scanStatus = meeting.scan?.status ?? (proposals.length ? "QUALIFIED" : meeting.scan && ((meeting.scan.researchOS?.analyzed ?? 0) > 0 || meeting.scan.universeSize > 0) ? "NO_BUY" : "DATA_BLOCKED");
+  const scanAsOf = meeting.scan?.asOf ?? meeting.asOf;
   const sourceCoverageReady = Boolean(meeting.sources && meeting.sources.positions > 0 && meeting.sources.priced === meeting.sources.positions);
   const investmentReady = Boolean(meeting.regime && meeting.scan?.researchOS);
   const riskBlocked = motions.some((motion) => motion.veto || motion.decisionGates?.some((gate) => gate.stage === "RISK" && gate.status === "VETO"));
@@ -361,8 +380,62 @@ export default function CIOCommandCenterV20({ lang, onNavigate }: { lang: AppLan
     {view === "opportunities" && <>
       <section className="card">
         <SectionTitle eyebrow="02 · INVESTMENT ANALYSIS" title={tr(lang, "Every research model sources new investments", "ทุก Research Engine ต้องค้นหาการลงทุนใหม่นอก Holdings และ Watchlist")} />
-        <p className="notice">{meeting.scan?.note ?? tr(lang, "The research scan did not return a summary.", "ไม่มีผลสรุปจากฝ่ายวิจัย")}</p>
-        {!proposals.length ? <div className={styles.empty}><strong>{tr(lang, "No candidate cleared every hard filter", "ไม่มีหุ้นผ่านตัวกรองบังคับทั้งหมด")}</strong><p>{tr(lang, "This is a valid NO BUY result—not permission to force the weakest candidate into the portfolio.", "นี่คือผลลัพธ์ NO BUY ที่ถูกต้อง ไม่ใช่เหตุผลให้บังคับเลือกหุ้นที่อ่อนที่สุดเข้าพอร์ต")}</p></div> : <div className={styles.proposalGrid}>{proposals.map((proposal, index) => <article className={`metric ${styles.proposal}`} key={proposal.ticker}>
+        {meeting.scan ? <>
+          <div className={`${styles.researchStatus} ${scanStatus === "QUALIFIED" ? styles.researchQualified : scanStatus === "NO_BUY" ? styles.researchNoBuy : styles.researchBlocked}`}>
+            <div>
+              <small>{tr(lang, "RESEARCH DECISION", "ผลการคัดกรองการลงทุน")}</small>
+              <strong>{scanStatus === "QUALIFIED"
+                ? tr(lang, `${proposals.length} QUALIFIED CANDIDATE(S)`, `ผ่านเกณฑ์ ${proposals.length} ตัว`)
+                : scanStatus === "NO_BUY"
+                  ? tr(lang, "NO BUY — HARD GATES COMPLETED", "NO BUY — ตรวจครบแต่ยังไม่มีหุ้นผ่าน")
+                  : tr(lang, "DATA BLOCKED — NO DECISION", "ข้อมูลไม่พร้อม — ยังตัดสินใจไม่ได้")}</strong>
+            </div>
+            <p>{scanStatus === "QUALIFIED"
+              ? tr(lang, "Candidates cleared lifecycle, valuation and execution gates. They are research proposals—not automatic orders.", "หุ้นผ่าน Momentum Lifecycle, Valuation และ Execution Gate แล้ว แต่ยังเป็นข้อเสนอวิจัย ไม่ใช่คำสั่งซื้ออัตโนมัติ")
+              : scanStatus === "NO_BUY"
+                ? tr(lang, "The models completed their work and preserved every rejection reason. Capital is not forced into the least-bad idea.", "โมเดลทำงานครบและเก็บเหตุผลที่ไม่ผ่านทุกตัว จึงไม่บังคับนำเงินไปลงทุนในหุ้นที่ดีที่สุดเพียงเพราะต้องเลือก")
+                : tr(lang, "The scan did not obtain enough usable observations. This is a data failure, not a negative investment conclusion.", "การสแกนได้ข้อมูลที่ใช้ตัดสินใจไม่เพียงพอ สถานะนี้คือปัญหาข้อมูล ไม่ใช่ข้อสรุปว่าหุ้นไม่น่าลงทุน")}</p>
+            <span>{tr(lang, "As of", "ข้อมูล ณ")} {new Date(scanAsOf).toLocaleString(lang === "th" ? "th-TH" : "en-US")}</span>
+          </div>
+
+          <div className={styles.researchCoverage}>
+            <Mini label={tr(lang, "Listed-US universe", "จักรวาลหุ้น US")} value={(meeting.scan.researchOS?.universeSize ?? 0).toLocaleString()} />
+            <Mini label={tr(lang, "Deep analyzed", "วิเคราะห์เชิงลึก")} value={(meeting.scan.researchOS?.analyzed ?? 0).toLocaleString()} />
+            <Mini label={tr(lang, "Tactical scanned", "สแกนจังหวะซื้อ")} value={meeting.scan.universeSize.toLocaleString()} />
+            <Mini label={tr(lang, "Qualified", "ผ่านทุกเกณฑ์")} value={proposals.length.toLocaleString()} />
+          </div>
+
+          {!!meeting.scan.warnings?.length && <details className={styles.engineAudit}>
+            <summary>{tr(lang, `Data warnings (${meeting.scan.warnings.length})`, `คำเตือนด้านข้อมูล (${meeting.scan.warnings.length})`)}</summary>
+            <div>{meeting.scan.warnings.slice(0, 8).map((warning, index) => <article key={`${index}-${warning}`}><span><strong>{tr(lang, "Evidence gap", "ข้อมูลที่ยังขาด")}</strong><small>{warning}</small></span></article>)}</div>
+          </details>}
+
+          {!!meeting.scan.stages?.length && <div className={styles.scanFunnel}>{meeting.scan.stages.map((stage, index) => <article key={stage.stage}>
+            <div><span>{index + 1}</span><strong>{stage.stage}</strong><small>{stage.owner}</small></div>
+            <p><b>{stage.passed}</b> {tr(lang, "passed", "ผ่าน")} · <em>{stage.rejected}</em> {tr(lang, "stopped", "ไม่ผ่าน")}</p>
+            <small>{stage.note}</small>
+          </article>)}</div>}
+
+          {!!meeting.scan.researchOS?.engineReports?.length && <details className={styles.engineAudit}>
+            <summary>{tr(lang, `Independent research engines (${meeting.scan.researchOS.engineReports.length})`, `เครื่องมือค้นหาอิสระ (${meeting.scan.researchOS.engineReports.length})`)}</summary>
+            <div>{meeting.scan.researchOS.engineReports.map(engine => <article key={engine.id}>
+              <span><strong>{engine.label}</strong><small>{engine.purpose}</small></span>
+              <b>{engine.analyzed} → {engine.selectedForActiveLifecycle}</b>
+            </article>)}</div>
+          </details>}
+        </> : <p className="notice">{tr(lang, "The research scan did not return a summary.", "ไม่มีผลสรุปจากฝ่ายวิจัย")}</p>}
+
+        {!proposals.length ? <>
+          {!!meeting.scan?.nearMisses?.length && <div className={styles.nearMisses}>
+            <h3>{tr(lang, "Top near-misses and exact blockers", "หุ้นที่ใกล้ผ่านและเหตุผลที่ถูกบล็อก")}</h3>
+            {meeting.scan.nearMisses.map(row => <article key={`${row.ticker}-${row.engine}`}>
+              <div><strong>{row.ticker}</strong>{row.score != null && <span>{row.score}/100</span>}</div>
+              <p><b>{row.gate}</b> · {row.reason}</p>
+              <small>{row.engine}</small>
+            </article>)}
+          </div>}
+          {!meeting.scan?.nearMisses?.length && <div className={styles.empty}><strong>{tr(lang, "No candidate could be ranked", "ยังไม่มีหุ้นที่จัดอันดับได้")}</strong><p>{tr(lang, "Review the data warnings and rerun the meeting when market evidence is available.", "ตรวจคำเตือนด้านข้อมูลและเริ่มประชุมใหม่เมื่อข้อมูลตลาดพร้อม")}</p></div>}
+        </> : <div className={styles.proposalGrid}>{proposals.map((proposal, index) => <article className={`metric ${styles.proposal}`} key={proposal.ticker}>
           <div className={styles.proposalHead}><span className="tag">#{index + 1} · {proposal.setupType}</span><strong>{proposal.ticker}</strong><span>{proposal.score}/100</span></div>
           <div className="grid cols-3"><Mini label="Entry" value={`$${proposal.entryLow.toFixed(2)}–$${proposal.entryHigh.toFixed(2)}`} /><Mini label="Stop" value={`$${proposal.stop.toFixed(2)}`} /><Mini label="Target" value={`$${proposal.target.toFixed(2)}`} /></div>
           <p>{proposal.thesis}</p><p className="muted">{proposal.catalyst}</p>

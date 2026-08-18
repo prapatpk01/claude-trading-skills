@@ -38,6 +38,11 @@ requireTokens("app/components/CIOCommandCenterV20.tsx", [
   "deskReports",
   "Could not measure",
   "proposals",
+  "DATA BLOCKED — NO DECISION",
+  "NO BUY — HARD GATES COMPLETED",
+  "nearMisses",
+  "engineReports",
+  "Top near-misses and exact blockers",
   "BUY",
   "SELL",
   "HUMAN APPROVAL REQUIRED",
@@ -128,6 +133,22 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "Active Momentum Research V23",
   "proposals",
   "lifecycle and Fair Value gates",
+  '"DATA_BLOCKED"',
+  '"NO_BUY"',
+  "scanNearMisses",
+  "scanStages",
+]);
+
+requireTokens("lib/analyze.ts", [
+  "VALUATION PENDING",
+  "Spot price is not used as Fair Value",
+  "Momentum is not a substitute for valuation",
+  "valuationReady",
+  "targetPrice:number|null",
+]);
+forbidTokens("lib/analyze.ts", [
+  ["generic ±20% spot band", "spot must never be manufactured into a valuation range"],
+  ["base=round2(price)", "spot must never be assigned as Base Fair Value"],
 ]);
 
 requireTokens("lib/research/deskScan.ts", ["export async function runDeskScan", "runSwingScan", "NEVER_SOURCE", "exclude"]);
