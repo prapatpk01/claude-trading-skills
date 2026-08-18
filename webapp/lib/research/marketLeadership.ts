@@ -1,4 +1,5 @@
 import { dailyCandles } from "@/lib/marketData";
+import { loadThreeIndexUniverse } from "@/lib/research/marketUniverse";
 import type { Candle } from "@/lib/types";
 
 export type SectorLeadershipStatus = "LEADING" | "IMPROVING" | "NEUTRAL" | "FADING" | "LAGGING";
@@ -128,6 +129,10 @@ export function sectorLeadershipFor(sector: unknown, map: MarketLeadershipMap | 
 
 export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
   const warnings: string[] = [];
+  const approvedUniversePromise = loadThreeIndexUniverse().catch(error => {
+    warnings.push(`Approved index universe unavailable for sector-focus filtering: ${error instanceof Error ? error.message : "request failed"}. Focus ticker list is suppressed rather than widened.`);
+    return null;
+  });
   const symbols = ["SPY", ...SECTORS.map(row => row.etf)];
   const entries = await Promise.all(symbols.map(async symbol => {
     const candles = await dailyCandles(symbol, 150).catch(error => {
@@ -136,6 +141,8 @@ export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
     });
     return [symbol, candles] as const;
   }));
+  const approvedUniverse = await approvedUniversePromise;
+  const approvedTickers = new Set(approvedUniverse?.masterTickers ?? []);
   const histories = new Map(entries);
   const spy = histories.get("SPY") ?? [];
   const sectors = SECTORS.map(definition => {
@@ -163,10 +170,13 @@ export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
   const focus = sectors.filter(row => ["LEADING", "IMPROVING"].includes(row.status)).slice(0, 4);
   const avoid = sectors.filter(row => ["FADING", "LAGGING"].includes(row.status)).slice(-3).reverse();
   const epoch3d = Math.floor(Date.now() / (3 * 86400000));
-  const focusTickers = focus.flatMap((row, index) => {
+  const rawFocusTickers = focus.flatMap((row, index) => {
     const definition = SECTORS.find(item => item.key === row.sectorKey);
     return definition ? rotate(definition.tickers, epoch3d + index * 3).slice(0, 6) : [];
   });
+  // CIO rule: sector leadership can change research priority, but it cannot add
+  // a security outside S&P 500, Nasdaq-100 or Russell 2000 to the search queue.
+  const focusTickers = rawFocusTickers.filter(ticker => approvedTickers.has(ticker));
   const researchStance = sentimentLabel === "RISK ON"
     ? "Press leading sectors, prioritize accumulation and early-markup names, and upsize only while valuation room and breadth confirm."
     : sentimentLabel === "SELECTIVE"
@@ -186,8 +196,9 @@ export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
       `SPY return: ${spy1m == null ? "n/a" : `${round1(spy1m)}%`} 1M; ${spy3m == null ? "n/a" : `${round1(spy3m)}%`} 3M.`,
       `${positiveBreadth}/${sectors.length} sectors beat SPY over 1M while above their 50-day average; ${trendBreadth}/${sectors.length} are above 20-day trend.`,
       `Research focus: ${focus.map(row => `${row.sector} ${row.score}/100`).join(" · ") || "no sector clears leadership threshold"}.`,
+      `Automatic ticker focus is restricted to S&P 500 + Nasdaq-100 + Russell 2000 constituents; ${focusTickers.length}/${rawFocusTickers.length} sector-priority names passed that universe gate.`,
     ],
     warnings,
-    methodology: "Price-based tape sentiment and sector leadership are measured from SPY plus the 11 GICS sector ETFs using 1-week acceleration, 1/3-month relative strength and 20/50-day trend. This determines research priority; it is not a standalone buy signal.",
+    methodology: "Price-based tape sentiment and sector leadership are measured from SPY plus the 11 GICS sector ETFs using 1-week acceleration, 1/3-month relative strength and 20/50-day trend. This determines research priority inside the approved S&P 500 + Nasdaq-100 + Russell 2000 universe; it is not a standalone buy signal.",
   };
 }
