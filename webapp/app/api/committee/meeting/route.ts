@@ -11,7 +11,6 @@ import { getSecFundamentals } from "@/lib/sec";
 import { computeBeta } from "@/lib/derive";
 import { pctReturn } from "@/lib/indicators";
 import { sma } from "@/lib/indicators";
-import { assessRegime } from "@/lib/team/governance";
 import { scoreMomentumV3 } from "@/lib/team/scoring";
 import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
 import { governThomasSnapshot, loadThomasValuationLedger, resolveThomasValuation, saveThomasValuationLedger, type ThomasValuationSnapshot } from "@/lib/thomasValuation";
@@ -240,13 +239,13 @@ export async function GET(req: NextRequest) {
     ]);
     const thomasLedgerPromise = loadThomasValuationLedger(holdings.map(row => String(row.ticker).toUpperCase()));
 
-    // ── benchmark first: the regime, beta and momentum all lean on it ──
+    // ── benchmark first: beta and momentum lean on it ──
     const benchmark = await dailyCandles("SPY", 320).catch(() => [] as Candle[]);
     if (!benchmark.length) unavailable.push("SPY benchmark history (Yahoo chart endpoint)");
 
-    // ── the ledger's own numbers, not a second computation of them ──
-    // Holdings, Active Fund and CIO all delegate to the same authoritative
-    // builder. It verifies positions after pricing and reads cash last.
+    // ── one authoritative portfolio + deployment snapshot ──
+    // Holdings, Active Fund and CIO all delegate to this builder. It verifies
+    // positions after pricing, reads cash last and owns the CIO Deployment Regime.
     let buffer: any = null;
     try {
       buffer = await buildAuthoritativeCashBufferSnapshot();
@@ -257,7 +256,7 @@ export async function GET(req: NextRequest) {
         if (refreshed.note && !unavailable.includes(refreshed.note)) unavailable.push(refreshed.note);
       }
     }
-    catch (e: any) { unavailable.push(`cash buffer (${e?.message ?? "unavailable"})`); }
+    catch (e: any) { unavailable.push(`cash buffer / CIO deployment regime (${e?.message ?? "unavailable"})`); }
 
     // ── per-name evidence, gathered once and shared across the desks ──
     const thomasLedger = await thomasLedgerPromise;
@@ -295,16 +294,15 @@ export async function GET(req: NextRequest) {
     const dividendAvailable = finite(buffer?.dividendAvailable) ?? 0;
     const combinedBuffer = finite(buffer?.liquidityBuffer) ?? (cashBalance + dividendAvailable + reserveFallback);
     const nav = finite(buffer?.totalNav) ?? securitiesValue;
-    const targetCashPct = finite(buffer?.targetPct);
+    const regime = buffer?.regime ?? null;
+    if (!regime) unavailable.push("authoritative CIO Deployment Regime");
+    const targetCashPct = finite(buffer?.targetPct) ?? finite(regime?.cashMinPct);
     const cashBufferPct = finite(buffer?.bufferPct) ?? (nav > 0 ? (combinedBuffer / nav) * 100 : null);
     const targetCashValue = nav > 0 && targetCashPct != null ? nav * targetCashPct / 100 : null;
     const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? (targetCashValue == null ? 0 : combinedBuffer - targetCashValue));
 
-    const regime = benchmark.length ? assessRegime(benchmark) : null;
-
-    // Stage 1 of the meeting is the tape AND how crowded it is. The regime says
-    // where the market is; sentiment says how many people are already there.
-    // They are separate readings and neither substitutes for the other.
+    // Fear/greed and news remain contextual evidence. They never override the
+    // authoritative Deployment Regime, Cash Floor or sizing budget.
     const [sentiment, newsPulse] = await Promise.all([
       readFearGreed({ spy: benchmark, vix: await dailyCandles("^VIX", 90).catch(() => [] as Candle[]) }).catch((e: any) => {
         unavailable.push(`sentiment index (${e?.message ?? "unavailable"})`);
@@ -699,10 +697,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         ...meeting,
-        // Stage 1 evidence, kept beside the regime rather than folded into it.
+        // Context evidence remains beside the authoritative deployment regime.
         sentiment,
         newsPulse,
-        // Active Momentum Research V23 plus the tactical swing timing lens.
         proposals,
         scan: {
           status: proposals.length ? "QUALIFIED" : researchOS.analyzed > 0 || scanUniverseSize > 0 ? "NO_BUY" : "DATA_BLOCKED",
@@ -721,7 +718,7 @@ export async function GET(req: NextRequest) {
         // The five stages of the fund's meeting, and whether each has its
         // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
-          { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.regime} ${regime.score}/100; macro, fundamentals, valuation, catalysts, momentum and quant evidence assembled.` : "Investment Team cannot present without a market-regime read." },
+          { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.label ?? regime.regime} ${regime.score}/100 · Macro ${regime.macroScore ?? "—"} · Tape ${regime.tapeScore ?? "—"} · Vol/Risk ${regime.volatilityScore ?? "—"}; risk budget ${regime.riskBudgetPct ?? "—"}% and Cash Floor ${regime.cashMinPct}% are authoritative.` : "Investment Team cannot present without the authoritative CIO Deployment Regime." },
           { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Independent discovery engines source ideas; the Active Momentum lifecycle and Fair Value gates determine whether capital may be allocated. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : `Active Momentum Research and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
           { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
           { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
@@ -729,7 +726,7 @@ export async function GET(req: NextRequest) {
         ],
         fund: FUND,
         standingDuty: STANDING_DUTY,
-        cashBuffer: { valueUsd: finite(buffer?.liquidityBuffer) ?? combinedBuffer, pct: cashBufferPct, targetPct: targetCashPct, reserveHoldings: buffer?.reserveHoldings ?? [] },
+        cashBuffer: { valueUsd: finite(buffer?.liquidityBuffer) ?? combinedBuffer, pct: cashBufferPct, targetPct: targetCashPct, reserveHoldings: buffer?.reserveHoldings ?? [], regime: buffer?.regime ?? null },
         portfolioSnapshot: buffer ? {
           id: buffer.snapshotId,
           asOf: buffer.asOf,

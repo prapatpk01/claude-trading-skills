@@ -1,8 +1,7 @@
 import { getSupabase, getSupabaseAdmin } from "@/lib/supabase";
 import { getLightQuote } from "@/lib/marketData";
-import { yahooCandles } from "@/lib/yahoo";
 import { loadOpenHoldings } from "@/lib/portfolioSource";
-import { regimeBandFor } from "@/lib/team/constitution";
+import { buildMacroOutlook } from "@/lib/macroOutlook";
 
 type Holding = { ticker: string; shares: number; avg_cost: number };
 type ReserveRule = { label: string; haircut: number; tier: "cash" | "treasury" | "credit" };
@@ -71,51 +70,20 @@ function cashRevision(rows: Array<{ entry_type?: string | null; amount?: unknown
     .join("|"));
 }
 
-const sma = (values: number[], length: number): number | null => {
-  if (values.length < length) return null;
-  const slice = values.slice(-length);
-  return slice.reduce((sum, value) => sum + value, 0) / slice.length;
-};
-
+/**
+ * Cash Buffer never invents its own market regime. The same authoritative CIO
+ * Deployment Regime that controls sizing also owns the minimum reserve floor.
+ */
 async function marketRegime() {
-  const [spy, qqq, vix] = await Promise.all([
-    yahooCandles("SPY", 90).catch(() => []),
-    yahooCandles("QQQ", 90).catch(() => []),
-    yahooCandles("^VIX", 45).catch(() => []),
-  ]);
-  const scoreIndex = (rows: typeof spy) => {
-    const closes = rows.map((row) => row.close).filter((value) => Number.isFinite(value) && value > 0);
-    const last = closes.at(-1) ?? null;
-    const ma20 = sma(closes, 20);
-    const ma50 = sma(closes, 50);
-    if (last == null || ma20 == null || ma50 == null) return { score: 50, last, ma20, ma50, complete: false };
-    let score = 50;
-    score += last > ma20 ? 15 : -15;
-    score += ma20 > ma50 ? 15 : -15;
-    score += last > ma50 ? 10 : -10;
-    return { score, last, ma20, ma50, complete: true };
-  };
-  const spyState = scoreIndex(spy);
-  const qqqState = scoreIndex(qqq);
-  const vixLast = vix.at(-1)?.close ?? null;
-  let score = Math.round((spyState.score + qqqState.score) / 2);
-  if (vixLast != null) score += vixLast < 18 ? 5 : vixLast > 25 ? -10 : 0;
-  score = Math.max(0, Math.min(100, score));
-
-  const band = regimeBandFor(score);
-  const classification = band.name.toUpperCase().replaceAll("-", "_");
+  const macro = await buildMacroOutlook();
+  const deployment = macro.deployment;
   return {
-    score,
-    classification,
-    targetPct: band.cashMinPct,
-    cashFloorPct: band.cashMinPct,
-    deployFraction: band.deployFraction,
-    deployRule: band.deployRule,
+    ...deployment,
+    classification: deployment.regime.toUpperCase().replaceAll("-", "_"),
     overfundedMarginPct: OVERFUNDED_MARGIN_PCT,
-    spy: spyState,
-    qqq: qqqState,
-    vix: vixLast,
-    complete: spyState.complete && qqqState.complete,
+    complete: true,
+    macro: { score: macro.score, regime: macro.regime, regimeTh: macro.regimeTh },
+    tape: { score: macro.marketTape.score, label: macro.marketTape.label, labelTh: macro.marketTape.labelTh },
   };
 }
 
@@ -207,7 +175,7 @@ export async function buildCashBufferSnapshot() {
   const action = posture === "UNDERFUNDED" ? "RAISE_BUFFER" : posture === "OVERFUNDED" ? "DEPLOY_EXCESS" : posture === "ON_TARGET" ? "MAINTAIN" : "VERIFY_PRICES";
 
   return {
-    version: "v9.0",
+    version: "v10.0",
     verified,
     valuationMode: verified ? "LIVE_MARKET" : provisionalPrices.length ? "PROVISIONAL_COST_BASIS_FALLBACK" : "INCOMPLETE",
     missingPrices,
@@ -249,14 +217,14 @@ export async function buildCashBufferSnapshot() {
     action,
     reserveHoldings,
     policy: {
-      sourceOfTruth: "lib/team/constitution.ts::REGIME_BANDS",
+      sourceOfTruth: "lib/deploymentRegime.ts + lib/team/constitution.ts::REGIME_BANDS",
       cashOnlyPolicy: false,
       combinedBufferPolicy: true,
       reserveTickers: Object.keys(RESERVE_RULES),
       dividendWithholdingRate: 0.15,
       overfundedMarginPct: OVERFUNDED_MARGIN_PCT,
       provisionalPricingRule: "Live market price first. If unavailable, broker cost basis may be used only as a clearly flagged provisional NAV mark; it never becomes a fair-value target.",
-      principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. The regime cash percentage is a hard minimum floor from the fund constitution; only the overfunded classification uses an additional margin above that floor.",
+      principle: "Cash Buffer equals investment USD cash plus available net dividend cash plus full market value of approved reserve instruments. Its hard minimum comes only from the CIO Deployment Regime (45% Macro + 35% Market Tape + 20% volatility/risk) mapped through the fund constitution; only the overfunded classification adds a margin above that floor.",
     },
   };
 }

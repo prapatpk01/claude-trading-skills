@@ -1,5 +1,7 @@
 import { dailyCandles } from "./marketData";
 import type { Candle } from "./types";
+import { buildDeploymentRegime, type DeploymentRegime } from "./deploymentRegime";
+import { buildMarketLeadershipMap } from "./research/marketLeadership";
 
 export interface MacroHeadline { title: string; date: string; source: string }
 export interface MacroScenario { name: string; nameTh: string; probability: number; thesis: string; thesisTh: string }
@@ -10,8 +12,12 @@ export interface MacroOutlook {
   regimeTh: string;
   vision: string;
   visionTh: string;
+  /** Authoritative capital budget from the blended CIO Deployment Regime. */
   riskBudgetPct: number;
+  /** Authoritative minimum Cash Buffer from the blended CIO Deployment Regime. */
   cashFloorPct: number;
+  deployment: DeploymentRegime;
+  marketTape: { score: number; label: string; labelTh: string; asOf: string | null };
   indicators: Record<string, number | null>;
   scenarios: MacroScenario[];
   headlines: MacroHeadline[];
@@ -77,12 +83,18 @@ async function fedHeadlines(): Promise<MacroHeadline[]> {
 export async function buildMacroOutlook(): Promise<MacroOutlook> {
   const warnings: string[] = [];
   const symbols = ["SPY", "QQQ", "IWM", "HYG", "TLT", "GLD", "UUP"];
+  const leadershipPromise = buildMarketLeadershipMap().catch((e: any) => {
+    warnings.push(`Market tape: ${e?.message ?? "failed"}`);
+    return null;
+  });
   const entries = await Promise.all(symbols.map(async s => [s, await dailyCandles(s, 180).catch(e => { warnings.push(`${s}: ${e?.message ?? "failed"}`); return [] as Candle[]; })] as const));
   const m = new Map(entries);
   const spy = m.get("SPY") ?? [], qqq = m.get("QQQ") ?? [], iwm = m.get("IWM") ?? [], hyg = m.get("HYG") ?? [], tlt = m.get("TLT") ?? [], gld = m.get("GLD") ?? [], uup = m.get("UUP") ?? [];
 
   let econ = { cpiYoY: null as number|null, unemployment: null as number|null, payrollChangeK: null as number|null };
   let headlines: MacroHeadline[] = [];
+  const leadership = await leadershipPromise;
+  if (leadership?.warnings?.length) warnings.push(...leadership.warnings.map(warning => `Market tape: ${warning}`));
   try { econ = await blsSeries(); } catch (e:any) { warnings.push(`BLS: ${e?.message ?? "failed"}`); }
   try { headlines = await fedHeadlines(); } catch (e:any) { warnings.push(`Fed news: ${e?.message ?? "failed"}`); }
 
@@ -100,10 +112,13 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
   if (econ.payrollChangeK != null) { if (econ.payrollChangeK > 100) score += 4; else if (econ.payrollChangeK < 0) score -= 8; }
   score = Math.round(clamp(score, 0, 100));
 
+  // Macro remains a 3–6 month economic/asset-allocation read. It no longer owns
+  // sizing or the Cash Floor. Those controls belong exclusively to deployment.
   const regime = score >= 72 ? "Risk-On / Expansion" : score >= 55 ? "Constructive / Selective" : score >= 38 ? "Late-cycle / Defensive" : "Risk-Off / Capital Preservation";
   const regimeTh = score >= 72 ? "Risk-On / เศรษฐกิจและตลาดขยายตัว" : score >= 55 ? "เชิงบวกแต่ต้องคัดเลือก" : score >= 38 ? "ปลายวัฏจักร / เน้นป้องกัน" : "Risk-Off / รักษาเงินทุน";
-  const riskBudgetPct = score >= 72 ? 100 : score >= 55 ? 80 : score >= 38 ? 55 : 30;
-  const cashFloorPct = score >= 72 ? 5 : score >= 55 ? 10 : score >= 38 ? 20 : 35;
+  const deployment = buildDeploymentRegime({ macroScore: score, tapeScore: leadership?.sentimentScore ?? 50, spy });
+  const riskBudgetPct = deployment.riskBudgetPct;
+  const cashFloorPct = deployment.cashFloorPct;
 
   const growthLead = (qqq3m ?? 0) - (spy3m ?? 0);
   const breadth = (iwm3m ?? 0) - (spy3m ?? 0);
@@ -136,5 +151,27 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
   const allocationTilt = score >= 72 ? ["Overweight quality growth and profitable momentum", "Add cyclical exposure only with breadth confirmation", "Keep a minimum cash reserve for pullbacks"] : score >= 55 ? ["Balance growth with durable income", "Prefer idiosyncratic catalysts over broad beta", "Use staggered entries and valuation caps"] : ["Overweight quality, income and defense", "Underweight fragile high-beta and weak balance sheets", "Raise cash and require stronger replacement alpha"];
   const allocationTiltTh = score >= 72 ? ["เพิ่มน้ำหนัก Quality Growth และ Momentum ที่มีกำไร", "เพิ่มหุ้นวัฏจักรเมื่อ Market Breadth ยืนยัน", "รักษาเงินสดขั้นต่ำเพื่อรอซื้อช่วงย่อ"] : score >= 55 ? ["สมดุล Growth กับรายได้ปันผลที่ยั่งยืน", "เน้น Catalyst เฉพาะบริษัทมากกว่าซื้อ Beta ทั้งตลาด", "ทยอยเข้าซื้อและตั้งเพดาน Valuation"] : ["เพิ่มน้ำหนัก Quality, Income และ Defensive", "ลดหุ้น High Beta ที่เปราะบางและงบดุลอ่อน", "เพิ่มเงินสดและใช้เกณฑ์ Replacement Alpha ที่สูงขึ้น"];
 
-  return { asOf:new Date().toISOString(), score, regime, regimeTh, vision, visionTh, riskBudgetPct, cashFloorPct, indicators:{ spy1m, spy3m, qqq3m, iwm3m, hyg3m, tlt3m, gld3m, usd3m, cpiYoY:econ.cpiYoY, unemployment:econ.unemployment, payrollChangeK:econ.payrollChangeK, spy:last(spy), breadth, growthLead, credit, inflation, compositeTrend:avg([spy1m,spy3m,qqq3m,iwm3m,hyg3m].filter((x):x is number=>x!=null)) }, scenarios, headlines, allocationTilt, allocationTiltTh, warnings };
+  return {
+    asOf:new Date().toISOString(),
+    score,
+    regime,
+    regimeTh,
+    vision,
+    visionTh,
+    riskBudgetPct,
+    cashFloorPct,
+    deployment,
+    marketTape: {
+      score: leadership?.sentimentScore ?? 50,
+      label: leadership?.sentimentLabel ?? "SELECTIVE",
+      labelTh: leadership?.sentimentLabelTh ?? "เลือกกลุ่ม/เลือกหุ้น",
+      asOf: leadership?.asOf ?? null,
+    },
+    indicators:{ spy1m, spy3m, qqq3m, iwm3m, hyg3m, tlt3m, gld3m, usd3m, cpiYoY:econ.cpiYoY, unemployment:econ.unemployment, payrollChangeK:econ.payrollChangeK, spy:last(spy), breadth, growthLead, credit, inflation, compositeTrend:avg([spy1m,spy3m,qqq3m,iwm3m,hyg3m].filter((x):x is number=>x!=null)) },
+    scenarios,
+    headlines,
+    allocationTilt,
+    allocationTiltTh,
+    warnings,
+  };
 }
