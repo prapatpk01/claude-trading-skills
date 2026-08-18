@@ -12,6 +12,7 @@ import { assessCatalyst } from "@/lib/team/catalyst";
 import { projectEarningsDates } from "@/lib/research";
 import { universeForSector } from "@/lib/sectorUniverse";
 import { buildRotatingMarketUniverse, loadThreeIndexUniverse } from "@/lib/research/marketUniverse";
+import { avgVolume, ema, relativeStrength, rsi, upDownVolumeRatio } from "@/lib/indicators";
 import type { Candle } from "@/lib/types";
 
 /** Names the desk will not source into: liquidity instruments and benchmarks. */
@@ -25,9 +26,11 @@ export interface DeskScanOptions {
   topN?: number;
   /** How many approved-index names to pull history for in this request. */
   universeLimit?: number;
-  /** How many of those get a catalyst read, which costs an SEC call each. */
+  /** How many technically strongest names survive the cheap pre-screen. */
+  technicalLimit?: number;
+  /** How many of the technical shortlist get a catalyst read, which costs an SEC call each. */
   catalystLimit?: number;
-  /** Names to leave out — usually what the fund already owns. */
+  /** Administrative exclusions only. Do not use holdings/watchlist as an automatic universe definition. */
   exclude?: Iterable<string>;
 }
 
@@ -37,7 +40,21 @@ export interface DeskScanOutcome {
   universe: string[];
   universeSource: "explicit" | "sector-approved-index" | "approved-three-index-universe";
   sector: string;
+  funnel: {
+    approvedMaster: number | null;
+    scheduled: number;
+    withHistory: number;
+    technicalShortlist: number;
+    catalystEnriched: number;
+    deepScored: number;
+  };
 }
+
+type TechnicalRow = {
+  ticker: string;
+  candles: Candle[];
+  preScore: number;
+};
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
@@ -86,19 +103,49 @@ export function buildDiscoveryUniverse(approvedTickers: string[], asOf = new Dat
 }
 
 /**
+ * Cheap first-pass ranking using only price/volume evidence already fetched for
+ * the swing scan. It decides who deserves expensive catalyst/fundamental work;
+ * it never declares a trade and therefore does not bypass the full swing gates.
+ */
+function technicalPreScore(ticker: string, candles: Candle[], spy: Candle[]): TechnicalRow {
+  const closes = candles.map(candle => candle.close);
+  const price = closes.at(-1) ?? 0;
+  const e20 = ema(closes, 20);
+  const e50 = ema(closes, 50);
+  const rs30 = relativeStrength(candles, spy, 30);
+  const rsi14 = rsi(closes, 14);
+  const avg5 = avgVolume(candles, 5);
+  const avg20 = avgVolume(candles, 20);
+  const volumeRatio = avg5 != null && avg20 != null && avg20 > 0 ? avg5 / avg20 : null;
+  const upDown = upDownVolumeRatio(candles, 10);
+
+  let score = 0;
+  if (rs30 != null) score += rs30 >= 1.10 ? 30 : rs30 >= 1.03 ? 24 : rs30 >= 1 ? 18 : Math.max(0, 18 - (1 - rs30) * 120);
+  if (rsi14 != null) score += rsi14 >= 55 && rsi14 <= 75 ? 20 : rsi14 >= 50 && rsi14 <= 80 ? 12 : 4;
+  if (e20 != null && price > e20) score += 15;
+  if (e20 != null && e50 != null && e20 > e50) score += 10;
+  if (volumeRatio != null) score += volumeRatio >= 1.5 ? 15 : volumeRatio >= 1.1 ? 10 : volumeRatio >= .9 ? 5 : 0;
+  if (upDown != null) score += upDown >= 1.5 ? 10 : upDown >= 1 ? 6 : 0;
+
+  return { ticker, candles, preScore: Math.round(Math.max(0, Math.min(100, score))) };
+}
+
+/**
  * Run the desk's scan.
  *
- * Automatic scans only use the three approved indexes. If one provider cannot
- * be reached, the warning is surfaced and the desk remains inside the index
- * families that did load; it never falls back to the full US market.
+ * Automatic scans only use the three approved indexes. The expensive part is a
+ * funnel: rotate an index-balanced batch, fetch candles, rank technically, then
+ * enrich only the strongest names with SEC/catalyst evidence before the full
+ * swing engine applies its hard execution gates.
  */
 export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskScanOutcome> {
   const {
     tickers = null,
     sector = "All",
     topN = 5,
-    universeLimit = 48,
-    catalystLimit = 24,
+    universeLimit = 56,
+    technicalLimit = 32,
+    catalystLimit = 18,
     exclude = [],
   } = options;
 
@@ -107,6 +154,7 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
   const blocked = new Set([...NEVER_SOURCE, ...Array.from(exclude, (t) => String(t).toUpperCase())]);
 
   let base: string[] = [];
+  let approvedMaster: number | null = null;
   let universeSource: DeskScanOutcome["universeSource"];
   if (explicit) {
     base = explicit;
@@ -115,17 +163,20 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
     const market = await buildRotatingMarketUniverse({ exclude: blocked, detailedLimit: universeLimit });
     warnings.push(...market.warnings);
     base = market.queue.map(row => row.ticker);
+    approvedMaster = market.masterUniverseSize;
     universeSource = "approved-three-index-universe";
   } else {
     const approved = await loadThreeIndexUniverse();
     warnings.push(...approved.warnings);
+    approvedMaster = approved.masterUniverseSize;
     const allowed = new Set(approved.masterTickers);
     base = buildDiscoveryUniverse(universeForSector(sector).filter(ticker => allowed.has(ticker.toUpperCase())));
     universeSource = "sector-approved-index";
   }
 
-  // Explicit one-off analysis is honoured as supplied. Automatic discovery
-  // skips holdings/reserves and is already guaranteed to be inside the approved indexes.
+  // Explicit one-off analysis is honoured as supplied. Automatic discovery is
+  // already guaranteed to be inside the approved indexes and respects only
+  // explicit administrative exclusions supplied by the caller.
   const universe = (explicit ? base : base.filter((t) => !blocked.has(t.toUpperCase()))).slice(0, universeLimit);
   if (!universe.length) {
     throw new Error(explicit ? "No valid US-listed ticker symbols were supplied." : `No approved-index research names are available for sector ${sector}.`);
@@ -140,17 +191,22 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
   if (!spy.length) warnings.push("SPY history unavailable — relative strength and the regime filter could not be measured.");
   if (!vix.length) warnings.push("VIX history unavailable — the volatility half of the regime filter is missing.");
 
-  const withCandles = await mapLimit(universe, 5, async (ticker) => ({
+  const withCandles = await mapLimit(universe, 6, async (ticker) => ({
     ticker,
     candles: await dailyCandles(ticker, 260).catch(() => [] as Candle[]),
   }));
 
-  const viable = withCandles.filter((c) => c.candles.length >= 80);
-  const shortlist = viable.slice(0, catalystLimit);
+  const viable = withCandles.filter((row) => row.candles.length >= 80);
+  const ranked = viable
+    .map(row => technicalPreScore(row.ticker, row.candles, spy))
+    .sort((left, right) => right.preScore - left.preScore || left.ticker.localeCompare(right.ticker));
 
-  // Catalyst reads cost an SEC call each, so only the shortlist gets one. A
-  // name without one is scored zero for that component under Rule #5.
-  const candidates: SwingCandidate[] = await mapLimit(shortlist, 4, async ({ ticker, candles }) => {
+  // Manual analysis should not silently discard a ticker the user explicitly
+  // supplied. Automatic discovery uses the technical funnel to bound deep work.
+  const technicalShortlist = explicit ? ranked : ranked.slice(0, Math.max(topN, Math.min(technicalLimit, ranked.length)));
+  const catalystTargets = technicalShortlist.slice(0, Math.min(catalystLimit, technicalShortlist.length));
+
+  const enriched = await mapLimit(catalystTargets, 4, async ({ ticker, candles }) => {
     try {
       const sec = await getSecFundamentals(ticker);
       const quarters = sec?.quarters ?? [];
@@ -167,18 +223,19 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
         candles,
         catalystScore: read.score,
         catalystNote: read.score == null ? null : `${read.band}${read.pead?.driftPct == null ? "" : ` · measured PEAD ${read.pead.driftPct.toFixed(1)}% against the benchmark`}`,
-      };
+      } satisfies SwingCandidate;
     } catch {
-      return { ticker, candles, catalystScore: null, catalystNote: null };
+      return { ticker, candles, catalystScore: null, catalystNote: null } satisfies SwingCandidate;
     }
   });
 
-  for (const { ticker, candles } of viable.slice(catalystLimit)) {
-    candidates.push({ ticker, candles, catalystScore: null, catalystNote: null });
-  }
+  const catalystByTicker = new Map(enriched.map(candidate => [candidate.ticker, candidate]));
+  const candidates: SwingCandidate[] = technicalShortlist.map(({ ticker, candles }) =>
+    catalystByTicker.get(ticker) ?? { ticker, candles, catalystScore: null, catalystNote: null }
+  );
 
-  const noHistory = withCandles.filter((c) => c.candles.length < 80).map((c) => c.ticker);
-  if (noHistory.length) warnings.push(`Insufficient price history for ${noHistory.join(", ")} — excluded before scoring.`);
+  const noHistory = withCandles.filter((row) => row.candles.length < 80).map((row) => row.ticker);
+  if (noHistory.length) warnings.push(`Insufficient price history for ${noHistory.join(", ")} — excluded before technical pre-screen.`);
 
   return {
     result: runSwingScan(candidates, { spy, qqq, vix }, topN),
@@ -186,5 +243,13 @@ export async function runDeskScan(options: DeskScanOptions = {}): Promise<DeskSc
     universe,
     universeSource,
     sector,
+    funnel: {
+      approvedMaster,
+      scheduled: universe.length,
+      withHistory: viable.length,
+      technicalShortlist: technicalShortlist.length,
+      catalystEnriched: enriched.length,
+      deepScored: candidates.length,
+    },
   };
 }
