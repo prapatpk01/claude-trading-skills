@@ -17,7 +17,7 @@ type Candidate={
 type Pipeline=Record<string,number>;
 type Result={
  mode:Mode;asOf?:string;theme?:{label:string;benchmark:string}|null;universeSource?:string;pipeline?:Pipeline;stats?:Record<string,number>;
- stageCandidates?:Partial<Record<StageId,Candidate[]>>;picks?:Candidate[];rejectedCandidates?:Candidate[];methodology?:string;
+ approvedMasterUniverseSize?:number|null;stageCandidates?:Partial<Record<StageId,Candidate[]>>;picks?:Candidate[];rejectedCandidates?:Candidate[];methodology?:string;
  portfolio?:{holdings:number;totalWeightPct:number;status:string}|null;warnings?:string[];
  engine?:{id:string;title:string;objective:string;holdingPeriod:string;benchmark:string;performanceMetrics:string[]};
 };
@@ -97,7 +97,9 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
    const response=await fetch(`/api/alpha-discovery?${query}`,{cache:"no-store"});
    const json=await response.json();
    if(!response.ok)throw new Error(json.error??"Research scan failed");
-   setResult(json);setActiveStage("selected");
+   const preferredStages:StageId[]=["selected","valuation","momentum","qualified","analyzed","rejected"];
+   const nextStage=preferredStages.find(stage=>(json?.stageCandidates?.[stage]?.length??0)>0)??"analyzed";
+   setResult(json);setActiveStage(nextStage);
   }catch(reason:unknown){setError(reason instanceof Error?reason.message:"Research scan failed")}finally{setLoading(false)}
  }
 
@@ -105,7 +107,7 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   if(!result)return[] as {id:StageId;label:string;value:number;note:string}[];
   const pipeline=result.pipeline??{};
   const common=[
-   {id:"universe" as StageId,label:tr(lang,"Universe","Universe"),value:pipeline.universe??0,note:tr(lang,"Starting coverage","จำนวนหุ้นตั้งต้น")},
+   {id:"universe" as StageId,label:tr(lang,"Universe","Universe"),value:pipeline.universe??0,note:tr(lang,"Scheduled this cycle","รอบนี้นำมาวิเคราะห์")},
    {id:"analyzed" as StageId,label:tr(lang,"Analyzed","วิเคราะห์แล้ว"),value:pipeline.analyzed??0,note:tr(lang,"Evidence collected","มีข้อมูลวิเคราะห์")},
   ];
   if(result.mode==="thematic"||result.mode==="multifactor"||result.mode==="value")return[
@@ -159,10 +161,10 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
   });
  }
 
- return <div className="research-v12" data-research-version="23.0">
+ return <div className="research-v12" data-research-version="24.0">
   <section className="card research-hero" style={{borderTop:"2px solid var(--accent)"}}>
    <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",flexWrap:"wrap"}}>
-    <div><span className="tag">ACTIVE MOMENTUM RESEARCH OS · V23</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Independent discovery engines","ระบบค้นหาหุ้นแบบแยก Engine")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"Each engine owns its universe and method. The fund then buys only the accumulation-to-markup part of the momentum cycle and only with a defensible Fair Value gap.","แต่ละ Engine มี Universe และวิธีค้นหาของตัวเอง จากนั้นกองทุนจะเลือกเฉพาะช่วง Accumulation ถึง Markup และต้องมี Fair Value Gap ที่เชื่อถือได้")}</p></div>
+    <div><span className="tag">ACTIVE MOMENTUM RESEARCH OS · V24</span><h2 className="section" style={{margin:"12px 0 6px"}}>{tr(lang,"Independent discovery engines","ระบบค้นหาหุ้นแบบแยก Engine")}</h2><p className="muted" style={{maxWidth:800}}>{tr(lang,"Automatic discovery starts from the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe, rotates a bounded batch, then applies each research engine and the common momentum/valuation gates.","การค้นหาอัตโนมัติเริ่มจาก S&P 500, Nasdaq-100 และ Russell 2000 ตามคำสั่ง CIO หมุนหุ้นเป็นชุดที่เหมาะสม แล้วจึงใช้แต่ละ Research Engine พร้อม Momentum/Valuation Gate")}</p></div>
     <div className="notice" style={{maxWidth:420}}><strong>{tr(lang,"Fund mandate","แนวทางกองทุน")}:</strong> {tr(lang,"Find leadership early, enter after accumulation confirms, let markup run, and review the sale when momentum weakens, the thesis changes, or price reaches Fair Value.","ค้นหาผู้นำให้เร็ว เข้าเมื่อการสะสมยืนยัน ปล่อยกำไรช่วง Markup และทบทวนขายเมื่อ Momentum อ่อนแรง Thesis เปลี่ยน หรือราคาเข้าใกล้ Fair Value")}</div>
    </div>
    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:9,marginTop:16}}>
@@ -173,7 +175,7 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
     <input value={tickers} onChange={event=>setTickers(event.target.value)} placeholder={tr(lang,"Optional ticker override, comma separated","ระบุหุ้นเองได้ คั่นด้วยเครื่องหมาย comma")} style={{flex:1,minWidth:220}}/>
     <button type="button" className="btn" onClick={scan} disabled={loading}>{loading?tr(lang,"Running institutional research…","กำลังวิเคราะห์…"):mode==="thematic"?tr(lang,"Build Thematic Portfolio","สร้างพอร์ตตามธีม"):tr(lang,`Run ${selectedMode.en} Scan`,`เริ่มสแกน ${selectedMode.th}`)}</button>
    </div>
-   {tickers.trim()&&<p className="muted" style={{fontSize:11,marginTop:8}}>{tr(lang,"Manual tickers replace the engine universe for this run.","รายการหุ้นที่กรอกจะใช้แทน Universe ของ Engine ในรอบนี้")}</p>}
+   {tickers.trim()&&<p className="muted" style={{fontSize:11,marginTop:8}}>{tr(lang,"Manual tickers replace the automatic approved-index queue for this one-off run.","รายการหุ้นที่กรอกจะใช้แทนคิวจาก 3 ดัชนีเฉพาะการวิเคราะห์รอบนี้")}</p>}
    {error&&<div className="err" style={{marginTop:12}}>⚠ {error}</div>}
   </section>
 
@@ -183,7 +185,7 @@ export default function ResearchWorkspaceV12({lang,onNavigate}:{lang:AppLang;onN
    <section className="card">
     <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",alignItems:"center"}}>
      <div><h3 className="sub" style={{margin:0}}>{result.mode==="thematic"?`${tr(lang,"THEMATIC PORTFOLIO","พอร์ตตามธีม")} · ${result.theme?.label??""}`:`${String(result.mode).toUpperCase()} RESEARCH`}</h3><p className="muted" style={{margin:"6px 0 0"}}>{result.universeSource} · {result.asOf?new Date(result.asOf).toLocaleString():"—"}</p></div>
-     <span className="tag">SINGLE PIPELINE STATE</span>
+     <span className="tag">{result.approvedMasterUniverseSize?`${result.approvedMasterUniverseSize.toLocaleString()} APPROVED NAMES`:"MANUAL ONE-OFF"}</span>
     </div>
     {result.engine&&<div className="card" style={{margin:"14px 0 0",borderLeft:"3px solid var(--accent)"}}><span className="tag">{result.engine.id}</span><h4 className="sub" style={{margin:"9px 0 5px"}}>{result.engine.title}</h4><p className="muted" style={{margin:0,lineHeight:1.6}}>{result.engine.objective}</p><small style={{display:"block",marginTop:8}}>{tr(lang,"Holding period","ระยะถือ")} {result.engine.holdingPeriod} · Benchmark {result.engine.benchmark}</small></div>}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:10,marginTop:16}}>
@@ -252,7 +254,7 @@ function CandidateCard({candidate,rank,rejected,lang,engine,referred,onReferred,
  async function addWatchlist(){
   setState("saving");setWatchError("");
   try{
-   const response=await fetch("/api/watchlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker:candidate.ticker,source:"Active Momentum Research V23",reason:candidate.thesis??candidate.reasons?.join(" · "),target_price:candidate.targetPrice})});
+   const response=await fetch("/api/watchlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker:candidate.ticker,source:"Active Momentum Research V24",reason:candidate.thesis??candidate.reasons?.join(" · "),target_price:candidate.targetPrice})});
    const body=await response.json().catch(()=>({}));
    if(!response.ok)throw new Error(body?.error??`Watchlist save failed (${response.status})`);
    setState("saved");
