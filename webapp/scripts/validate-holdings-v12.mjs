@@ -10,7 +10,13 @@ requireTokens("app/components/HoldingsDashboardV12.tsx",[
  "data-holdings-version=\"12.4\"","Full Workspace","Overview","Holdings","Transactions","Cash & Income","Risk & Rebalance",
  "holdings-overview","holdings-master","holdings-transactions","holdings-income","holdings-risk",
  "Verified Portfolio Overview","Holdings Master & Reconciliation","Transaction Operations & Audit Ledger","Cash, Liquidity & Income Center","Risk, Allocation & Rebalance Proposals",
- "PortfolioTruthSummary","PortfolioTransactionOverride","HoldingsMarketMonitor","PortfolioLedgerPanel","DividendCalendarPanel","CashLedgerPanel","CashBufferPanel","DividendLedgerPanel","PortfolioOptimizerPanel","OpportunityAllocationPanel","SINGLE SOURCE OF TRUTH","NO AUTO EXECUTION"
+ "PortfolioTruthSummary","PortfolioTransactionOverride","HoldingsMarketMonitor","PortfolioLedgerPanel","DividendCalendarPanel","CashBufferPanel","DividendLedgerPanel","PortfolioOptimizerPanel","OpportunityAllocationPanel","SINGLE SOURCE OF TRUTH","NO AUTO EXECUTION"
+]);
+requireTokens("app/components/PortfolioTruthSummary.tsx",[
+ "CASH BUFFER & CASH ACTIVITY","One cash center, one ledger","CashLedgerPanel","embedded","USD Cash balance","Cash in / out","Dividends","cashOnly"
+]);
+requireTokens("app/components/CashLedgerPanel.tsx",[
+ "sentinel:cash-ledger-changed","Record external cash activity","Cash ledger history","embedded"
 ]);
 // The reconciliation path is still here; the wording and the call shape moved
 // (the method is now chosen at the call site rather than hard-coded), so assert
