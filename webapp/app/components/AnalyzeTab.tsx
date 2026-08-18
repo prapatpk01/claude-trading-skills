@@ -93,7 +93,12 @@ export default function AnalyzeTab() {
             </div>
 
             <div className="grid cols-4" style={{ marginTop: 16 }}>
-              <Metric label="Blended Target" value={money(data.targetPrice)} sub={`${data.upsidePct >= 0 ? "+" : ""}${pct(data.upsidePct)} expected`} accent={data.upsidePct >= 0 ? "pos" : "neg"} />
+              <Metric
+                label="Governed Fair Value"
+                value={data.valuationReady && data.targetPrice != null ? money(data.targetPrice) : "PENDING"}
+                sub={data.valuationReady && data.upsidePct != null ? `${data.upsidePct >= 0 ? "+" : ""}${pct(data.upsidePct)} expected` : "No defensible target published"}
+                accent={data.valuationReady && data.upsidePct != null ? (data.upsidePct >= 0 ? "pos" : "neg") : undefined}
+              />
               <Metric label="Signal" value={<span className={cls("pill", data.signal.toLowerCase())}>{data.signal}</span>} sub={data.signalReasons?.[0]} />
               <Metric label="Momentum Score" value={`${data.momentum.total}/100`} sub={`RS ${data.momentum.momentumRS}/40`} />
               <Metric label="DCF Fair Value" value={money(dcf?.fairValue)} sub={dcf ? `${dcf.upsidePct >= 0 ? "+" : ""}${pct(dcf.upsidePct)}` : "n/a"} />
@@ -291,7 +296,7 @@ export default function AnalyzeTab() {
                   <tr key={s.label}>
                     <td><strong className={s.label === "Bull" ? "pos" : s.label === "Bear" ? "neg" : ""}>{s.label}</strong></td>
                     <td className="num">{s.probability}%</td>
-                    <td className="num">{money(s.targetPrice)}</td>
+                    <td className="num">{s.targetPrice == null ? "PENDING" : money(s.targetPrice)}</td>
                     <td className="muted" style={{ fontSize: 12 }}>{s.narrative}</td>
                   </tr>
                 ))}

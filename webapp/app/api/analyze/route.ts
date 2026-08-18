@@ -63,14 +63,38 @@ async function applyEvidenceGate(result: any) {
     reason: governed.reason,
   };
   if (governed.decisionReady && governed.fairValue != null) {
-    result.targetPrice = governed.fairValue;
+    const fairValue = governed.fairValue;
+    result.targetPrice = fairValue;
     result.upsidePct = governed.valuationGapPct;
     result.expectedReturnPct = governed.valuationGapPct;
     result.valuationNote = governed.reason;
+    result.valuationReady = true;
+    result.valuationSource = "THOMAS_GOVERNED";
     result.thesis = (result.thesis ?? []).map((scenario: any) => ({
       ...scenario,
-      targetPrice: scenario.label === "Bear" ? governed.bearValue ?? governed.fairValue : scenario.label === "Bull" ? governed.bullValue ?? governed.fairValue : governed.fairValue,
+      ...(() => {
+        const targetPrice = scenario.label === "Bear"
+          ? governed.bearValue ?? fairValue
+          : scenario.label === "Bull"
+            ? governed.bullValue ?? fairValue
+            : fairValue;
+        const gap = data.quote?.price > 0 ? (targetPrice / data.quote.price - 1) * 100 : null;
+        const gapText = gap == null
+          ? "return versus spot unavailable"
+          : Math.abs(gap) < 0.5
+            ? "approximately fully valued; no margin of safety at spot"
+            : `${gap >= 0 ? "+" : ""}${gap.toFixed(1)}% versus spot`;
+        const caseText = scenario.label === "Bear"
+          ? "Downside case from Thomas's governed valuation range"
+          : scenario.label === "Bull"
+            ? "Upside case from Thomas's governed valuation range"
+            : "Thomas governed Fair Value";
+        return { targetPrice, narrative: `${caseText}: $${targetPrice.toFixed(2)} (${gapText}). Source: ${snapshot?.source ?? "governed valuation"}.` };
+      })(),
     }));
+  } else {
+    result.valuationReady = false;
+    result.valuationSource = "PENDING";
   }
 
   const committee = result.committee ?? {};

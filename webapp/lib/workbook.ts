@@ -204,14 +204,14 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
   }
 
   sectionHeader(ws, "D4:E4", "Valuation & Signal");
-  labelValue(ws, 5, "Blended Target Price", a.targetPrice, { fmt: "$#,##0.00", col: 4, color: BLUE });
+  labelValue(ws, 5, "Governed Fair Value", a.targetPrice ?? "VALUATION PENDING", { fmt: "$#,##0.00", col: 4, color: BLUE });
   const upside = ws.getCell(6, 5);
   ws.getCell(6, 4).value = "Expected Return";
   ws.getCell(6, 4).font = { bold: false, color: { argb: GREY } };
   ws.getCell(6, 4).alignment = { indent: 1 };
-  upside.value = { formula: `(E5-B5)/B5`, result: a.upsidePct / 100 };
-  upside.numFmt = "0.0%";
-  upside.font = { bold: true, color: { argb: a.upsidePct >= 0 ? GREEN : RED } };
+  upside.value = a.upsidePct == null ? "PENDING" : { formula: `(E5-B5)/B5`, result: a.upsidePct / 100 };
+  if (a.upsidePct != null) upside.numFmt = "0.0%";
+  upside.font = { bold: true, color: { argb: a.upsidePct == null ? GREY : a.upsidePct >= 0 ? GREEN : RED } };
   upside.alignment = { horizontal: "right" };
   labelValue(ws, 7, "DCF Fair Value", a.dcf ? a.dcf.fairValue : "n/a", { fmt: "$#,##0.00", col: 4 });
   labelValue(ws, 8, "Analyst Target", orNA(ov?.analystTargetPrice), { fmt: "$#,##0.00", col: 4 });
@@ -233,7 +233,7 @@ function buildExecSummary(wb: ExcelJS.Workbook, a: AnalysisResult, price: number
   bandRows(ws, 5, 15, 5);
 
   sectionHeader(ws, "A18:E18", "Quick Thesis");
-  const scenarios = a.thesis.map((s) => `${s.label} (${s.probability}%, PT $${s.targetPrice}): ${s.narrative}`);
+  const scenarios = a.thesis.map((s) => `${s.label} (${s.probability}%, ${s.targetPrice == null ? "PT PENDING" : `PT $${s.targetPrice}`}): ${s.narrative}`);
   let r = 19;
   for (const s of scenarios) {
     ws.mergeCells(`A${r}:E${r + 1}`);
@@ -892,8 +892,8 @@ function buildCatalystsSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
     ws.getCell(r, 2).value = s.probability / 100;
     ws.getCell(r, 2).numFmt = "0%";
     ws.getCell(r, 2).alignment = { horizontal: "right" };
-    ws.getCell(r, 3).value = s.targetPrice;
-    ws.getCell(r, 3).numFmt = "$#,##0.00";
+    ws.getCell(r, 3).value = s.targetPrice ?? "PENDING";
+    if (s.targetPrice != null) ws.getCell(r, 3).numFmt = "$#,##0.00";
     ws.getCell(r, 3).alignment = { horizontal: "right" };
     ws.getCell(r, 4).value = s.narrative;
     ws.getCell(r, 4).alignment = { wrapText: true, vertical: "top" };
@@ -909,11 +909,13 @@ function buildCatalystsSheet(wb: ExcelJS.Workbook, a: AnalysisResult) {
     a.thesis.reduce((acc, s2) => acc + s2.probability / 100, 0)
   );
   ws.getCell(r, 2).numFmt = "0%";
-  ws.getCell(r, 3).value = fx(
-    `SUMPRODUCT(B${first}:B${r - 1},C${first}:C${r - 1})`,
-    a.thesis.reduce((acc, s2) => acc + (s2.probability / 100) * s2.targetPrice, 0)
-  );
-  ws.getCell(r, 3).numFmt = "$#,##0.00";
+  ws.getCell(r, 3).value = a.targetPrice == null
+    ? "VALUATION PENDING"
+    : fx(
+        `SUMPRODUCT(B${first}:B${r - 1},C${first}:C${r - 1})`,
+        a.thesis.reduce((acc, s2) => acc + (s2.probability / 100) * (s2.targetPrice ?? 0), 0)
+      );
+  if (a.targetPrice != null) ws.getCell(r, 3).numFmt = "$#,##0.00";
   ws.getCell(r, 3).font = { bold: true, color: { argb: BLUE } };
   ws.getCell(r, 3).alignment = { horizontal: "right" };
   bandRows(ws, first, r - 1, 4);
@@ -1377,26 +1379,24 @@ function buildValuation(
   const scStart = r;
   a.thesis.forEach((s) => {
     ws.getCell(r, 1).value = `${s.label} (${s.probability}%)`;
-    ws.getCell(r, 2).value = s.targetPrice;
-    ws.getCell(r, 2).numFmt = "$#,##0.00";
-    ws.getCell(r, 3).value = fx(
-      `(B${r}-${priceCell})/${priceCell}`,
-      priceNow > 0 ? (s.targetPrice - priceNow) / priceNow : null
-    );
-    ws.getCell(r, 3).numFmt = "0.0%";
+    ws.getCell(r, 2).value = s.targetPrice ?? "PENDING";
+    if (s.targetPrice != null) ws.getCell(r, 2).numFmt = "$#,##0.00";
+    ws.getCell(r, 3).value = s.targetPrice == null
+      ? "PENDING"
+      : fx(`(B${r}-${priceCell})/${priceCell}`, priceNow > 0 ? (s.targetPrice - priceNow) / priceNow : null);
+    if (s.targetPrice != null) ws.getCell(r, 3).numFmt = "0.0%";
     [2, 3].forEach((c) => (ws.getCell(r, c).alignment = { horizontal: "right" }));
     r++;
   });
   ws.getCell(r, 1).value = "Blended target";
   ws.getCell(r, 1).font = { bold: true };
-  ws.getCell(r, 2).value = a.targetPrice;
-  ws.getCell(r, 2).numFmt = "$#,##0.00";
+  ws.getCell(r, 2).value = a.targetPrice ?? "VALUATION PENDING";
+  if (a.targetPrice != null) ws.getCell(r, 2).numFmt = "$#,##0.00";
   ws.getCell(r, 2).font = { bold: true, color: { argb: BLUE } };
-  ws.getCell(r, 3).value = fx(
-    `(B${r}-${priceCell})/${priceCell}`,
-    priceNow > 0 ? (a.targetPrice - priceNow) / priceNow : null
-  );
-  ws.getCell(r, 3).numFmt = "0.0%";
+  ws.getCell(r, 3).value = a.targetPrice == null
+    ? "PENDING"
+    : fx(`(B${r}-${priceCell})/${priceCell}`, priceNow > 0 ? (a.targetPrice - priceNow) / priceNow : null);
+  if (a.targetPrice != null) ws.getCell(r, 3).numFmt = "0.0%";
   ws.getCell(r, 3).font = { bold: true };
   bandRows(ws, scStart, r - 1, 3);
 
