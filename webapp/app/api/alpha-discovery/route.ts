@@ -1,8 +1,9 @@
 import {NextRequest,NextResponse} from "next/server";
-import {runFactorDiscovery,ENGINE_UNIVERSES,type FactorMode} from "@/lib/factorDiscovery";
+import {runFactorDiscovery,type FactorMode} from "@/lib/factorDiscovery";
 import {universeForSector} from "@/lib/sectorUniverse";
 import {DEFAULT_THEME,isThemeId,THEMATIC_UNIVERSES} from "@/lib/thematicUniverse";
 import {applyIndependentEnginePolicy,createPerformanceContract,engineProfile,engineSelectionLimit,type ResearchEngineMode} from "@/lib/researchEnginePolicies";
+import {buildRotatingMarketUniverse,loadThreeIndexUniverse} from "@/lib/research/marketUniverse";
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -12,6 +13,7 @@ const FACTOR_MODES:FactorMode[]=["momentum","growth","quality","value","dividend
 const PUBLIC_MODES=[...FACTOR_MODES,"thematic"] as const;
 type PublicMode=typeof PUBLIC_MODES[number];
 type Candidate=Record<string,any>;
+const DEEP_RESEARCH_LIMIT=40;
 
 const finiteNumber=(value:unknown):number|null=>{const parsed=typeof value==="number"?value:Number(value);return Number.isFinite(parsed)?parsed:null};
 const finitePositive=(value:unknown):number|null=>{const parsed=finiteNumber(value);return parsed!=null&&parsed>0?parsed:null};
@@ -20,11 +22,11 @@ function normalizeValuation(candidate:Candidate){
  const price=finitePositive(candidate?.price);
  const targetPrice=finitePositive(candidate?.targetPrice);
  const expectedReturnPct=price!=null&&targetPrice!=null?((targetPrice/price)-1)*100:null;
-  const valuationFailures:string[]=[];
+ const valuationFailures:string[]=[];
  if(price==null)valuationFailures.push("Current price unavailable");
  if(targetPrice==null)valuationFailures.push("Target price unavailable");
  if(price!=null&&targetPrice!=null&&targetPrice<=price)valuationFailures.push("Target price is not above spot");
-  if(expectedReturnPct!=null&&expectedReturnPct<8)valuationFailures.push("Expected upside below 8%");
+ if(expectedReturnPct!=null&&expectedReturnPct<8)valuationFailures.push("Expected upside below 8%");
  const inherited=Array.isArray(candidate?.valuationFailures)?candidate.valuationFailures:[];
  const combined=[...new Set([...inherited,...valuationFailures])];
  return {...candidate,price,targetPrice,expectedReturnPct,valuationValid:Boolean(candidate?.valuationReady)&&combined.length===0,valuationFailures:combined};
@@ -33,6 +35,15 @@ function normalizeValuation(candidate:Candidate){
 function scoreKey(mode:PublicMode){
  if(mode==="thematic"||mode==="multifactor")return"composite";
  return mode;
+}
+
+function stableHash(value:string){let hash=2166136261;for(let index=0;index<value.length;index+=1)hash=Math.imul(hash^value.charCodeAt(index),16777619);return hash>>>0}
+function rotateApproved(values:string[],asOf=new Date()){
+ const seed=Math.floor(Date.UTC(asOf.getUTCFullYear(),asOf.getUTCMonth(),asOf.getUTCDate())/86400000);
+ return Array.from(new Set(values.map(value=>String(value).trim().toUpperCase()).filter(value=>/^[A-Z.\-]{1,10}$/.test(value))))
+  .map(ticker=>({ticker,rank:stableHash(`${seed}:${ticker}`)}))
+  .sort((left,right)=>left.rank-right.rank||left.ticker.localeCompare(right.ticker))
+  .map(row=>row.ticker);
 }
 
 function thematicAllocation(input:Candidate[]){
@@ -67,8 +78,43 @@ export async function GET(req:NextRequest){
   const themeConfig=THEMATIC_UNIVERSES[theme];
   const sectorUniverse=sector==="All"?[]:universeForSector(sector);
   const engineMode:FactorMode=mode==="thematic"?"multifactor":mode;
-  const engineUniverse=mode==="thematic"?[...themeConfig.tickers]:ENGINE_UNIVERSES[engineMode];
-  const universe=explicit.length?explicit:sectorUniverse.length?sectorUniverse:engineUniverse;
+  const universeWarnings:string[]=[];
+  let universe:string[]=[];
+  let coverageUniverseSize=0;
+  let source="explicit";
+  let approvedMasterUniverseSize:number|null=null;
+
+  if(explicit.length){
+   universe=explicit;
+   coverageUniverseSize=explicit.length;
+   source="explicit ticker override · one-off analysis outside automatic discovery rules";
+  }else{
+   const approved=await loadThreeIndexUniverse();
+   approvedMasterUniverseSize=approved.masterUniverseSize;
+   universeWarnings.push(...approved.warnings);
+   const allowed=new Set(approved.masterTickers);
+
+   if(mode==="thematic"){
+    const thematicApproved=rotateApproved([...themeConfig.tickers].filter(ticker=>allowed.has(String(ticker).toUpperCase())));
+    universe=thematicApproved.slice(0,DEEP_RESEARCH_LIMIT);
+    coverageUniverseSize=thematicApproved.length;
+    source=`theme:${themeConfig.label} · approved-index members only · S&P 500 + Nasdaq-100 + Russell 2000`;
+   }else if(sectorUniverse.length){
+    const sectorApproved=rotateApproved(sectorUniverse.filter(ticker=>allowed.has(ticker.toUpperCase())));
+    universe=sectorApproved.slice(0,DEEP_RESEARCH_LIMIT);
+    coverageUniverseSize=sectorApproved.length;
+    source=`sector:${sector} · approved-index members only · S&P 500 + Nasdaq-100 + Russell 2000`;
+   }else{
+    const rotation=await buildRotatingMarketUniverse({detailedLimit:DEEP_RESEARCH_LIMIT});
+    universeWarnings.push(...rotation.warnings);
+    universe=rotation.queue.map(row=>row.ticker).slice(0,DEEP_RESEARCH_LIMIT);
+    coverageUniverseSize=approved.masterUniverseSize;
+    source=`APPROVED 3-INDEX UNIVERSE · S&P 500 + Nasdaq-100 + Russell 2000 · ${universe.length} names scheduled this cycle`;
+   }
+  }
+
+  if(!universe.length)return NextResponse.json({error:"No securities from the CIO-approved universe are available for this research run.",mode,sector},{status:422});
+
   const result=await runFactorDiscovery(engineMode,universe,40);
   const asOf=new Date().toISOString();
   const candidates=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate));
@@ -90,20 +136,20 @@ export async function GET(req:NextRequest){
    return{...candidate,status:"QUALIFIED_NOT_SELECTED"};
   });
   const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,momentum:momentumEligible,valuation:valuationEligible,selected:picks,rejected:rejectedCandidates};
-  const source=explicit.length?"explicit":sectorUniverse.length?`sector:${sector}`:mode==="thematic"?`theme:${themeConfig.label} · benchmark ${themeConfig.benchmark}`:`engine:${mode}`;
   const totalWeight=picks.reduce((sum:number,candidate:Candidate)=>sum+(finiteNumber(candidate.portfolioWeightPct)??0),0);
-  const pipeline={universe:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,momentumEligible:momentumEligible.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
+  const pipeline={coverageUniverse:coverageUniverseSize,universe:universe.length,scheduled:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,momentumEligible:momentumEligible.length,valuationEligible:valuationEligible.length,selected:picks.length,rejected:rejectedCandidates.length,committeeReady:picks.length};
   const performanceContracts=picks.map((candidate:Candidate)=>createPerformanceContract(mode as ResearchEngineMode,candidate,asOf));
+  const warnings=[...new Set([...universeWarnings,...(result.warnings??[])])];
   return NextResponse.json({
-   ...result,version:"23.0-independent-active-momentum-engines",asOf,mode,rankingMode:engineMode,sector,
+   ...result,version:"24.0-three-index-research-funnel",asOf,mode,rankingMode:engineMode,sector,
    engine:engineProfile(mode as ResearchEngineMode),
    theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
-   universeSource:source,universeTickers:universe,pipeline,stageCandidates,candidates:rankedCandidates,picks,rejectedCandidates,
+   universeSource:source,approvedMasterUniverseSize,universeTickers:universe,pipeline,stageCandidates,candidates:rankedCandidates,picks,rejectedCandidates,warnings,
    performanceContracts,
-   stats:{...result.stats,qualified:factorQualified.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
+   stats:{...result.stats,coverageUniverse:coverageUniverseSize,scheduled:universe.length,qualified:factorQualified.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
    portfolio:mode==="thematic"?{construction:"AI conviction-weighted five-stock thematic sleeve",holdings:picks.length,targetHoldings:"Exactly 5 securities when at least 5 pass factor and valuation gates",totalWeightPct:Math.round(totalWeight*10)/10,maxPositionPct:30,minPositionPct:12,minimumExpectedReturnPct:8,status:picks.length===5?"BUILT":picks.length?"PARTIAL":"NO_ELIGIBLE_SECURITIES",horizon:"1–3 months"}:null,
-   policy:{researchOnly:true,automaticTrading:false,activeMomentumGateRequired:true,valuationGateRequired:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true},
-   methodology:`${engineProfile(mode as ResearchEngineMode).objective} This engine owns its universe and factor gate independently. Sentinel then applies the common Active Momentum gate (ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION) and the mandatory defensible Fair Value gap before any name can become Committee Ready.`,
+   policy:{researchOnly:true,automaticTrading:false,approvedAutomaticUniverse:["S&P 500","Nasdaq-100","Russell 2000"],activeMomentumGateRequired:true,valuationGateRequired:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true},
+   methodology:`${engineProfile(mode as ResearchEngineMode).objective} Automatic discovery is restricted to the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe. Each cycle rotates a bounded research batch, then applies the selected engine, the common Active Momentum gate (ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION), and the mandatory defensible Fair Value gap before any name can become Committee Ready. Manual ticker overrides remain available for one-off analysis but do not widen automatic discovery.`,
   },{headers:{"Cache-Control":"no-store"}});
  }catch(error:unknown){
   const message=error instanceof Error?error.message:"Alpha discovery failed";
