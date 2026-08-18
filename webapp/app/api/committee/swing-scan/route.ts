@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "No valid US-listed ticker symbols were supplied." }, { status: 400 });
     }
 
-    const { result, warnings, universeSource } = await runDeskScan({ tickers: explicit, sector, topN });
+    const { result, warnings, universeSource, funnel } = await runDeskScan({ tickers: explicit, sector, topN });
 
     return NextResponse.json(
       {
@@ -32,6 +32,8 @@ export async function GET(req: NextRequest) {
         stage: "2 — Research: swing scan",
         owners: { score: ROSTER.maya.name, catalyst: ROSTER.aisha.name, execution: ROSTER.ryan.name },
         universeSource,
+        universePolicy: explicit?.length ? "MANUAL ONE-OFF" : "S&P 500 + Nasdaq-100 + Russell 2000 ONLY",
+        funnel,
         sector,
         warnings,
       },
