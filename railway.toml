@@ -1,0 +1,15 @@
+# Sentinel Investment production deployment
+#
+# This repository is a monorepo-like project whose deployable Next.js app lives
+# in /webapp. The commands below deliberately work whether Railway's dashboard
+# Root Directory is configured as `/` or `/webapp` so a dashboard drift cannot
+# make Railpack look for package.json in the wrong directory.
+
+[build]
+builder = "RAILPACK"
+buildCommand = "if [ -d webapp ]; then cd webapp; fi; npm ci && npm run build"
+
+[deploy]
+startCommand = "if [ -d webapp ]; then cd webapp; fi; npm run start"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
