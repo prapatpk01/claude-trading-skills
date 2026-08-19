@@ -5,6 +5,13 @@ import { buildMarketTapeSnapshot } from "./marketTape";
 
 export interface MacroHeadline { title: string; date: string; source: string }
 export interface MacroScenario { name: string; nameTh: string; probability: number; thesis: string; thesisTh: string }
+export type MarketTapeContext = { score: number; label: string; labelTh: string; asOf: string | null };
+
+/**
+ * Shared macro view used by portfolio-ranking code. A degraded fallback may
+ * omit the live deployment/tape objects, but it must still name its warning and
+ * may never become the authoritative Cash/CIO source.
+ */
 export interface MacroOutlook {
   asOf: string;
   score: number;
@@ -12,12 +19,10 @@ export interface MacroOutlook {
   regimeTh: string;
   vision: string;
   visionTh: string;
-  /** Authoritative capital budget from the blended CIO Deployment Regime. */
   riskBudgetPct: number;
-  /** Authoritative minimum Cash Buffer from the blended CIO Deployment Regime. */
   cashFloorPct: number;
-  deployment: DeploymentRegime;
-  marketTape: { score: number; label: string; labelTh: string; asOf: string | null };
+  deployment?: DeploymentRegime;
+  marketTape?: MarketTapeContext;
   indicators: Record<string, number | null>;
   scenarios: MacroScenario[];
   headlines: MacroHeadline[];
@@ -25,6 +30,12 @@ export interface MacroOutlook {
   allocationTiltTh: string[];
   warnings: string[];
 }
+
+/** Cash Buffer and CIO only consume this complete contract. */
+export type CompleteMacroOutlook = MacroOutlook & {
+  deployment: DeploymentRegime;
+  marketTape: MarketTapeContext;
+};
 
 const ret = (c: Candle[], n: number): number | null => {
   if (c.length <= n) return null;
@@ -85,7 +96,7 @@ async function fedHeadlines(): Promise<MacroHeadline[]> {
   });
 }
 
-export async function buildMacroOutlook(options: { includeHeadlines?: boolean } = {}): Promise<MacroOutlook> {
+export async function buildMacroOutlook(options: { includeHeadlines?: boolean } = {}): Promise<CompleteMacroOutlook> {
   const warnings: string[] = [];
   const symbols = ["SPY", "QQQ", "IWM", "HYG", "TLT", "GLD", "UUP"];
   const tapePromise = buildMarketTapeSnapshot().catch((e: any) => {
