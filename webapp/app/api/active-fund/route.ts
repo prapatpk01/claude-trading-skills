@@ -159,6 +159,115 @@ function attachTechnicalOverlay(result: any, overlays: Map<string, PortfolioTech
   };
 }
 
+function watchlistPlaceholder(ticker: string) {
+  return {
+    ticker,
+    source: ["WATCHLIST", "Authoritative Supabase watchlist"],
+    held: false,
+    action: "RESEARCH INCOMPLETE",
+    conviction: 0,
+    confidence: "LOW",
+    expectedReturnPct: null,
+    targetPrice: null,
+    currentPrice: null,
+    momentum: null,
+    pnlPct: null,
+    portfolioScore: 0,
+    targetWeightPct: 0,
+    capitalUsd: 0,
+    committee: "WATCHLIST RE-UNDERWRITE",
+    thesis: "This ticker is on the authoritative watchlist. Research could not complete all required evidence this cycle, so the name remains visible instead of being silently dropped.",
+    dissent: ["Research evidence incomplete this cycle"],
+    reasons: ["Authoritative watchlist membership is preserved independently from Research OS ranking."],
+    primaryEngine: "Watchlist Re-underwrite",
+    discoveryEngines: ["WATCHLIST"],
+    lifecycleStage: "BROKEN",
+    lifecycleScore: 0,
+    lifecycleEvidence: [],
+    searchBasis: "Authoritative Supabase watchlist",
+    searchBasisTh: "Watchlist จริงจาก Supabase",
+    investmentHorizon: "Signal-driven",
+    investmentHorizonTh: "ตามสัญญาณ",
+    reviewCadence: "Re-underwrite next cycle; do not remove unless the owner removes it from Watchlist.",
+    reviewCadenceTh: "วิเคราะห์ใหม่รอบถัดไป และไม่ลบออกจนกว่าเจ้าของพอร์ตจะลบจาก Watchlist จริง",
+    researchStatus: "INCOMPLETE",
+    valuationGapPct: null,
+    valuationStatus: "UNAVAILABLE",
+    valuationSource: "UNAVAILABLE",
+    valuationNote: "Fair Value evidence is incomplete; no target is manufactured from spot price.",
+    valuationDecisionReady: false,
+    valuationConfidence: "LOW",
+    valuationBear: null,
+    valuationBull: null,
+    valuationAnchors: [],
+    valuationAsOf: null,
+    valuationExpiresAt: null,
+    valuationModelRoute: null,
+    valuationWarnings: ["Authoritative watchlist row retained while underwriting is incomplete"],
+    positionShares: null,
+    marketValueUsd: null,
+    ideaCategory: "WATCHLIST_REUNDERWRITE",
+    rotationCadence: "LIVE WATCHLIST",
+    universeSource: "SUPABASE WATCHLIST",
+  };
+}
+
+/**
+ * The Watchlist screen and CIO must speak about the same set of names. Research
+ * engines may score, rank or fail a ticker, but they are not allowed to add or
+ * remove Watchlist membership. This final normalization makes the Supabase
+ * watchlist authoritative and keeps a placeholder row when underwriting fails
+ * so a tracked name can never silently disappear from the CIO review.
+ */
+function enforceAuthoritativeWatchlist(result: any, authoritativeTickers: string[]) {
+  const authoritative = new Set(authoritativeTickers);
+  const candidateRows = [
+    ...(result?.watchlistReviews ?? []),
+    ...(result?.newIdeas ?? []),
+    ...(result?.researchIncomplete ?? []),
+  ];
+  const byTicker = new Map<string, any>();
+  for (const row of candidateRows) {
+    const ticker = String(row?.ticker ?? "").trim().toUpperCase();
+    if (!ticker || byTicker.has(ticker)) continue;
+    byTicker.set(ticker, row);
+  }
+
+  const unresolved: string[] = [];
+  const watchlistReviews = authoritativeTickers.map((ticker) => {
+    const row = byTicker.get(ticker);
+    if (!row) {
+      unresolved.push(ticker);
+      return watchlistPlaceholder(ticker);
+    }
+    const priorSource = Array.isArray(row.source) ? row.source.map((value: unknown) => String(value)) : [];
+    return {
+      ...row,
+      ticker,
+      source: ["WATCHLIST", ...priorSource.filter((value: string) => value.toUpperCase() !== "WATCHLIST")],
+      ideaCategory: "WATCHLIST_REUNDERWRITE",
+      searchBasis: "Authoritative Supabase watchlist",
+      searchBasisTh: "Watchlist จริงจาก Supabase",
+      universeSource: "SUPABASE WATCHLIST",
+    };
+  });
+
+  const removeWatchlistNames = (rows: any[]) => (rows ?? []).filter((row: any) => !authoritative.has(String(row?.ticker ?? "").trim().toUpperCase()));
+  const reviewedCount = watchlistReviews.length - unresolved.length;
+  return {
+    ...result,
+    newIdeas: removeWatchlistNames(result?.newIdeas ?? []),
+    researchIncomplete: removeWatchlistNames(result?.researchIncomplete ?? []),
+    watchlistReviews,
+    authoritativeWatchlistTickers,
+    watchlistCount: authoritativeTickers.length,
+    watchlistReviewedCount: reviewedCount,
+    watchlistUnresolved: unresolved,
+    discovery: result?.discovery ? { ...result.discovery, watchlist: authoritativeTickers.length } : result?.discovery,
+    watchlistSource: "Supabase watchlist · authoritative membership",
+  };
+}
+
 async function buildReview(extraCandidates: string[] = [], committee: CommitteeSnapshot | null = null) {
   const sb = getSupabase();
   if (!sb) throw new Error("Supabase portfolio source is unavailable.");
@@ -166,13 +275,19 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
   const [holdingsRead, cash, watch] = await Promise.all([
     loadOpenHoldings(sb),
     buildCashBufferSnapshot(),
-    sb.from("watchlist").select("ticker,stage").then((r: any) => r, () => ({ data: [], error: null })),
+    sb.from("watchlist").select("ticker,stage"),
   ]);
+  if (watch.error) throw new Error(`Authoritative watchlist unavailable: ${watch.error.message}`);
 
   const heldTickers = new Set(holdingsRead.rows.map((row) => String(row.ticker).trim().toUpperCase()));
   const committeeSnapshot = committeeForCurrentBook(committee, heldTickers);
-  const watchlistTickers = Array.from(new Set([
-    ...((watch.data ?? []).map((row: any) => String(row.ticker ?? "").trim().toUpperCase())),
+  const authoritativeWatchlistTickers = Array.from(new Set(
+    (watch.data ?? [])
+      .map((row: any) => String(row.ticker ?? "").trim().toUpperCase())
+      .filter((ticker: string) => /^[A-Z.\-]{1,10}$/.test(ticker) && !heldTickers.has(ticker))
+  ));
+  const analysisTickers = Array.from(new Set([
+    ...authoritativeWatchlistTickers,
     ...extraCandidates,
   ].filter((ticker: string) => /^[A-Z.\-]{1,10}$/.test(ticker))));
 
@@ -182,7 +297,7 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
   const technicalPromise = loadHoldingTechnicalOverlays(holdingsRead.rows);
   const activeFundPromise = runActivePortfolioIntelligenceV21({
     positions: holdingsRead.rows.map(row => ({ ticker: row.ticker, shares: Number(row.shares), avgCost: Number(row.avg_cost) })),
-    watchlistTickers,
+    watchlistTickers: analysisTickers,
     cash: {
       totalNav,
       cashBalance: Number(cash.cashBalance ?? 0),
@@ -198,13 +313,15 @@ async function buildReview(extraCandidates: string[] = [], committee: CommitteeS
   const [raw, overlays] = await Promise.all([activeFundPromise, technicalPromise]);
   const technicalGate = technicalGateCommittee(committeeSnapshot.committee, overlays);
   const governed = applyCommitteeCashPool(raw, technicalGate.committee);
-  const result = attachTechnicalOverlay(governed, overlays, technicalGate.blockedAdds);
+  const withTechnical = attachTechnicalOverlay(governed, overlays, technicalGate.blockedAdds);
+  const result = enforceAuthoritativeWatchlist(withTechnical, authoritativeWatchlistTickers);
 
   return {
     ...result,
     sourceOfTruth: holdingsRead.origin,
     reconciliationNote: holdingsRead.note,
-    watchlistCount: watchlistTickers.length,
+    watchlistCount: authoritativeWatchlistTickers.length,
+    authoritativeWatchlistTickers,
     ignoredStaleCommitteeMotions: committeeSnapshot.ignored,
     navVerification: {
       verified: Boolean(cash.verified),
