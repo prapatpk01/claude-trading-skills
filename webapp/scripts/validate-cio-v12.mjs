@@ -96,7 +96,7 @@ requireTokens("lib/team/committeeLegacy.ts", [
 // requiring a now-obsolete direct import on the thin HTTP wrapper.
 requireTokens("lib/portfolioSource.ts", ["live_holdings_ledger", "ledger_shares", "unbacked", "shareMismatches"]);
 requireTokens("app/api/portfolio/cash-buffer/route.ts", ["buildCashBufferSnapshot"]);
-requireTokens("lib/cashBufferSnapshot.ts", ["loadOpenHoldings", "buildCashBufferSnapshot"]);
+requireTokens("lib/cashBufferSnapshot.ts", ["loadOpenHoldings", "buildCashBufferSnapshot", "buildMacroOutlook", "macro.deployment"]);
 forbidTokens("lib/cashBufferSnapshot.ts", [['from("holdings")', "reads the holdings table directly instead of the ledger source"]]);
 for (const file of [
   "app/api/portfolio/analytics/route.ts",
@@ -114,10 +114,26 @@ for (const file of ["lib/team/committee.ts", "lib/team/committeeLegacy.ts", "lib
   ]);
 }
 
+// V24: one authoritative CIO Deployment Regime controls sizing and Cash Floor.
+// The committee route may not recreate the old SPY-only assessRegime score.
+requireTokens("lib/deploymentRegime.ts", [
+  "CIO_DEPLOYMENT_REGIME_V1",
+  "regimeBandFor",
+  "macro: 45",
+  "tape: 35",
+  "volatilityRisk: 20",
+]);
+requireTokens("lib/macroOutlook.ts", [
+  "buildMarketTapeSnapshot",
+  "buildDeploymentRegime",
+  "CompleteMacroOutlook",
+]);
+forbidTokens("lib/macroOutlook.ts", [
+  ["buildMarketLeadershipMap", "Cash/CIO macro controls must not import the Research OS dependency graph"],
+]);
 requireTokens("app/api/committee/meeting/route.ts", [
   "runCommitteeMeeting",
   "buildBookReview",
-  "assessRegime",
   "scoreMomentumV3",
   "resolveThomasValuation",
   "loadThomasValuationLedger",
@@ -126,17 +142,21 @@ requireTokens("app/api/committee/meeting/route.ts", [
   "/api/analyze/actions",
   "/api/analyze/performance",
   "buildAuthoritativeCashBufferSnapshot",
+  "const regime = buffer?.regime ?? null",
+  "authoritative CIO Deployment Regime",
   "portfolioSnapshot",
   "unavailable",
   "runDeskScan",
   "runInvestmentResearchOS",
-  "Active Momentum Research V23",
   "proposals",
   "lifecycle and Fair Value gates",
   '"DATA_BLOCKED"',
   '"NO_BUY"',
   "scanNearMisses",
   "scanStages",
+]);
+forbidTokens("app/api/committee/meeting/route.ts", [
+  ["assessRegime(", "CIO meeting must consume the authoritative deployment regime instead of recomputing an SPY-only score"],
 ]);
 
 requireTokens("lib/analyze.ts", [
@@ -184,7 +204,7 @@ requireTokens("app/components/ResearchWorkspaceV12.tsx", [
   "source:engine",
   "body?.error",
   "watchError",
-  "ACTIVE MOMENTUM RESEARCH OS · V23",
+  "ACTIVE MOMENTUM RESEARCH OS · V24",
   "Momentum Stage",
   "Valuation Complete",
 ]);
