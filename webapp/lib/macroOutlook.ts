@@ -1,7 +1,7 @@
 import { dailyCandles } from "./marketData";
 import type { Candle } from "./types";
 import { buildDeploymentRegime, type DeploymentRegime } from "./deploymentRegime";
-import { buildMarketLeadershipMap } from "./research/marketLeadership";
+import { buildMarketTapeSnapshot } from "./marketTape";
 
 export interface MacroHeadline { title: string; date: string; source: string }
 export interface MacroScenario { name: string; nameTh: string; probability: number; thesis: string; thesisTh: string }
@@ -44,6 +44,7 @@ async function blsSeries() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ seriesid: ["CUUR0000SA0", "LNS14000000", "CES0000000001"], startyear: String(start), endyear: String(end) }),
     cache: "no-store",
+    signal: AbortSignal.timeout(4500),
   });
   if (!r.ok) throw new Error(`BLS ${r.status}`);
   const j = await r.json();
@@ -66,7 +67,11 @@ async function blsSeries() {
 }
 
 async function fedHeadlines(): Promise<MacroHeadline[]> {
-  const r = await fetch("https://www.federalreserve.gov/feeds/press_monetary.xml", { cache: "no-store", headers: { "User-Agent": "Sentinel-Capital/1.0" } });
+  const r = await fetch("https://www.federalreserve.gov/feeds/press_monetary.xml", {
+    cache: "no-store",
+    headers: { "User-Agent": "Sentinel-Capital/1.0" },
+    signal: AbortSignal.timeout(4500),
+  });
   if (!r.ok) throw new Error(`Fed RSS ${r.status}`);
   const xml = await r.text();
   const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 8);
@@ -80,10 +85,10 @@ async function fedHeadlines(): Promise<MacroHeadline[]> {
   });
 }
 
-export async function buildMacroOutlook(): Promise<MacroOutlook> {
+export async function buildMacroOutlook(options: { includeHeadlines?: boolean } = {}): Promise<MacroOutlook> {
   const warnings: string[] = [];
   const symbols = ["SPY", "QQQ", "IWM", "HYG", "TLT", "GLD", "UUP"];
-  const leadershipPromise = buildMarketLeadershipMap().catch((e: any) => {
+  const tapePromise = buildMarketTapeSnapshot().catch((e: any) => {
     warnings.push(`Market tape: ${e?.message ?? "failed"}`);
     return null;
   });
@@ -93,10 +98,12 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
 
   let econ = { cpiYoY: null as number|null, unemployment: null as number|null, payrollChangeK: null as number|null };
   let headlines: MacroHeadline[] = [];
-  const leadership = await leadershipPromise;
-  if (leadership?.warnings?.length) warnings.push(...leadership.warnings.map(warning => `Market tape: ${warning}`));
+  const tape = await tapePromise;
+  if (tape?.warnings?.length) warnings.push(...tape.warnings.map(warning => `Market tape: ${warning}`));
   try { econ = await blsSeries(); } catch (e:any) { warnings.push(`BLS: ${e?.message ?? "failed"}`); }
-  try { headlines = await fedHeadlines(); } catch (e:any) { warnings.push(`Fed news: ${e?.message ?? "failed"}`); }
+  if (options.includeHeadlines !== false) {
+    try { headlines = await fedHeadlines(); } catch (e:any) { warnings.push(`Fed news: ${e?.message ?? "failed"}`); }
+  }
 
   const spy1m=ret(spy,21), spy3m=ret(spy,63), qqq3m=ret(qqq,63), iwm3m=ret(iwm,63), hyg3m=ret(hyg,63), tlt3m=ret(tlt,63), gld3m=ret(gld,63), usd3m=ret(uup,63);
   let score = 50;
@@ -112,11 +119,9 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
   if (econ.payrollChangeK != null) { if (econ.payrollChangeK > 100) score += 4; else if (econ.payrollChangeK < 0) score -= 8; }
   score = Math.round(clamp(score, 0, 100));
 
-  // Macro remains a 3–6 month economic/asset-allocation read. It no longer owns
-  // sizing or the Cash Floor. Those controls belong exclusively to deployment.
   const regime = score >= 72 ? "Risk-On / Expansion" : score >= 55 ? "Constructive / Selective" : score >= 38 ? "Late-cycle / Defensive" : "Risk-Off / Capital Preservation";
   const regimeTh = score >= 72 ? "Risk-On / เศรษฐกิจและตลาดขยายตัว" : score >= 55 ? "เชิงบวกแต่ต้องคัดเลือก" : score >= 38 ? "ปลายวัฏจักร / เน้นป้องกัน" : "Risk-Off / รักษาเงินทุน";
-  const deployment = buildDeploymentRegime({ macroScore: score, tapeScore: leadership?.sentimentScore ?? 50, spy });
+  const deployment = buildDeploymentRegime({ macroScore: score, tapeScore: tape?.score ?? 50, spy });
   const riskBudgetPct = deployment.riskBudgetPct;
   const cashFloorPct = deployment.cashFloorPct;
 
@@ -130,14 +135,14 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
       ? "The next 3–6 months favor selective risk-taking rather than broad beta. Maintain exposure to durable growth and income, demand stronger valuation support for new positions, and keep cash available for volatility-driven entries."
       : score >= 38
         ? "The 3–6 month outlook is two-sided: slower growth, sticky inflation or weaker credit can pressure multiples. Favor quality cash flow, dividends, defense and shorter-duration exposure while requiring a high replacement-alpha hurdle."
-        : "The priority for the next 3–6 months is capital preservation. Reduce gross deployment, raise cash, avoid fragile high-beta setups and wait for credit, breadth and trend confirmation before rebuilding risk."
+        : "The priority for the next 3–6 months is capital preservation. Reduce gross deployment, raise cash, avoid fragile high-beta setups and wait for credit, breadth and trend confirmation before rebuilding risk.";
   const visionTh = score >= 72
     ? "กรณีฐานในช่วง 3–6 เดือนข้างหน้าคือความต้องการรับความเสี่ยงที่ยังได้รับแรงหนุนจากกำไรบริษัท ตลาดอาจยังนำโดยหุ้นบางกลุ่ม แต่หาก Small Cap และ Credit แข็งแรงขึ้นจะยืนยันว่าการขยายตัวมีคุณภาพ ควรเพิ่มลงทุนแบบเลือกจังหวะจาก Valuation และ Catalyst ไม่ไล่ราคาที่ขึ้นแรงเกินไป"
     : score >= 55
       ? "ช่วง 3–6 เดือนข้างหน้าเหมาะกับการรับความเสี่ยงแบบคัดเลือก มากกว่าซื้อทั้งตลาด ควรรักษาหุ้น Growth คุณภาพและ Income ที่ยั่งยืน ใช้เกณฑ์ Valuation เข้มขึ้นสำหรับหุ้นใหม่ และถือเงินสดเพื่อรอซื้อเมื่อเกิดความผันผวน"
       : score >= 38
         ? "แนวโน้ม 3–6 เดือนมีความไม่แน่นอนสองด้าน หากเศรษฐกิจชะลอ เงินเฟ้อยังสูง หรือ Credit อ่อนตัว อาจกดดัน Valuation ควรเน้นกระแสเงินสดคุณภาพ หุ้นปันผล กลุ่มป้องกัน และกำหนดเกณฑ์ Replacement Alpha ที่สูง"
-        : "เป้าหมายหลักในช่วง 3–6 เดือนคือรักษาเงินทุน ลดการใช้ความเสี่ยง เพิ่มเงินสด หลีกเลี่ยงหุ้น High Beta ที่เปราะบาง และรอให้ Credit, Market Breadth และแนวโน้มราคากลับมายืนยันก่อนเพิ่มน้ำหนักลงทุน"
+        : "เป้าหมายหลักในช่วง 3–6 เดือนคือรักษาเงินทุน ลดการใช้ความเสี่ยง เพิ่มเงินสด หลีกเลี่ยงหุ้น High Beta ที่เปราะบาง และรอให้ Credit, Market Breadth และแนวโน้มราคากลับมายืนยันก่อนเพิ่มน้ำหนักลงทุน";
 
   const bull = clamp(Math.round(25 + score * .35), 20, 55);
   const bear = clamp(Math.round(45 - score * .3), 15, 45);
@@ -162,10 +167,10 @@ export async function buildMacroOutlook(): Promise<MacroOutlook> {
     cashFloorPct,
     deployment,
     marketTape: {
-      score: leadership?.sentimentScore ?? 50,
-      label: leadership?.sentimentLabel ?? "SELECTIVE",
-      labelTh: leadership?.sentimentLabelTh ?? "เลือกกลุ่ม/เลือกหุ้น",
-      asOf: leadership?.asOf ?? null,
+      score: tape?.score ?? 50,
+      label: tape?.label ?? "SELECTIVE",
+      labelTh: tape?.labelTh ?? "เลือกกลุ่ม/เลือกหุ้น",
+      asOf: tape?.asOf ?? null,
     },
     indicators:{ spy1m, spy3m, qqq3m, iwm3m, hyg3m, tlt3m, gld3m, usd3m, cpiYoY:econ.cpiYoY, unemployment:econ.unemployment, payrollChangeK:econ.payrollChangeK, spy:last(spy), breadth, growthLead, credit, inflation, compositeTrend:avg([spy1m,spy3m,qqq3m,iwm3m,hyg3m].filter((x):x is number=>x!=null)) },
     scenarios,
