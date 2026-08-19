@@ -259,7 +259,7 @@ function enforceAuthoritativeWatchlist(result: any, authoritativeTickers: string
     newIdeas: removeWatchlistNames(result?.newIdeas ?? []),
     researchIncomplete: removeWatchlistNames(result?.researchIncomplete ?? []),
     watchlistReviews,
-    authoritativeWatchlistTickers,
+    authoritativeWatchlistTickers: authoritativeTickers,
     watchlistCount: authoritativeTickers.length,
     watchlistReviewedCount: reviewedCount,
     watchlistUnresolved: unresolved,
