@@ -72,15 +72,15 @@ export async function GET(req:NextRequest){
   if(!universe.length)return NextResponse.json({error:"No securities from the CIO-approved universe are available for this research run.",mode,sector},{status:422});
 
   const result=await runFactorDiscovery(engineMode,universe,40);const asOf=new Date().toISOString();const key=scoreKey(mode);
-  const candidates=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate));
+  const candidates:Candidate[]=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate) as Candidate);
   const factorQualified=candidates.filter((candidate:Candidate)=>candidate.passed);
   const lifecycleCandidates=factorQualified.filter((candidate:Candidate)=>(isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)||isMatureFallbackStage(candidate?.lifecycle?.stage))&&Number(candidate?.momentum??0)>=62&&candidate.valuationValid);
   const primaryPre=lifecycleCandidates.filter((candidate:Candidate)=>isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)).sort((a:Candidate,b:Candidate)=>(finiteNumber(b[key])??0)-(finiteNumber(a[key])??0)).slice(0,Math.max(top*2,12));
   const maturePre=lifecycleCandidates.filter((candidate:Candidate)=>isMatureFallbackStage(candidate?.lifecycle?.stage)&&!candidate?.lifecycle?.nearFairValue&&Number(candidate.expectedReturnPct??0)>=12).sort((a:Candidate,b:Candidate)=>(finiteNumber(b[key])??0)-(finiteNumber(a[key])??0)).slice(0,Math.max(top,6));
-  const preUnderwrite=[...primaryPre,...maturePre].filter((candidate,index,rows)=>rows.findIndex(row=>row.ticker===candidate.ticker)===index);
+  const preUnderwrite=[...primaryPre,...maturePre].filter((candidate,index,rows)=>rows.findIndex((row:Candidate)=>row.ticker===candidate.ticker)===index);
   const underwritten=await mapLimit(preUnderwrite,3,async(candidate:Candidate)=>{
    const discoveryTier=lifecycleDiscoveryTier(candidate?.lifecycle?.stage);
-   const researchEvidence=await buildFundResearchEvidence(candidate,{discoveryTier,marketFitScore:50});
+   const researchEvidence=await buildFundResearchEvidence(candidate as any,{discoveryTier,marketFitScore:50});
    return {...candidate,discoveryTier,researchEvidence};
   });
   const underwrittenEligible=underwritten.filter((candidate:Candidate)=>isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)
