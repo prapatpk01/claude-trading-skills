@@ -14,6 +14,17 @@ export type ReinvestmentCandidate = {
   reason?: string | null;
 };
 
+export type ReinvestmentCuration = {
+  owner: "INV_RESEARCH";
+  selected: ReinvestmentCandidate[];
+  availableCount: number;
+  targetMinNames: number;
+  targetMaxNames: number;
+  capitalCapacityNames: number;
+  qualityLimited: boolean;
+  rationale: string;
+};
+
 export type ReinvestmentDraftOrder = ReinvestmentCandidate & {
   suggestedUsd: number;
   estimatedShares: number;
@@ -55,6 +66,65 @@ export function rankReinvestmentCandidates(rows: ReinvestmentCandidate[]) {
     if (a.readiness !== b.readiness) return a.readiness === "READY" ? -1 : 1;
     return convictionScore(b) - convictionScore(a) || b.expectedReturnPct - a.expectedReturnPct || a.ticker.localeCompare(b.ticker);
   });
+}
+
+export function curateReinvestmentCandidates(input: {
+  candidates: ReinvestmentCandidate[];
+  deployableUsd: number;
+  minNames?: number;
+  maxNames?: number;
+  minOrderUsd?: number;
+}): ReinvestmentCuration {
+  const minNames = Math.max(1, Math.min(8, Math.round(finite(input.minNames, 5))));
+  const maxNames = Math.max(minNames, Math.min(8, Math.round(finite(input.maxNames, 8))));
+  const minOrderUsd = Math.max(1, finite(input.minOrderUsd, 100));
+  const deployableUsd = Math.max(0, finite(input.deployableUsd));
+  const ranked = rankReinvestmentCandidates(input.candidates)
+    .filter(row => row.ticker && row.price > 0)
+    .filter((row, index, rows) => rows.findIndex(other => other.ticker === row.ticker) === index);
+
+  const capitalCapacityNames = deployableUsd > 0 ? Math.min(maxNames, Math.floor(deployableUsd / minOrderUsd)) : 0;
+  const maximumSelectable = Math.min(maxNames, capitalCapacityNames, ranked.length);
+  if (maximumSelectable <= 0) return {
+    owner: "INV_RESEARCH",
+    selected: [],
+    availableCount: ranked.length,
+    targetMinNames: minNames,
+    targetMaxNames: maxNames,
+    capitalCapacityNames,
+    qualityLimited: ranked.length > 0,
+    rationale: deployableUsd <= 0
+      ? "INV has no deployable capital to curate this cycle."
+      : "Available capital is below the minimum draft-order threshold.",
+  };
+
+  const selected = ranked.slice(0, Math.min(minNames, maximumSelectable));
+  for (let index = selected.length; index < maximumSelectable; index += 1) {
+    const row = ranked[index];
+    const strongEnough = row.readiness === "READY"
+      ? row.confidence >= 60 && row.expectedReturnPct >= 0
+      : row.confidence >= 65 && row.expectedReturnPct >= 5;
+    if (!strongEnough) break;
+    selected.push(row);
+  }
+
+  const qualityLimited = selected.length < Math.min(maxNames, capitalCapacityNames, ranked.length);
+  const rationale = selected.length < minNames
+    ? `INV found only ${selected.length} names that can be funded without forcing lower-quality selections; the 5-name floor is intentionally not forced.`
+    : selected.length === maxNames
+      ? `INV filled the full ${maxNames}-name quality band from the ranked Research/Forecast pool.`
+      : `INV selected ${selected.length} names; lower-ranked candidates remain standby because they did not clear the extension-quality threshold.`;
+
+  return {
+    owner: "INV_RESEARCH",
+    selected,
+    availableCount: ranked.length,
+    targetMinNames: minNames,
+    targetMaxNames: maxNames,
+    capitalCapacityNames,
+    qualityLimited,
+    rationale,
+  };
 }
 
 function rawWeights(rows: ReinvestmentCandidate[], mode: ReinvestmentSizingMode) {

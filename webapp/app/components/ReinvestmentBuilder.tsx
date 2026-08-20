@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import {
   buildReinvestmentDraft,
+  curateReinvestmentCandidates,
   rankReinvestmentCandidates,
   type ReinvestmentCandidate,
   type ReinvestmentSizingMode,
@@ -28,72 +29,65 @@ export default function ReinvestmentBuilder({
   lang?: "th" | "en";
 }) {
   const ranked = useMemo(() => rankReinvestmentCandidates(candidates).slice(0, 12), [candidates]);
-  const [selected, setSelected] = useState<string[]>([]);
+  const curation = useMemo(() => curateReinvestmentCandidates({
+    candidates: ranked,
+    deployableUsd,
+    minNames: 5,
+    maxNames: 8,
+    minOrderUsd: 100,
+  }), [ranked, deployableUsd]);
+  const curatedTickers = useMemo(() => new Set(curation.selected.map(row => row.ticker)), [curation.selected]);
   const [mode, setMode] = useState<ReinvestmentSizingMode>("CONVICTION");
   const [showDraft, setShowDraft] = useState(false);
 
-  const selectedRows = useMemo(() => ranked.filter(row => selected.includes(row.ticker)), [ranked, selected]);
   const draft = useMemo(() => buildReinvestmentDraft({
     deployableUsd,
     totalNavUsd,
-    selected: selectedRows,
+    selected: curation.selected,
     mode,
     maxNames: 8,
     minOrderUsd: 100,
-  }), [deployableUsd, totalNavUsd, selectedRows, mode]);
-
-  const selectTop = (count: number) => {
-    const tickers = ranked.slice(0, Math.min(count, 8)).map(row => row.ticker);
-    setSelected(tickers);
-    setShowDraft(false);
-  };
-
-  const toggle = (ticker: string) => {
-    setSelected(current => {
-      if (current.includes(ticker)) return current.filter(value => value !== ticker);
-      if (current.length >= 8) return current;
-      return [...current, ticker];
-    });
-    setShowDraft(false);
-  };
+  }), [deployableUsd, totalNavUsd, curation.selected, mode]);
 
   const readyCount = ranked.filter(row => row.readiness === "READY").length;
   const reviewCount = ranked.filter(row => row.readiness === "CIO_REVIEW").length;
 
-  return <section className={styles.builder} data-reinvestment-builder="v28" data-max-names="8" data-auto-trade="false">
+  return <section className={styles.builder} data-reinvestment-builder="v28.1" data-selection-owner="INV_RESEARCH" data-max-names="8" data-auto-trade="false">
     <div className={styles.head}>
       <div>
         <span>04 · REINVESTMENT BUILDER</span>
-        <h5>{lang === "th" ? "คัดเลือกการลงทุนจากเงินพร้อมใช้" : "Select investments for available capital"}</h5>
+        <h5>{lang === "th" ? "INV คัดสรรหุ้น · AM/CIO จัด Position Size" : "INV-curated investments · AM/CIO position sizing"}</h5>
         <p>{lang === "th"
-          ? "เลือกได้สูงสุด 8 ตัวจาก INV/AM ที่ผ่านหรือใกล้ผ่านเกณฑ์ แล้วให้ระบบคำนวณ Position Size, จำนวนหุ้น และเงินต่อรายการเป็น Draft ก่อนส่ง Funding/Risk/CIO"
-          : "Select up to eight INV/AM candidates and size dollar/share draft orders before Funding, Risk and CIO approval."}</p>
+          ? "ทีม Investment Research คัดชุดลงทุน 5–8 ตัวอัตโนมัติจาก Research + Momentum Lifecycle + Forecast + Valuation โดยไม่ต้องกดเลือก Top 5/8 เอง หากหุ้นผ่านจริงไม่ถึง 5 ระบบจะไม่ฝืนเติมหุ้นคุณภาพต่ำ"
+          : "Investment Research automatically curates a 5–8 name basket from Research, Momentum Lifecycle, Forecast and Valuation. If fewer than five clear the quality floor, the system will not force lower-quality names."}</p>
       </div>
       <strong>{formatUsd(deployableUsd)}</strong>
     </div>
 
     <div className={styles.metrics}>
       <div><small>{lang === "th" ? "เงินพร้อมจัดสรร" : "AVAILABLE POOL"}</small><strong>{formatUsd(deployableUsd)}</strong></div>
-      <div><small>{lang === "th" ? "READY" : "READY"}</small><strong>{readyCount}</strong></div>
-      <div><small>{lang === "th" ? "CIO REVIEW" : "CIO REVIEW"}</small><strong>{reviewCount}</strong></div>
-      <div><small>{lang === "th" ? "เลือกแล้ว" : "SELECTED"}</small><strong>{selected.length}/8</strong></div>
+      <div><small>READY</small><strong>{readyCount}</strong></div>
+      <div><small>CIO REVIEW</small><strong>{reviewCount}</strong></div>
+      <div><small>{lang === "th" ? "INV คัดแล้ว" : "INV CURATED"}</small><strong>{curation.selected.length}/8</strong></div>
     </div>
 
     <div className={styles.sourceNote}>
-      <span>{lang === "th" ? `Cash Floor repair ${formatUsd(cashFloorRepairUsd)}` : `Cash Floor repair ${formatUsd(cashFloorRepairUsd)}`}</span>
+      <span>{`Cash Floor repair ${formatUsd(cashFloorRepairUsd)}`}</span>
       <span>{lang === "th" ? `SELL REVIEW ${formatUsd(sellReviewPotentialUsd)} ยังไม่นับจนขายจริง` : `SELL REVIEW ${formatUsd(sellReviewPotentialUsd)} excluded until executed`}</span>
     </div>
 
-    <div className={styles.toolbar}>
-      <button type="button" onClick={() => selectTop(5)} disabled={!ranked.length || deployableUsd <= 0}>{lang === "th" ? "คัด Top 5" : "Auto Pick Top 5"}</button>
-      <button type="button" onClick={() => selectTop(8)} disabled={!ranked.length || deployableUsd <= 0}>{lang === "th" ? "คัด Top 8" : "Auto Pick Top 8"}</button>
-      <button type="button" onClick={() => { setSelected([]); setShowDraft(false); }} disabled={!selected.length}>{lang === "th" ? "ล้าง" : "Clear"}</button>
+    <div className={styles.curationNote}>
+      <strong>{lang === "th" ? "INV SELECTION POLICY" : "INV SELECTION POLICY"}</strong>
+      <span>{lang === "th"
+        ? `เป้าหมาย 5–8 ตัว · เงินรองรับได้สูงสุด ${curation.capitalCapacityNames} ตัว · Candidate ที่ใช้พิจารณา ${curation.availableCount} ตัว`
+        : `Target 5–8 names · capital supports up to ${curation.capitalCapacityNames} names · ${curation.availableCount} candidates reviewed`}</span>
+      <small>{curation.rationale}</small>
     </div>
 
     <div className={styles.candidates}>
       {ranked.length ? ranked.map((row, index) => {
-        const active = selected.includes(row.ticker);
-        return <button type="button" key={row.ticker} className={`${styles.candidate} ${active ? styles.selected : ""}`} onClick={() => toggle(row.ticker)}>
+        const selected = curatedTickers.has(row.ticker);
+        return <div key={row.ticker} className={`${styles.candidate} ${selected ? styles.selected : ""}`}>
           <div className={styles.rank}>#{index + 1}</div>
           <div className={styles.identity}>
             <strong>{row.ticker}</strong>
@@ -104,32 +98,32 @@ export default function ReinvestmentBuilder({
             <small>{row.expectedReturnPct >= 0 ? "+" : ""}{row.expectedReturnPct.toFixed(1)}%</small>
           </div>
           <span className={`${styles.readiness} ${row.readiness === "READY" ? styles.ready : styles.review}`}>{row.readiness === "READY" ? row.action : "CIO REVIEW"}</span>
-          <span className={styles.check}>{active ? "✓" : "+"}</span>
-        </button>;
-      }) : <div className={styles.empty}>{lang === "th" ? "ยังไม่มี candidate ที่ผ่านขั้นต่ำสำหรับสร้าง Draft ให้กดสแกน INV ใหม่เมื่อข้อมูล Research พร้อม" : "No candidate currently meets the minimum draft threshold."}</div>}
+          <span className={styles.check} title={selected ? "INV SELECTED" : "INV STANDBY"}>{selected ? "✓" : "—"}</span>
+        </div>;
+      }) : <div className={styles.empty}>{lang === "th" ? "ยังไม่มี candidate ที่ผ่านขั้นต่ำสำหรับให้ทีม INV คัดสรรในรอบนี้" : "No candidate currently meets the minimum INV curation threshold."}</div>}
     </div>
 
     <div className={styles.sizing}>
-      <div><span>{lang === "th" ? "POSITION SIZING" : "POSITION SIZING"}</span><small>{lang === "th" ? "BUY ใหม่ cap ~3% NAV/ตัว · ADD cap ~2% NAV/ตัว" : "New BUY cap ~3% NAV/name · ADD cap ~2% NAV/name"}</small></div>
+      <div><span>POSITION SIZING · AM / CIO</span><small>{lang === "th" ? "BUY ใหม่ cap ~3% NAV/ตัว · ADD cap ~2% NAV/ตัว" : "New BUY cap ~3% NAV/name · ADD cap ~2% NAV/name"}</small></div>
       <div className={styles.modeButtons}>
         {(["EQUAL", "CONVICTION", "CORE_SATELLITE"] as ReinvestmentSizingMode[]).map(value => <button type="button" key={value} className={mode === value ? styles.modeActive : ""} onClick={() => { setMode(value); setShowDraft(false); }}>
           {value === "EQUAL" ? "Equal" : value === "CONVICTION" ? "Conviction" : "Core / Satellite"}
         </button>)}
       </div>
       <p>{mode === "EQUAL"
-        ? (lang === "th" ? "แบ่งเงินใกล้เคียงกันทุกตัว ภายใต้ position cap" : "Near-equal allocation subject to position caps.")
+        ? (lang === "th" ? "AM/CIO แบ่งเงินใกล้เคียงกันทุกตัวภายใต้ position cap" : "AM/CIO allocates near-equal dollars subject to position caps.")
         : mode === "CONVICTION"
-          ? (lang === "th" ? "ให้น้ำหนักตาม Confidence + Expected Return + Research priority" : "Weights confidence, expected return and research priority.")
-          : (lang === "th" ? "Top 3 เป็น Core รวมประมาณ 60% ที่เหลือเป็น Satellite 40%" : "Top three form roughly 60% core; remaining names share 40% satellite.")}</p>
+          ? (lang === "th" ? "AM/CIO ให้น้ำหนักตาม Confidence + Expected Return + Research priority ของชุดที่ INV คัดแล้ว" : "AM/CIO weights the INV-curated basket by confidence, expected return and research priority.")
+          : (lang === "th" ? "Top 3 ของชุด INV เป็น Core รวมประมาณ 60% ที่เหลือเป็น Satellite 40%" : "Top three INV selections form roughly 60% core; remaining names share 40% satellite.")}</p>
     </div>
 
-    <button type="button" className={styles.buildButton} disabled={!selected.length || deployableUsd <= 0} onClick={() => setShowDraft(true)}>
-      {lang === "th" ? `สร้าง Draft Orders · ${selected.length} ตัว` : `Build Draft Orders · ${selected.length} names`}
+    <button type="button" className={styles.buildButton} disabled={!curation.selected.length || deployableUsd <= 0} onClick={() => setShowDraft(true)}>
+      {lang === "th" ? `สร้าง Draft จากชุด INV · ${curation.selected.length} ตัว` : `Build draft from INV basket · ${curation.selected.length} names`}
     </button>
 
     {showDraft && <div className={styles.draft}>
       <div className={styles.draftHead}>
-        <div><span>DRAFT ORDERS · {mode}</span><strong>{formatUsd(draft.allocatedUsd)} / {formatUsd(draft.deployableUsd)}</strong></div>
+        <div><span>DRAFT ORDERS · INV CURATED · {mode}</span><strong>{formatUsd(draft.allocatedUsd)} / {formatUsd(draft.deployableUsd)}</strong></div>
         <small>{lang === "th" ? `คงเหลือ ${formatUsd(draft.unallocatedUsd)}` : `${formatUsd(draft.unallocatedUsd)} unallocated`}</small>
       </div>
       {draft.orders.length ? draft.orders.map((order, index) => <div className={styles.order} key={order.ticker}>
@@ -139,8 +133,8 @@ export default function ReinvestmentBuilder({
         <div className={styles.orderMeta}><span>{order.portfolioPct.toFixed(2)}% NAV</span><span>{order.poolPct.toFixed(1)}% pool</span><span>@ {formatUsd(order.price)}</span></div>
       </div>) : <div className={styles.empty}>{lang === "th" ? "เงิน/position cap ทำให้ยังสร้างรายการขั้นต่ำ $100 ไม่ได้" : "No order cleared the minimum $100 draft size after policy caps."}</div>}
       <div className={styles.approval}>{lang === "th"
-        ? "DRAFT ONLY · ยังไม่ส่งคำสั่งซื้อ · ต้องผ่าน Funding → Risk → CIO และยืนยันเงินจาก TRIM/SELL ที่เกิดขึ้นจริงก่อน"
-        : "DRAFT ONLY · No broker order is sent. Funding → Risk → CIO approval and executed funding are still required."}</div>
+        ? "INV คัดสรรหุ้นแล้ว แต่ Draft ยังไม่ใช่คำสั่งซื้อ · ต้องผ่าน AM sizing → Funding → Risk → CIO และยืนยันเงินจาก TRIM/SELL ที่เกิดขึ้นจริงก่อน"
+        : "INV has curated the basket, but this remains a draft. AM sizing → Funding → Risk → CIO approval and executed funding are still required."}</div>
     </div>}
   </section>;
 }
