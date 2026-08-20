@@ -117,14 +117,20 @@ export async function buildMacroOutlook(options: { includeHeadlines?: boolean } 
   }
 
   const spy1m=ret(spy,21), spy3m=ret(spy,63), qqq3m=ret(qqq,63), iwm3m=ret(iwm,63), hyg3m=ret(hyg,63), tlt3m=ret(tlt,63), gld3m=ret(gld,63), usd3m=ret(uup,63);
+  const measuredMarketSignals=[spy1m,spy3m,qqq3m,iwm3m,hyg3m,tlt3m,gld3m,usd3m].filter((value):value is number=>value!=null).length;
+  if(measuredMarketSignals<5)warnings.push(`Macro market-price coverage is ${measuredMarketSignals}/8. Missing prices are treated as UNMEASURED, not bearish evidence.`);
+
+  // V29 data-quality rule: only measured observations can add or subtract
+  // points. Previously null SPY/IWM/HYG values were converted to zero/-99 and
+  // silently pushed the macro score toward Risk-Off during provider outages.
   let score = 50;
-  if ((spy1m ?? 0) > 0) score += 8; else score -= 8;
-  if ((spy3m ?? 0) > 5) score += 10; else if ((spy3m ?? 0) < -5) score -= 12;
-  if ((qqq3m ?? -99) > (spy3m ?? 0)) score += 4;
-  if ((iwm3m ?? -99) > (spy3m ?? 0)) score += 6; else score -= 3;
-  if ((hyg3m ?? 0) > 0) score += 8; else score -= 10;
-  if ((tlt3m ?? 0) > 4) score += 3;
-  if ((usd3m ?? 0) > 5) score -= 4;
+  if (spy1m != null) score += spy1m > 0 ? 8 : -8;
+  if (spy3m != null) { if (spy3m > 5) score += 10; else if (spy3m < -5) score -= 12; }
+  if (qqq3m != null && spy3m != null && qqq3m > spy3m) score += 4;
+  if (iwm3m != null && spy3m != null) score += iwm3m > spy3m ? 6 : -3;
+  if (hyg3m != null) score += hyg3m > 0 ? 8 : -10;
+  if (tlt3m != null && tlt3m > 4) score += 3;
+  if (usd3m != null && usd3m > 5) score -= 4;
   if (econ.cpiYoY != null) { if (econ.cpiYoY <= 3) score += 6; else if (econ.cpiYoY >= 4) score -= 8; }
   if (econ.unemployment != null) { if (econ.unemployment <= 4.5) score += 4; else if (econ.unemployment >= 5.2) score -= 10; }
   if (econ.payrollChangeK != null) { if (econ.payrollChangeK > 100) score += 4; else if (econ.payrollChangeK < 0) score -= 8; }
@@ -132,13 +138,14 @@ export async function buildMacroOutlook(options: { includeHeadlines?: boolean } 
 
   const regime = score >= 72 ? "Risk-On / Expansion" : score >= 55 ? "Constructive / Selective" : score >= 38 ? "Late-cycle / Defensive" : "Risk-Off / Capital Preservation";
   const regimeTh = score >= 72 ? "Risk-On / เศรษฐกิจและตลาดขยายตัว" : score >= 55 ? "เชิงบวกแต่ต้องคัดเลือก" : score >= 38 ? "ปลายวัฏจักร / เน้นป้องกัน" : "Risk-Off / รักษาเงินทุน";
-  const deployment = buildDeploymentRegime({ macroScore: score, tapeScore: tape?.score ?? 50, spy });
+  const tapeScoreForDeployment=tape?.dataQuality?.sentimentMeasured?tape.score:null;
+  const deployment = buildDeploymentRegime({ macroScore: score, tapeScore: tapeScoreForDeployment, spy });
   const riskBudgetPct = deployment.riskBudgetPct;
   const cashFloorPct = deployment.cashFloorPct;
 
-  const growthLead = (qqq3m ?? 0) - (spy3m ?? 0);
-  const breadth = (iwm3m ?? 0) - (spy3m ?? 0);
-  const credit = hyg3m ?? 0;
+  const growthLead = qqq3m != null && spy3m != null ? qqq3m - spy3m : null;
+  const breadth = iwm3m != null && spy3m != null ? iwm3m - spy3m : null;
+  const credit = hyg3m;
   const inflation = econ.cpiYoY;
   const vision = score >= 72
     ? "The base case is continued earnings-led risk appetite over the next 3–6 months. Leadership can remain concentrated, but improving small-cap breadth and firm credit would confirm a healthier expansion. Add selectively on valuation and catalyst discipline rather than chasing vertical moves."
@@ -180,10 +187,10 @@ export async function buildMacroOutlook(options: { includeHeadlines?: boolean } 
     marketTape: {
       score: tape?.score ?? 50,
       label: tape?.label ?? "SELECTIVE",
-      labelTh: tape?.labelTh ?? "เลือกกลุ่ม/เลือกหุ้น",
+      labelTh: tape?.labelTh ?? "ข้อมูล Market Tape ไม่พร้อม",
       asOf: tape?.asOf ?? null,
     },
-    indicators:{ spy1m, spy3m, qqq3m, iwm3m, hyg3m, tlt3m, gld3m, usd3m, cpiYoY:econ.cpiYoY, unemployment:econ.unemployment, payrollChangeK:econ.payrollChangeK, spy:last(spy), breadth, growthLead, credit, inflation, compositeTrend:avg([spy1m,spy3m,qqq3m,iwm3m,hyg3m].filter((x):x is number=>x!=null)) },
+    indicators:{ spy1m, spy3m, qqq3m, iwm3m, hyg3m, tlt3m, gld3m, usd3m, cpiYoY:econ.cpiYoY, unemployment:econ.unemployment, payrollChangeK:econ.payrollChangeK, spy:last(spy), breadth, growthLead, credit, inflation, marketPriceSignalsMeasured:measuredMarketSignals, compositeTrend:avg([spy1m,spy3m,qqq3m,iwm3m,hyg3m].filter((x):x is number=>x!=null)) },
     scenarios,
     headlines,
     allocationTilt,

@@ -1,6 +1,5 @@
-import { dailyCandles } from "@/lib/marketData";
 import { loadThreeIndexUniverse } from "@/lib/research/marketUniverse";
-import type { Candle } from "@/lib/types";
+import { fastScanApprovedUniverse, type FastUniverseRow } from "@/lib/research/universeFastScan";
 
 export type SectorLeadershipStatus = "LEADING" | "IMPROVING" | "NEUTRAL" | "FADING" | "LAGGING";
 
@@ -11,6 +10,7 @@ export type SectorLeadershipRow = {
   etf: string;
   score: number;
   status: SectorLeadershipStatus;
+  measured: boolean;
   return1w: number | null;
   return1m: number | null;
   return3m: number | null;
@@ -32,6 +32,13 @@ export type MarketLeadershipMap = {
   avoidSectors: string[];
   focusTickers: string[];
   sectors: SectorLeadershipRow[];
+  dataQuality: {
+    status: "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
+    sentimentMeasured: boolean;
+    measuredSectors: number;
+    totalSectors: number;
+    provider: string | null;
+  };
   evidence: string[];
   warnings: string[];
   methodology: string;
@@ -51,19 +58,10 @@ const SECTORS = [
   { key: "MATERIALS", sector: "Materials", etf: "XLB", tickers: ["LIN", "SHW", "FCX", "NEM", "ECL", "APD", "MLM", "VMC"] },
 ] as const;
 
+const MIN_MEASURED_SECTORS = 6;
 const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
 const round1 = (value: number) => Math.round(value * 10) / 10;
 const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-const ret = (candles: Candle[], periods: number) => {
-  if (candles.length <= periods) return null;
-  const start = candles[candles.length - 1 - periods]?.close;
-  const end = candles.at(-1)?.close;
-  return start && end ? (end / start - 1) * 100 : null;
-};
-const sma = (candles: Candle[], periods: number) => {
-  const values = candles.slice(-periods).map(candle => candle.close).filter(Number.isFinite);
-  return values.length === periods ? values.reduce((sum, value) => sum + value, 0) / periods : null;
-};
 
 export function normalizeSectorKey(value: unknown) {
   const text = String(value ?? "").trim().toUpperCase();
@@ -82,30 +80,30 @@ export function normalizeSectorKey(value: unknown) {
   return text.replace(/[^A-Z0-9]+/g, "_");
 }
 
-function scoreSector(candles: Candle[], spy: Candle[]) {
-  const return1w = ret(candles, 5);
-  const return1m = ret(candles, 21);
-  const return3m = ret(candles, 63);
-  const spy1m = ret(spy, 21);
-  const spy3m = ret(spy, 63);
-  const relative1m = return1m == null || spy1m == null ? null : return1m - spy1m;
-  const relative3m = return3m == null || spy3m == null ? null : return3m - spy3m;
-  const close = candles.at(-1)?.close ?? null;
-  const average20 = sma(candles, 20);
-  const average50 = sma(candles, 50);
-  const above20d = close == null || average20 == null ? null : close > average20;
-  const above50d = close == null || average50 == null ? null : close > average50;
-  const acceleration = return1w == null || return1m == null ? null : return1w - return1m / 4.2;
+function scoreSector(row: FastUniverseRow, spy: FastUniverseRow) {
+  const relative1m = row.return1m - spy.return1m;
+  const relative3m = row.return3m - spy.return3m;
+  const acceleration = row.return1w - row.return1m / 4.2;
   const score = clamp(
     50
-    + (relative1m ?? 0) * 2.2
-    + (relative3m ?? 0) * .8
-    + (return1w ?? 0) * 1.3
-    + (acceleration ?? 0) * 1.1
-    + (above20d === true ? 7 : above20d === false ? -7 : 0)
-    + (above50d === true ? 8 : above50d === false ? -8 : 0),
+    + relative1m * 2.2
+    + relative3m * .8
+    + row.return1w * 1.3
+    + acceleration * 1.1
+    + (row.aboveEma20 ? 7 : -7)
+    + (row.aboveEma50 ? 8 : -8),
   );
-  return { score: round1(score), return1w, return1m, return3m, relative1m, relative3m, above20d, above50d, acceleration };
+  return {
+    score: round1(score),
+    return1w: row.return1w,
+    return1m: row.return1m,
+    return3m: row.return3m,
+    relative1m,
+    relative3m,
+    above20d: row.aboveEma20,
+    above50d: row.aboveEma50,
+    acceleration,
+  };
 }
 
 function statusFor(score: number, acceleration: number | null): SectorLeadershipStatus {
@@ -116,6 +114,26 @@ function statusFor(score: number, acceleration: number | null): SectorLeadership
   return "NEUTRAL";
 }
 
+function unavailableSector(definition: typeof SECTORS[number]): SectorLeadershipRow {
+  return {
+    rank: 0,
+    sector: definition.sector,
+    sectorKey: definition.key,
+    etf: definition.etf,
+    score: 50,
+    status: "NEUTRAL",
+    measured: false,
+    return1w: null,
+    return1m: null,
+    return3m: null,
+    relative1m: null,
+    relative3m: null,
+    above20d: null,
+    above50d: null,
+    acceleration: null,
+  };
+}
+
 function rotate(values: readonly string[], salt: number) {
   if (!values.length) return [];
   const offset = Math.abs(salt) % values.length;
@@ -124,7 +142,8 @@ function rotate(values: readonly string[], salt: number) {
 
 export function sectorLeadershipFor(sector: unknown, map: MarketLeadershipMap | null | undefined) {
   const key = normalizeSectorKey(sector);
-  return map?.sectors.find(row => row.sectorKey === key) ?? null;
+  const row = map?.sectors.find(item => item.sectorKey === key) ?? null;
+  return row?.measured === false ? null : row;
 }
 
 export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
@@ -134,71 +153,104 @@ export async function buildMarketLeadershipMap(): Promise<MarketLeadershipMap> {
     return null;
   });
   const symbols = ["SPY", ...SECTORS.map(row => row.etf)];
-  const entries = await Promise.all(symbols.map(async symbol => {
-    const candles = await dailyCandles(symbol, 150).catch(error => {
-      warnings.push(`${symbol}: ${error instanceof Error ? error.message : "price history unavailable"}`);
-      return [] as Candle[];
-    });
-    return [symbol, candles] as const;
-  }));
+  let scan: Awaited<ReturnType<typeof fastScanApprovedUniverse>> | null = null;
+  try {
+    scan = await fastScanApprovedUniverse(symbols);
+    warnings.push(...scan.warnings.map(warning => `Sector batch: ${warning}`));
+  } catch (error) {
+    warnings.push(`Sector batch unavailable: ${error instanceof Error ? error.message : "market request failed"}`);
+  }
+
   const approvedUniverse = await approvedUniversePromise;
   const approvedTickers = new Set(approvedUniverse?.masterTickers ?? []);
-  const histories = new Map(entries);
-  const spy = histories.get("SPY") ?? [];
+  const rows = new Map((scan?.rows ?? []).map(row => [row.ticker, row]));
+  const spy = rows.get("SPY") ?? null;
+
   const sectors = SECTORS.map(definition => {
-    const scored = scoreSector(histories.get(definition.etf) ?? [], spy);
+    const row = rows.get(definition.etf);
+    if (!row || !spy) return unavailableSector(definition);
+    const scored = scoreSector(row, spy);
     return {
       rank: 0,
       sector: definition.sector,
       sectorKey: definition.key,
       etf: definition.etf,
       ...scored,
+      measured: true,
       status: statusFor(scored.score, scored.acceleration),
     } satisfies SectorLeadershipRow;
-  }).sort((left, right) => right.score - left.score).map((row, index) => ({ ...row, rank: index + 1 }));
+  }).sort((left, right) => Number(right.measured) - Number(left.measured) || right.score - left.score)
+    .map((row, index) => ({ ...row, rank: index + 1 }));
 
-  const spy1m = ret(spy, 21);
-  const spy3m = ret(spy, 63);
-  const positiveBreadth = sectors.filter(row => (row.relative1m ?? -Infinity) > 0 && row.above50d === true).length;
-  const trendBreadth = sectors.filter(row => row.above20d === true).length;
-  const averageSectorScore = average(sectors.map(row => row.score)) ?? 50;
-  const sentimentScore = Math.round(clamp(
-    42 + (spy1m ?? 0) * 1.8 + (spy3m ?? 0) * .65 + positiveBreadth * 2.2 + trendBreadth * 1.1 + (averageSectorScore - 50) * .35,
-  ));
-  const sentimentLabel = sentimentScore >= 70 ? "RISK ON" : sentimentScore >= 52 ? "SELECTIVE" : sentimentScore >= 36 ? "DEFENSIVE" : "RISK OFF";
-  const sentimentLabelTh = sentimentLabel === "RISK ON" ? "รับความเสี่ยง" : sentimentLabel === "SELECTIVE" ? "เลือกกลุ่ม/เลือกหุ้น" : sentimentLabel === "DEFENSIVE" ? "เน้นป้องกัน" : "ลดความเสี่ยง";
-  const focus = sectors.filter(row => ["LEADING", "IMPROVING"].includes(row.status)).slice(0, 4);
-  const avoid = sectors.filter(row => ["FADING", "LAGGING"].includes(row.status)).slice(-3).reverse();
+  const measuredSectors = sectors.filter(row => row.measured);
+  const sentimentMeasured = Boolean(spy && measuredSectors.length >= MIN_MEASURED_SECTORS);
+  const dataStatus = !spy || measuredSectors.length === 0 ? "UNAVAILABLE" : measuredSectors.length === SECTORS.length ? "COMPLETE" : "PARTIAL";
+  const positiveBreadth = measuredSectors.filter(row => (row.relative1m ?? -Infinity) > 0 && row.above50d === true).length;
+  const trendBreadth = measuredSectors.filter(row => row.above20d === true).length;
+  const averageSectorScore = average(measuredSectors.map(row => row.score)) ?? 50;
+
+  let sentimentScore = 50;
+  let sentimentLabel: MarketLeadershipMap["sentimentLabel"] = "SELECTIVE";
+  let sentimentLabelTh = "ข้อมูลตลาดไม่ครบ / รอข้อมูลยืนยัน";
+  if (sentimentMeasured && spy) {
+    sentimentScore = Math.round(clamp(
+      42 + spy.return1m * 1.8 + spy.return3m * .65 + positiveBreadth * 2.2 + trendBreadth * 1.1 + (averageSectorScore - 50) * .35,
+    ));
+    sentimentLabel = sentimentScore >= 70 ? "RISK ON" : sentimentScore >= 52 ? "SELECTIVE" : sentimentScore >= 36 ? "DEFENSIVE" : "RISK OFF";
+    sentimentLabelTh = sentimentLabel === "RISK ON" ? "รับความเสี่ยง" : sentimentLabel === "SELECTIVE" ? "เลือกกลุ่ม/เลือกหุ้น" : sentimentLabel === "DEFENSIVE" ? "เน้นป้องกัน" : "ลดความเสี่ยง";
+  } else {
+    warnings.push(`Sector leadership measured only ${measuredSectors.length}/${SECTORS.length}${spy ? "" : " with SPY unavailable"}; 50/100 is a neutral placeholder, not a market signal.`);
+  }
+
+  const focus = sentimentMeasured ? measuredSectors.filter(row => ["LEADING", "IMPROVING"].includes(row.status)).slice(0, 4) : [];
+  const avoid = sentimentMeasured ? measuredSectors.filter(row => ["FADING", "LAGGING"].includes(row.status)).slice(-3).reverse() : [];
   const epoch3d = Math.floor(Date.now() / (3 * 86400000));
   const rawFocusTickers = focus.flatMap((row, index) => {
     const definition = SECTORS.find(item => item.key === row.sectorKey);
     return definition ? rotate(definition.tickers, epoch3d + index * 3).slice(0, 6) : [];
   });
-  // CIO rule: sector leadership can change research priority, but it cannot add
-  // a security outside S&P 500, Nasdaq-100 or Russell 2000 to the search queue.
   const focusTickers = rawFocusTickers.filter(ticker => approvedTickers.has(ticker));
-  const researchStance = sentimentLabel === "RISK ON"
-    ? "Press leading sectors, prioritize accumulation and early-markup names, and upsize only while valuation room and breadth confirm."
-    : sentimentLabel === "SELECTIVE"
-      ? "Concentrate research in the strongest sectors and demand a clear marginal-alpha edge before replacing a current holding."
-      : "Raise the entry hurdle, favor resilient leadership, and fund new risk primarily by trimming broken or fully valued positions.";
-  const researchStanceTh = sentimentLabel === "RISK ON"
-    ? "เร่งค้นหาใน Sector ผู้นำ เน้นหุ้นช่วงสะสมถึงเริ่มวิ่ง และเพิ่มขนาดเมื่อ Valuation room กับ Breadth ยืนยัน"
-    : sentimentLabel === "SELECTIVE"
-      ? "กระจุกงานวิจัยใน Sector ที่แข็งแรงที่สุด และต้องมี Marginal Alpha เหนือหุ้นเดิมชัดเจนก่อนสับเปลี่ยน"
-      : "ยกระดับเกณฑ์เข้าลงทุน เน้นผู้นำที่ทนทาน และใช้เงินจากหุ้นที่ Thesis แตกหรือใกล้เต็มมูลค่าเป็นหลัก";
+
+  const researchStance = !sentimentMeasured
+    ? "Market tape data is incomplete. Do not infer a defensive or risk-on stance from missing prices; continue stock-level research but withhold tape-based prioritization until data recovers."
+    : sentimentLabel === "RISK ON"
+      ? "Press leading sectors, prioritize accumulation and early-markup names, and upsize only while valuation room and breadth confirm."
+      : sentimentLabel === "SELECTIVE"
+        ? "Concentrate research in the strongest sectors and demand a clear marginal-alpha edge before replacing a current holding."
+        : "Raise the entry hurdle, favor resilient leadership, and fund new risk primarily by trimming broken or fully valued positions.";
+  const researchStanceTh = !sentimentMeasured
+    ? "ข้อมูล Market Tape ยังไม่ครบ ห้ามตีความข้อมูลที่หายเป็น Risk-Off หรือ Risk-On ให้ทำวิจัยรายหุ้นต่อได้ แต่พักการจัดลำดับตาม Sector จนข้อมูลกลับมาครบ"
+    : sentimentLabel === "RISK ON"
+      ? "เร่งค้นหาใน Sector ผู้นำ เน้นหุ้นช่วงสะสมถึงเริ่มวิ่ง และเพิ่มขนาดเมื่อ Valuation room กับ Breadth ยืนยัน"
+      : sentimentLabel === "SELECTIVE"
+        ? "กระจุกงานวิจัยใน Sector ที่แข็งแรงที่สุด และต้องมี Marginal Alpha เหนือหุ้นเดิมชัดเจนก่อนสับเปลี่ยน"
+        : "ยกระดับเกณฑ์เข้าลงทุน เน้นผู้นำที่ทนทาน และใช้เงินจากหุ้นที่ Thesis แตกหรือใกล้เต็มมูลค่าเป็นหลัก";
 
   return {
-    asOf: new Date().toISOString(), sentimentScore, sentimentLabel, sentimentLabelTh, researchStance, researchStanceTh,
-    focusSectors: focus.map(row => row.sector), avoidSectors: avoid.map(row => row.sector),
-    focusTickers: Array.from(new Set(focusTickers)), sectors,
+    asOf: scan?.asOf ?? new Date().toISOString(),
+    sentimentScore,
+    sentimentLabel,
+    sentimentLabelTh,
+    researchStance,
+    researchStanceTh,
+    focusSectors: focus.map(row => row.sector),
+    avoidSectors: avoid.map(row => row.sector),
+    focusTickers: Array.from(new Set(focusTickers)),
+    sectors,
+    dataQuality: {
+      status: dataStatus,
+      sentimentMeasured,
+      measuredSectors: measuredSectors.length,
+      totalSectors: SECTORS.length,
+      provider: scan?.provider ?? null,
+    },
     evidence: [
-      `SPY return: ${spy1m == null ? "n/a" : `${round1(spy1m)}%`} 1M; ${spy3m == null ? "n/a" : `${round1(spy3m)}%`} 3M.`,
-      `${positiveBreadth}/${sectors.length} sectors beat SPY over 1M while above their 50-day average; ${trendBreadth}/${sectors.length} are above 20-day trend.`,
-      `Research focus: ${focus.map(row => `${row.sector} ${row.score}/100`).join(" · ") || "no sector clears leadership threshold"}.`,
+      `SPY return: ${spy ? `${round1(spy.return1m)}%` : "n/a"} 1M; ${spy ? `${round1(spy.return3m)}%` : "n/a"} 3M.`,
+      `${measuredSectors.length}/${SECTORS.length} sectors measured; ${positiveBreadth} beat SPY over 1M while above their 50-day trend; ${trendBreadth} are above 20-day trend.`,
+      `Research focus: ${focus.map(row => `${row.sector} ${row.score}/100`).join(" · ") || (sentimentMeasured ? "no sector clears leadership threshold" : "withheld until market-data coverage recovers")}.`,
       `Automatic ticker focus is restricted to S&P 500 + Nasdaq-100 + Russell 2000 constituents; ${focusTickers.length}/${rawFocusTickers.length} sector-priority names passed that universe gate.`,
     ],
     warnings,
-    methodology: "Price-based tape sentiment and sector leadership are measured from SPY plus the 11 GICS sector ETFs using 1-week acceleration, 1/3-month relative strength and 20/50-day trend. This determines research priority inside the approved S&P 500 + Nasdaq-100 + Russell 2000 universe; it is not a standalone buy signal.",
+    methodology: "V29 uses a single multi-symbol price/volume batch for SPY plus the 11 GICS sector ETFs. Sector leadership requires measured prices; missing data is shown as unavailable rather than converted to 0% returns, 50/100 sectors or a false defensive signal.",
   };
 }

@@ -5,6 +5,7 @@ export type FastUniverseRow = {
   score: number;
   stage: FastMomentumStage;
   price: number;
+  return1w: number;
   return1m: number;
   return3m: number;
   rs3m: number;
@@ -29,13 +30,18 @@ export type FastUniverseScan = {
 
 const ENDPOINT = "https://query1.finance.yahoo.com/v7/finance/spark";
 const CACHE_MS = 15 * 60 * 1000;
+const MAX_CACHE_KEYS = 12;
 const CHUNK_SIZE = 60;
 const CONCURRENCY = 6;
 const TIMEOUT_MS = 8_000;
 const MIN_BARS = 55;
 
-let cache: { key: string; expiresAt: number; value: FastUniverseScan } | null = null;
-let inflight: Promise<FastUniverseScan> | null = null;
+// Different pages can request the 2,000+ stock master universe, sector ETFs and
+// a 10–30 name portfolio at the same time. Cache/in-flight work must therefore
+// be keyed by the requested ticker set. A single global promise can hand one
+// caller the result of an unrelated scan and corrupt downstream data quality.
+const cache = new Map<string, { expiresAt: number; value: FastUniverseScan }>();
+const inflight = new Map<string, Promise<FastUniverseScan>>();
 
 const finite = (value: unknown): number | null => {
   const n = typeof value === "number" ? value : Number(value);
@@ -94,8 +100,10 @@ function scoreSeries(ticker: string, series: { closes: number[]; volumes: number
   const volumes = series.volumes;
   const price = closes.at(-1) ?? 0;
   if (!(price > 0)) return null;
+  const oneWeekIndex = Math.max(0, closes.length - 6);
   const oneMonthIndex = Math.max(0, closes.length - 22);
   const threeMonthIndex = Math.max(0, closes.length - 64);
+  const return1w = pct(price, closes[oneWeekIndex] ?? price);
   const return1m = pct(price, closes[oneMonthIndex] ?? price);
   const return3m = pct(price, closes[threeMonthIndex] ?? price);
   const rs3m = return3m - benchmarkReturn3m;
@@ -131,6 +139,7 @@ function scoreSeries(ticker: string, series: { closes: number[]; volumes: number
     score: Math.round(clamp(score, 0, 100)),
     stage,
     price,
+    return1w: Math.round(return1w * 10) / 10,
     return1m: Math.round(return1m * 10) / 10,
     return3m: Math.round(return3m * 10) / 10,
     rs3m: Math.round(rs3m * 10) / 10,
@@ -188,8 +197,24 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return output;
 }
 
-function cacheKey(tickers: string[]) {
-  return `${tickers.length}:${tickers.slice(0, 12).join(",")}:${tickers.slice(-12).join(",")}`;
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  return (hash >>> 0).toString(36);
+}
+
+export function fastScanRequestKey(tickers: string[]) {
+  return `${tickers.length}:${stableHash(tickers.join(","))}`;
+}
+
+function pruneCache() {
+  const now = Date.now();
+  for (const [key, row] of cache) if (row.expiresAt <= now) cache.delete(key);
+  while (cache.size > MAX_CACHE_KEYS) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
 }
 
 async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
@@ -232,17 +257,23 @@ async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
 
 export async function fastScanApprovedUniverse(tickers: string[]): Promise<FastUniverseScan> {
   const normalized = Array.from(new Set(tickers.map(ticker => String(ticker).trim().toUpperCase()).filter(Boolean)));
-  const key = cacheKey(normalized);
-  if (cache && cache.key === key && cache.expiresAt > Date.now()) return cache.value;
-  if (!inflight) {
-    inflight = scanFresh(normalized)
-      .then(value => {
-        cache = { key, expiresAt: Date.now() + CACHE_MS, value };
-        return value;
-      })
-      .finally(() => { inflight = null; });
-  }
-  return inflight;
+  const key = fastScanRequestKey(normalized);
+  pruneCache();
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const running = inflight.get(key);
+  if (running) return running;
+
+  const request = scanFresh(normalized)
+    .then(value => {
+      cache.set(key, { expiresAt: Date.now() + CACHE_MS, value });
+      pruneCache();
+      return value;
+    })
+    .finally(() => { inflight.delete(key); });
+  inflight.set(key, request);
+  return request;
 }
 
 export function chooseDeepResearchQueue(scan: FastUniverseScan, limit: number) {
