@@ -1,4 +1,4 @@
-import type { MomentumLifecycleStage } from "@/lib/research/momentumLifecycle";
+import type { MomentumLifecycleStage } from "./momentumLifecycle";
 
 export const PRIMARY_DISCOVERY_STAGES = [
   "ACCUMULATION",
