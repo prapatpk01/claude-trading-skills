@@ -85,7 +85,6 @@ function stableHash(value: string) {
 function windowDates(days: number, now: Date) {
   const epoch = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / (days * 86400000));
   return {
-    epoch,
     lastRotationAt: new Date(epoch * days * 86400000).toISOString(),
     nextRotationAt: new Date((epoch + 1) * days * 86400000).toISOString(),
   };
@@ -198,7 +197,7 @@ async function loadFreshThreeIndexUniverse(): Promise<ThreeIndexUniverse> {
   return {
     masterTickers,
     masterUniverseSize: masterTickers.length,
-    masterSource: `APPROVED INDEX UNIVERSE ONLY — S&P 500 + Nasdaq-100 + Russell 2000${counts ? ` (${counts})` : ""}. Full-universe price/volume fast screen precedes bounded deep research.`,
+    masterSource: `APPROVED INDEX UNIVERSE ONLY — S&P 500 + Nasdaq-100 + Russell 2000${counts ? ` (${counts})` : ""}. Full-universe price/volume fast screen precedes bounded deep research. No SEC/full-market discovery.`,
     families,
     warnings,
   };
