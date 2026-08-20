@@ -1,4 +1,5 @@
 import { computePortfolioTechnicalOverlay } from "./portfolioTechnicalOverlay";
+import { buildMomentumForecast } from "./research/momentumForecast";
 import type { Candle, Quote } from "./types";
 
 export type ChartRange = "1M" | "3M" | "6M" | "YTD" | "1Y";
@@ -62,16 +63,17 @@ export function buildHoldingMarketItem(
   const low52 = year.length ? Math.min(...year.map(candle => candle.low)) : null;
   const high52 = year.length ? Math.max(...year.map(candle => candle.high)) : null;
   const pos52 = price != null && low52 != null && high52 != null && high52 > low52
-    ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100))
+    ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100)
     : null;
   const technicalOverlay = computePortfolioTechnicalOverlay(clean);
+  const momentumForecast = buildMomentumForecast(clean, { technicalOverlay });
   const status: MarketDataStatus = technicalOverlay ? "COMPLETE" : price != null || clean.length ? "PARTIAL" : "UNAVAILABLE";
   const reason = status === "COMPLETE"
-    ? `Technical overlay calculated from ${clean.length} trading days.`
+    ? `Technical overlay and Momentum Forecast calculated from ${clean.length} trading days.`
     : clean.length > 0
-      ? `Only ${clean.length}/220 trading days are available; price and chart can display but the technical overlay is withheld.`
+      ? `Only ${clean.length}/220 trading days are available; price and chart can display but the institutional technical overlay may be withheld.`
       : price != null
-        ? "Current price is available, but price history is unavailable; the technical overlay is withheld."
+        ? "Current price is available, but price history is unavailable; the technical overlay and Momentum Forecast are withheld."
         : warnings[0] ?? "The market-data provider returned no price or history.";
 
   return {
@@ -84,6 +86,7 @@ export function buildHoldingMarketItem(
     high52,
     pos52,
     technicalOverlay,
+    momentumForecast,
     asOf: quote?.asOf ?? clean.at(-1)?.date ?? null,
     dataQuality: {
       status,
