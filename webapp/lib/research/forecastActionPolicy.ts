@@ -19,7 +19,21 @@ export type ForecastActionRead = {
   owner: ForecastOwner;
   reason: string;
   requiresApproval: true;
+  recommendedTrimPct?: number;
 };
+
+function dynamicTrimPct(forecast: any) {
+  const confidence = Number(forecast?.confidence ?? 0);
+  const expected = Number(forecast?.expectedReturnPct ?? 0);
+  const outlook = String(forecast?.outlook ?? "NEUTRAL");
+  const stage = String(forecast?.lifecycleStage ?? "UNCONFIRMED");
+  let pct = 15;
+  if (outlook === "DEFENSIVE") pct += 5;
+  if (stage === "WEAKENING") pct += 5;
+  if (expected < 0) pct += 5;
+  if (confidence >= 75) pct += 5;
+  return Math.max(20, Math.min(35, pct));
+}
 
 export function forecastActionPolicy(input: ForecastActionInput): ForecastActionRead {
   const ticker = String(input.ticker ?? "").toUpperCase();
@@ -50,7 +64,8 @@ export function forecastActionPolicy(input: ForecastActionInput): ForecastAction
       return { action: "SELL REVIEW", priority: 100, owner: input.owner, reason: "Held position has a broken/bearish momentum path. AM should review thesis, Fair Value and exit discipline before any sale.", requiresApproval: true };
     }
     if (outlook === "DEFENSIVE" || stage === "WEAKENING" || (expected < 0 && confidence >= 60)) {
-      return { action: "TRIM", priority: 85, owner: input.owner, reason: "Momentum evidence is weakening. Protect capital by reviewing a trim rather than automatically closing the position.", requiresApproval: true };
+      const recommendedTrimPct = dynamicTrimPct(forecast);
+      return { action: "TRIM", priority: 85 + Math.min(9, Math.max(0, Math.round((recommendedTrimPct - 20) / 2))), owner: input.owner, recommendedTrimPct, reason: `Momentum evidence is weakening. AM should review trimming about ${recommendedTrimPct}% of the current position; the share and dollar estimate is calculated from the live holding and current market price.`, requiresApproval: true };
     }
     if (favorable.has(outlook) && confidence >= 70 && entryStages.has(stage) && expected >= 5) {
       return { action: "ADD", priority: 75 + Math.min(9, Math.round(expected)), owner: input.owner, reason: "Existing holding has favorable momentum, adequate confidence and positive weighted return. AM may consider adding if thesis, valuation and cash policy agree.", requiresApproval: true };

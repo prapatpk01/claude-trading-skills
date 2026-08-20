@@ -85,6 +85,7 @@ assert.equal(quoteOnly.momentumForecast, null, "missing history never invents a 
 
 const bullishForecast = { outlook: "BULLISH", confidence: 82, expectedReturnPct: 9, lifecycleStage: "EARLY_MARKUP" };
 const weakForecast = { outlook: "DEFENSIVE", confidence: 76, expectedReturnPct: -4, lifecycleStage: "WEAKENING" };
+const moderateTrimForecast = { outlook: "DEFENSIVE", confidence: 68, expectedReturnPct: 2, lifecycleStage: "UNCONFIRMED" };
 const brokenForecast = { outlook: "BEARISH", confidence: 84, expectedReturnPct: -10, lifecycleStage: "BROKEN" };
 
 const invBuy = forecastActionPolicy({ ticker: "NVDA", owner: "INV_RESEARCH", forecast: bullishForecast, research: { passed: true, valuationReady: true, expectedReturnPct: 12 } });
@@ -97,9 +98,17 @@ assert.equal(amAdd.requiresApproval, true);
 
 const amTrim = forecastActionPolicy({ ticker: "MELI", owner: "AM_HOLDING", forecast: weakForecast });
 assert.equal(amTrim.action, "TRIM", "weakening holding becomes a trim review rather than an automatic exit");
+assert.equal(amTrim.recommendedTrimPct, 35, "multiple defensive signals with high confidence size the trim near the upper policy band");
+
+const moderateTrim = forecastActionPolicy({ ticker: "HON", owner: "AM_HOLDING", forecast: moderateTrimForecast });
+assert.equal(moderateTrim.action, "TRIM");
+assert.equal(moderateTrim.recommendedTrimPct, 20, "a single defensive condition uses the minimum trim band rather than over-reducing the position");
+assert.ok(amTrim.recommendedTrimPct > moderateTrim.recommendedTrimPct, "trim sizing increases with forecast severity");
+assert.ok(amTrim.recommendedTrimPct >= 20 && amTrim.recommendedTrimPct <= 35, "trim sizing remains inside the governed 20-35% band");
 
 const amSellReview = forecastActionPolicy({ ticker: "QCOM", owner: "AM_HOLDING", forecast: brokenForecast });
 assert.equal(amSellReview.action, "SELL REVIEW", "broken holding is routed to thesis/fundamental sell review");
+assert.equal(amSellReview.recommendedTrimPct, undefined, "sell review does not invent an executable sell size before the exit gate");
 assert.notEqual(amSellReview.action, "SELL", "forecast policy never emits an executable SELL instruction");
 
 const watchPromote = forecastActionPolicy({ ticker: "NET", owner: "WATCHLIST", forecast: bullishForecast });
@@ -109,5 +118,6 @@ assert.notEqual(watchPromote.action, "BUY CANDIDATE");
 const reserve = forecastActionPolicy({ ticker: "JAAA", owner: "AM_HOLDING", forecast: bullishForecast });
 assert.equal(reserve.action, "RESERVE", "liquidity reserve policy overrides momentum action");
 assert.equal(reserve.requiresApproval, true);
+assert.equal(reserve.recommendedTrimPct, undefined, "reserve assets are never assigned a trim size by momentum forecast");
 
-console.log("portfolio technical overlay + Momentum Forecast V26.1 team action policy: all assertions passed");
+console.log("portfolio technical overlay + Momentum Forecast V26.2 dynamic trim sizing: all assertions passed");
