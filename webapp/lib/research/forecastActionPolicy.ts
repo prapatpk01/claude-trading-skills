@@ -48,15 +48,39 @@ export function forecastActionPolicy(input: ForecastActionInput): ForecastAction
   }
 
   if (input.owner === "INV_RESEARCH") {
+    const researchStage = String(input.research?.lifecycle?.stage ?? "UNCONFIRMED");
+    const researchStatus = String(input.research?.status ?? "");
+    const researchPrimaryLifecycle = entryStages.has(researchStage);
+    const committeeReady = researchStatus === "COMMITTEE_READY" && researchPrimaryLifecycle;
     const researchReady = input.research?.passed !== false
       && (input.research?.valuationReady === true || Number(input.research?.expectedReturnPct ?? 0) >= 8);
-    if (researchReady && favorable.has(outlook) && confidence >= 60 && entryStages.has(stage) && expected > 0) {
+    const forecastRiskVeto = risky.has(outlook)
+      || ["WEAKENING", "BROKEN"].includes(stage)
+      || confidence < 55
+      || expected < -1;
+
+    // V27.1 authority rule: a fully underwritten COMMITTEE_READY research idea
+    // is already lifecycle/valuation qualified. Momentum Forecast is a veto
+    // overlay for fresh deterioration, not a second lifecycle gate that can
+    // silently demote every approved INV idea back to WATCH.
+    if (researchReady && committeeReady && !forecastRiskVeto) {
+      return {
+        action: "BUY CANDIDATE",
+        priority: 94 + Math.min(5, Math.round(Math.max(0, Number(input.research?.expectedReturnPct ?? expected)) / 4)),
+        owner: input.owner,
+        reason: "INV Research is COMMITTEE_READY in a primary lifecycle with valuation support. Forecast shows no defensive/bearish veto, so send this name to CIO capital sizing and funding approval.",
+        requiresApproval: true,
+      };
+    }
+
+    // Non-finalist research names keep the stricter confirmation rule.
+    if (researchReady && favorable.has(outlook) && confidence >= 60 && (entryStages.has(stage) || researchPrimaryLifecycle) && expected > 0) {
       return { action: "BUY CANDIDATE", priority: 90 + Math.min(9, Math.round(Math.max(0, expected))), owner: input.owner, reason: "INV research passed its shortlist/valuation gate and the momentum path remains favorable. Send to CIO for sizing and funding approval.", requiresApproval: true };
     }
-    if (risky.has(outlook) || ["WEAKENING", "BROKEN"].includes(stage)) {
-      return { action: "AVOID", priority: 20, owner: input.owner, reason: "Forecast risk conflicts with a new-capital decision. Keep out of the buy queue until the trend/lifecycle repairs.", requiresApproval: true };
+    if (forecastRiskVeto) {
+      return { action: "AVOID", priority: 20, owner: input.owner, reason: "Forecast risk veto conflicts with a new-capital decision. Keep out of the buy queue until the path repairs.", requiresApproval: true };
     }
-    return { action: "WATCH", priority: 50, owner: input.owner, reason: "Research idea is not yet aligned strongly enough with forecast confidence and lifecycle for a buy recommendation.", requiresApproval: true };
+    return { action: "WATCH", priority: 50, owner: input.owner, reason: "Research idea is not yet fully underwritten/selected for capital deployment. Continue valuation, catalyst and lifecycle review.", requiresApproval: true };
   }
 
   if (input.owner === "AM_HOLDING") {
