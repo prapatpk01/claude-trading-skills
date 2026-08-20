@@ -67,10 +67,11 @@ export async function buildMarketTapeSnapshot(): Promise<MarketTapeSnapshot> {
   const rows = new Map((scan?.rows ?? []).map(row => [row.ticker, row]));
   const spy = rows.get("SPY") ?? null;
   const measured = SECTOR_ETFS.map(etf => rows.get(etf)).filter((row): row is FastUniverseRow => Boolean(row));
-  const sentimentMeasured = Boolean(spy && measured.length >= MIN_MEASURED_SECTORS);
   const status = !spy || measured.length === 0 ? "UNAVAILABLE" : measured.length === SECTOR_ETFS.length ? "COMPLETE" : "PARTIAL";
 
-  if (!sentimentMeasured) {
+  // Keep the guard explicit so TypeScript and human reviewers can see the
+  // authoritative-data requirement directly. Below this point SPY is measured.
+  if (!spy || measured.length < MIN_MEASURED_SECTORS) {
     warnings.push(`Market tape has ${measured.length}/${SECTOR_ETFS.length} measured sectors${spy ? "" : " and no SPY benchmark"}; neutral placeholder is shown and must not be interpreted as DEFENSIVE/RISK-OFF evidence.`);
     return {
       score: 50,
