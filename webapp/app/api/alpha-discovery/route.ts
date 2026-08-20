@@ -4,6 +4,7 @@ import {universeForSector} from "@/lib/sectorUniverse";
 import {DEFAULT_THEME,isThemeId,THEMATIC_UNIVERSES} from "@/lib/thematicUniverse";
 import {applyIndependentEnginePolicy,createPerformanceContract,engineProfile,engineSelectionLimit,type ResearchEngineMode} from "@/lib/researchEnginePolicies";
 import {buildRotatingMarketUniverse,loadThreeIndexUniverse} from "@/lib/research/marketUniverse";
+import {fastScanApprovedUniverse} from "@/lib/research/universeFastScan";
 import {buildFundResearchEvidence} from "@/lib/research/fundResearchEvidence";
 import {LIFECYCLE_DISCOVERY_POLICY_V25,isMatureFallbackStage,isPrimaryDiscoveryStage,lifecycleDiscoveryTier,selectLifecycleFirst} from "@/lib/research/lifecycleDiscoveryPolicy";
 
@@ -16,6 +17,7 @@ const PUBLIC_MODES=[...FACTOR_MODES,"thematic"] as const;
 type PublicMode=typeof PUBLIC_MODES[number];
 type Candidate=Record<string,any>;
 const DEEP_RESEARCH_LIMIT=40;
+const MAX_INV_RESEARCH_PASSES=3;
 
 const finiteNumber=(value:unknown):number|null=>{const parsed=typeof value==="number"?value:Number(value);return Number.isFinite(parsed)?parsed:null};
 const finitePositive=(value:unknown):number|null=>{const parsed=finiteNumber(value);return parsed!=null&&parsed>0?parsed:null};
@@ -51,11 +53,22 @@ function thematicAllocation(input:Candidate[]){
  return selected.map((candidate,index)=>({...candidate,portfolioWeightPct:rounded[index],allocationRank:index+1,status:"COMMITTEE_READY"}));
 }
 
+function expansionUniverseFromFastScan(rows:any[],seen:Set<string>,pass:number){
+ const unseen=rows.filter(row=>row?.ticker&&!seen.has(String(row.ticker).toUpperCase()));
+ const primary=unseen.filter(row=>isPrimaryDiscoveryStage(row?.stage)&&Number(row?.score??0)>=55);
+ const mature=unseen.filter(row=>isMatureFallbackStage(row?.stage)&&Number(row?.score??0)>=58&&Number(row?.rs3m??0)>-2);
+ const other=unseen.filter(row=>String(row?.stage??"").toUpperCase()==="UNCONFIRMED"&&Number(row?.score??0)>=60);
+ const ranked=[...primary,...mature,...other].filter((row,index,all)=>all.findIndex(item=>item.ticker===row.ticker)===index);
+ const offset=Math.max(0,pass-1)*DEEP_RESEARCH_LIMIT;
+ return ranked.slice(offset,offset+DEEP_RESEARCH_LIMIT).map(row=>String(row.ticker).toUpperCase());
+}
+
 export async function GET(req:NextRequest){
  const requestedMode=String(req.nextUrl.searchParams.get("mode")??"multifactor").toLowerCase();
  const mode:PublicMode=(PUBLIC_MODES as readonly string[]).includes(requestedMode)?requestedMode as PublicMode:"multifactor";
  const sector=String(req.nextUrl.searchParams.get("sector")??"All");
  const requestedTopValue=finiteNumber(req.nextUrl.searchParams.get("top")??10);const requestedTop=Math.min(20,Math.max(1,requestedTopValue??10));const top=engineSelectionLimit(mode as ResearchEngineMode)??requestedTop;
+ const requestedPassValue=finiteNumber(req.nextUrl.searchParams.get("researchPass")??0);const researchPass=Math.min(MAX_INV_RESEARCH_PASSES-1,Math.max(0,Math.round(requestedPassValue??0)));
  const rawTickers=req.nextUrl.searchParams.get("tickers");const explicit=rawTickers?rawTickers.split(",").map(value=>value.trim().toUpperCase()).filter(value=>/^[A-Z.\-]{1,10}$/.test(value)).slice(0,40):[];
  if(rawTickers&&!explicit.length)return NextResponse.json({error:"No valid ticker symbols supplied."},{status:400});
  try{
@@ -65,11 +78,20 @@ export async function GET(req:NextRequest){
   if(explicit.length){universe=explicit;coverageUniverseSize=explicit.length;source="explicit ticker override · one-off analysis outside automatic discovery rules"}
   else{
    const approved=await loadThreeIndexUniverse();approvedMasterUniverseSize=approved.masterUniverseSize;universeWarnings.push(...approved.warnings);const allowed=new Set(approved.masterTickers);
-   if(mode==="thematic"){const thematicApproved=rotateApproved([...themeConfig.tickers].filter(ticker=>allowed.has(String(ticker).toUpperCase())));universe=thematicApproved.slice(0,DEEP_RESEARCH_LIMIT);coverageUniverseSize=thematicApproved.length;source=`theme:${themeConfig.label} · approved-index members only · S&P 500 + Nasdaq-100 + Russell 2000`}
-   else if(sectorUniverse.length){const sectorApproved=rotateApproved(sectorUniverse.filter(ticker=>allowed.has(ticker.toUpperCase())));universe=sectorApproved.slice(0,DEEP_RESEARCH_LIMIT);coverageUniverseSize=sectorApproved.length;source=`sector:${sector} · approved-index members only · S&P 500 + Nasdaq-100 + Russell 2000`}
-   else{const rotation=await buildRotatingMarketUniverse({detailedLimit:DEEP_RESEARCH_LIMIT});universeWarnings.push(...rotation.warnings);universe=rotation.queue.map(row=>row.ticker).slice(0,DEEP_RESEARCH_LIMIT);coverageUniverseSize=approved.masterUniverseSize;source=`APPROVED 3-INDEX UNIVERSE · S&P 500 + Nasdaq-100 + Russell 2000 · ${universe.length} names scheduled this cycle`}
+   if(mode==="thematic"){const thematicApproved=rotateApproved([...themeConfig.tickers].filter(ticker=>allowed.has(String(ticker).toUpperCase())));const start=researchPass*DEEP_RESEARCH_LIMIT;universe=thematicApproved.slice(start,start+DEEP_RESEARCH_LIMIT);coverageUniverseSize=thematicApproved.length;source=`theme:${themeConfig.label} · approved-index members only · research pass ${researchPass+1}/${MAX_INV_RESEARCH_PASSES}`}
+   else if(sectorUniverse.length){const sectorApproved=rotateApproved(sectorUniverse.filter(ticker=>allowed.has(ticker.toUpperCase())));const start=researchPass*DEEP_RESEARCH_LIMIT;universe=sectorApproved.slice(start,start+DEEP_RESEARCH_LIMIT);coverageUniverseSize=sectorApproved.length;source=`sector:${sector} · approved-index members only · research pass ${researchPass+1}/${MAX_INV_RESEARCH_PASSES}`}
+   else{
+    const rotation=await buildRotatingMarketUniverse({detailedLimit:DEEP_RESEARCH_LIMIT});universeWarnings.push(...rotation.warnings);coverageUniverseSize=approved.masterUniverseSize;
+    const firstPass=rotation.queue.map(row=>row.ticker).slice(0,DEEP_RESEARCH_LIMIT);
+    if(researchPass===0){universe=firstPass;source=`APPROVED 3-INDEX UNIVERSE · S&P 500 + Nasdaq-100 + Russell 2000 · primary deep-research pass 1/${MAX_INV_RESEARCH_PASSES}`}
+    else{
+     const fast=await fastScanApprovedUniverse(approved.masterTickers);universeWarnings.push(...fast.warnings.map(warning=>`Basket expansion fast scan: ${warning}`));
+     universe=expansionUniverseFromFastScan(fast.rows,new Set(firstPass),researchPass);
+     source=`INV BASKET EXPANSION · full-universe fast scan → next ${universe.length} deep dives · pass ${researchPass+1}/${MAX_INV_RESEARCH_PASSES}`;
+    }
+   }
   }
-  if(!universe.length)return NextResponse.json({error:"No securities from the CIO-approved universe are available for this research run.",mode,sector},{status:422});
+  if(!universe.length)return NextResponse.json({error:"No additional securities from the CIO-approved universe are available for this research pass.",mode,sector,researchPass},{status:422});
 
   const result=await runFactorDiscovery(engineMode,universe,40);const asOf=new Date().toISOString();const key=scoreKey(mode);
   const candidates:Candidate[]=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate) as Candidate);
@@ -117,13 +139,13 @@ export async function GET(req:NextRequest){
   const pipeline={coverageUniverse:coverageUniverseSize,universe:universe.length,scheduled:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,primaryLifecycleEligible:primaryLifecycle.length,matureFallbackAvailable:matureFallback.length,valuationEligible:valuationEligible.length,selected:picks.length,matureFallbackSelected:lifecycleSelection.matureFallbackSelected,rejected:rejectedCandidates.length,committeeReady};
   const performanceContracts=picks.map((candidate:Candidate)=>createPerformanceContract(mode as ResearchEngineMode,candidate,asOf));const warnings=[...new Set([...universeWarnings,...(result.warnings??[])])];
   return NextResponse.json({
-   ...result,version:"25.0-lifecycle-first-fund-underwriting",asOf,mode,rankingMode:engineMode,sector,engine:engineProfile(mode as ResearchEngineMode),theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
+   ...result,version:"28.2-basket-completion",asOf,mode,rankingMode:engineMode,sector,researchPass,researchPassNumber:researchPass+1,maxResearchPasses:MAX_INV_RESEARCH_PASSES,basketExpansionPass:researchPass>0,engine:engineProfile(mode as ResearchEngineMode),theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
    universeSource:source,approvedMasterUniverseSize,universeTickers:universe,pipeline,stageCandidates,candidates:rankedCandidates,picks,rejectedCandidates,warnings,performanceContracts,
    lifecyclePolicy:{...LIFECYCLE_DISCOVERY_POLICY_V25,primaryAvailable:lifecycleSelection.primaryAvailable,matureFallbackAvailable:lifecycleSelection.matureFallbackAvailable,primarySelected:lifecycleSelection.primarySelected,matureFallbackSelected:lifecycleSelection.matureFallbackSelected,fallbackUsed:lifecycleSelection.fallbackUsed},
    stats:{...result.stats,coverageUniverse:coverageUniverseSize,scheduled:universe.length,qualified:factorQualified.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
    portfolio:mode==="thematic"?{construction:"Lifecycle-first thematic sleeve; MATURE fallback receives zero automatic weight and stays research-only",holdings:primarySelected.length,targetHoldings:"5 primary-lifecycle securities when available",totalWeightPct:Math.round(totalWeight*10)/10,maxPositionPct:30,minPositionPct:12,minimumExpectedReturnPct:8,status:primarySelected.length===5?"BUILT":primarySelected.length?"PARTIAL":"NO_PRIMARY_LIFECYCLE_SECURITIES",horizon:"1–3 months"}:null,
-   policy:{researchOnly:true,automaticTrading:false,approvedAutomaticUniverse:["S&P 500","Nasdaq-100","Russell 2000"],primaryLifecycleStages:["ACCUMULATION","EARLY_MARKUP","MOMENTUM_EXPANSION"],matureFallbackOnly:true,activeMomentumGateRequired:true,valuationGateRequired:true,fundUnderwritingRequired:true,sentinelXEvidenceOnly:true,mcdxSyntheticProxy:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true},
-   methodology:`${engineProfile(mode as ResearchEngineMode).objective} Automatic discovery remains restricted to the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe. V25 searches ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION first. MATURE is used only if the primary shortlist does not fill, and only after stricter valuation-room, Sentinel X trend/ATR-room, MCDX synthetic price-volume distribution and Fund-Fit checks. Every underwritten finalist carries Structure, Quant, Sentinel X, MCDX Proxy, Thesis, Catalyst and Fund-Fit evidence. Manual ticker overrides remain one-off research and never widen the automatic universe.`,
+   policy:{researchOnly:true,automaticTrading:false,approvedAutomaticUniverse:["S&P 500","Nasdaq-100","Russell 2000"],primaryLifecycleStages:["ACCUMULATION","EARLY_MARKUP","MOMENTUM_EXPANSION"],matureFallbackOnly:true,activeMomentumGateRequired:true,valuationGateRequired:true,fundUnderwritingRequired:true,sentinelXEvidenceOnly:true,mcdxSyntheticProxy:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true,basketCompletionPasses:MAX_INV_RESEARCH_PASSES},
+   methodology:`${engineProfile(mode as ResearchEngineMode).objective} Automatic discovery remains restricted to the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe. V28.2 can expand INV deep research across up to ${MAX_INV_RESEARCH_PASSES} non-overlapping tranches when a funded basket remains incomplete. Primary lifecycle stages remain first priority and MATURE remains fallback only.`,
   },{headers:{"Cache-Control":"no-store"}});
- }catch(error:unknown){const message=error instanceof Error?error.message:"Alpha discovery failed";return NextResponse.json({error:message,mode,sector},{status:500})}
+ }catch(error:unknown){const message=error instanceof Error?error.message:"Alpha discovery failed";return NextResponse.json({error:message,mode,sector,researchPass},{status:500})}
 }
