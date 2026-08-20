@@ -52,12 +52,33 @@ assert.equal(complete.dataQuality.status, "COMPLETE", "complete history populate
 assert.equal(complete.dataQuality.historyBars, 320);
 assert.ok(complete.price > 0);
 assert.ok(complete.technicalOverlay);
+assert.ok(complete.momentumForecast, "complete market history produces a V26 probability forecast");
+assert.equal(complete.momentumForecast.version, "26.0");
+assert.equal(
+  complete.momentumForecast.scenarios.bear.probability + complete.momentumForecast.scenarios.base.probability + complete.momentumForecast.scenarios.bull.probability,
+  100,
+  "Bear/Base/Bull scenario weights must sum to exactly 100%",
+);
+assert.ok(complete.momentumForecast.confidence >= 0 && complete.momentumForecast.confidence <= 100, "forecast confidence stays on a 0-100 evidence-quality scale");
+assert.ok(complete.momentumForecast.scenarios.bear.target <= complete.momentumForecast.scenarios.base.target, "Bear target cannot exceed Base target");
+assert.ok(complete.momentumForecast.scenarios.base.target <= complete.momentumForecast.scenarios.bull.target, "Base target cannot exceed Bull target");
+assert.equal(complete.momentumForecast.policy.confidenceIsEvidenceQuality, true, "confidence is explicitly separate from scenario probability");
+assert.equal(complete.momentumForecast.policy.probabilityIsScenarioWeight, true);
+assert.equal(complete.momentumForecast.policy.mcdxSyntheticProxy, true);
+assert.equal(complete.momentumForecast.policy.notPriceGuarantee, true);
+assert.equal(complete.momentumForecast.policy.automaticTrading, false, "forecast must never become an automatic broker order");
 assert.ok(complete.chartRanges.YTD.series.length > 1);
 assert.ok(complete.low52 > 0 && complete.high52 > complete.low52);
+
+const partial = buildHoldingMarketItem(candles(100, 0.2), null, "PARTIAL HISTORY");
+assert.equal(partial.dataQuality.status, "PARTIAL");
+assert.ok(partial.momentumForecast, "60+ bars can produce a low-confidence forecast even while the institutional overlay is withheld");
+assert.ok(partial.momentumForecast.confidence <= 52, "partial-history forecast confidence is capped");
 
 const quoteOnly = buildHoldingMarketItem([], { symbol: "IPO", price: 25, change: 0, changePercent: 0, high: 25, low: 25, open: 25, prevClose: 25, asOf: "2026-08-17" }, "QUOTE FALLBACK");
 assert.equal(quoteOnly.dataQuality.status, "PARTIAL", "quote-only fallback still displays the current price");
 assert.equal(quoteOnly.price, 25);
 assert.equal(quoteOnly.technicalOverlay, null, "missing history never invents a technical decision");
+assert.equal(quoteOnly.momentumForecast, null, "missing history never invents a probability forecast");
 
-console.log("portfolio technical overlay: all assertions passed");
+console.log("portfolio technical overlay + Momentum Forecast V26: all assertions passed");

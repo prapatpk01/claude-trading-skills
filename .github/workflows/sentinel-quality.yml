@@ -58,6 +58,9 @@ jobs:
           node scripts/test-research-v25.mjs .test-build-research-v25
           rm -rf .test-build-research-v25
 
+      - name: Momentum Forecast V26 probability policy
+        run: npm run test:technical-overlay
+
       - name: TypeScript check
         run: npm run typecheck
 
