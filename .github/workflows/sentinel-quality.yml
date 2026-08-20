@@ -52,6 +52,12 @@ jobs:
       - name: Research OS V23 lifecycle simulation
         run: npm run test:research-v23
 
+      - name: Research OS V25 lifecycle-first policy
+        run: |
+          npx tsc lib/research/momentumLifecycle.ts lib/research/lifecycleDiscoveryPolicy.ts --outDir .test-build-research-v25 --module commonjs --target es2022 --skipLibCheck --esModuleInterop
+          node scripts/test-research-v25.mjs .test-build-research-v25
+          rm -rf .test-build-research-v25
+
       - name: TypeScript check
         run: npm run typecheck
 
