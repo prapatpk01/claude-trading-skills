@@ -7,8 +7,10 @@ import styles from "./MomentumForecastWorkspace.module.css";
 
 type Scope = "holdings" | "research" | "cio";
 type Filter = "ALL" | "FAVORABLE" | "RISK";
-type NamedRow = { ticker: string; owner: ForecastOwner; forecast: any; item: any; research?: any };
+type HoldingPosition = { shares: number; avgCost: number | null };
+type NamedRow = { ticker: string; owner: ForecastOwner; forecast: any; item: any; research?: any; holding?: HoldingPosition };
 type ActionRow = NamedRow & { decision: ForecastActionRead };
+type TrimPlan = { pct: number; heldShares: number; trimShares: number; remainingShares: number; price: number | null; trimValue: number | null; remainingValue: number | null };
 
 type InvResearchPack = { asOf: string | null; stage: string; candidates: any[]; source: string };
 
@@ -18,6 +20,7 @@ const clean = (value: unknown): string => String(value ?? "").trim().toUpperCase
 const favorable = new Set<string>(["BULLISH", "SELECTIVE_BULLISH"]);
 const risky = new Set<string>(["DEFENSIVE", "BEARISH"]);
 const ownerOrder: ForecastOwner[] = ["INV_RESEARCH", "AM_HOLDING", "WATCHLIST"];
+const roundShares = (value: number) => Math.round(value * 1e7) / 1e7;
 
 const ownerLabel = (owner: ForecastOwner, lang: "en" | "th") => owner === "INV_RESEARCH"
   ? (lang === "th" ? "INV RESEARCH · ทีมลงทุน" : "INV RESEARCH · INVESTMENT TEAM")
@@ -26,6 +29,47 @@ const ownerLabel = (owner: ForecastOwner, lang: "en" | "th") => owner === "INV_R
     : (lang === "th" ? "WATCHLIST · รายการติดตาม" : "WATCHLIST · RESEARCH PIPELINE");
 
 const compactOwner = (owner: ForecastOwner) => owner === "INV_RESEARCH" ? "INV RESEARCH" : owner === "AM_HOLDING" ? "AM HOLDINGS" : "WATCHLIST";
+const formatShares = (value: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 7 }).format(value);
+const formatUsd = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+
+function buildHoldingPositions(rows: any[]): Map<string, HoldingPosition> {
+  const positions = new Map<string, { shares: number; costValue: number }>();
+  for (const row of rows ?? []) {
+    if (row?.closed_at) continue;
+    const ticker = clean(row?.ticker);
+    const shares = Number(row?.shares ?? 0);
+    if (!ticker || !Number.isFinite(shares) || shares <= 0) continue;
+    const avgCost = Number(row?.avg_cost);
+    const previous = positions.get(ticker) ?? { shares: 0, costValue: 0 };
+    previous.shares += shares;
+    if (Number.isFinite(avgCost) && avgCost >= 0) previous.costValue += shares * avgCost;
+    positions.set(ticker, previous);
+  }
+  return new Map(Array.from(positions.entries()).map(([ticker, row]) => [ticker, {
+    shares: roundShares(row.shares),
+    avgCost: row.shares > 0 && row.costValue > 0 ? row.costValue / row.shares : null,
+  }]));
+}
+
+function trimPlan(row: ActionRow): TrimPlan | null {
+  if (row.decision.action !== "TRIM") return null;
+  const pct = Number(row.decision.recommendedTrimPct);
+  const heldShares = Number(row.holding?.shares);
+  if (!Number.isFinite(pct) || pct <= 0 || !Number.isFinite(heldShares) || heldShares <= 0) return null;
+  const trimShares = Math.min(heldShares, roundShares(heldShares * pct / 100));
+  const remainingShares = roundShares(Math.max(0, heldShares - trimShares));
+  const marketPrice = Number(row.item?.price);
+  const price = Number.isFinite(marketPrice) && marketPrice > 0 ? marketPrice : null;
+  return {
+    pct,
+    heldShares,
+    trimShares,
+    remainingShares,
+    price,
+    trimValue: price == null ? null : trimShares * price,
+    remainingValue: price == null ? null : remainingShares * price,
+  };
+}
 
 async function marketBatch(tickers: string[]) {
   const items: Record<string, any> = {};
@@ -110,10 +154,8 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
         if (!portfolioResponse.ok) throw new Error(portfolio?.error ?? "Portfolio unavailable");
         if (!watchResponse.ok) throw new Error(watch?.error ?? "Watchlist unavailable");
 
-        const holdings: string[] = (portfolio?.holdings ?? [])
-          .filter((row: any) => !row?.closed_at && Number(row?.shares) > 0)
-          .map((row: any) => clean(row.ticker))
-          .filter(Boolean);
+        const holdingPositions = buildHoldingPositions(portfolio?.holdings ?? []);
+        const holdings = Array.from(holdingPositions.keys());
         const held = new Set<string>(holdings);
         const watchlist: string[] = (watch?.watchlist ?? [])
           .map((row: any) => clean(row.ticker))
@@ -136,13 +178,11 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
             result.push({ ticker, owner: "INV_RESEARCH", forecast: market[ticker]?.momentumForecast ?? null, item: market[ticker] ?? null, research: { ...candidate, researchSource: invPack?.source, researchAsOf: invPack?.asOf } });
           }
         }
-        if (scope !== "research" || scope === "research") {
-          if (scope === "holdings" || scope === "cio") {
-            for (const ticker of holdings) result.push({ ticker, owner: "AM_HOLDING", forecast: market[ticker]?.momentumForecast ?? null, item: market[ticker] ?? null });
-          }
-          if (scope === "research" || scope === "cio") {
-            for (const ticker of watchlist) result.push({ ticker, owner: "WATCHLIST", forecast: market[ticker]?.momentumForecast ?? null, item: market[ticker] ?? null });
-          }
+        if (scope === "holdings" || scope === "cio") {
+          for (const ticker of holdings) result.push({ ticker, owner: "AM_HOLDING", forecast: market[ticker]?.momentumForecast ?? null, item: market[ticker] ?? null, holding: holdingPositions.get(ticker) });
+        }
+        if (scope === "research" || scope === "cio") {
+          for (const ticker of watchlist) result.push({ ticker, owner: "WATCHLIST", forecast: market[ticker]?.momentumForecast ?? null, item: market[ticker] ?? null });
         }
         if (active) setRows(result);
       } catch (cause) {
@@ -194,15 +234,31 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
 
   const renderActionGroup = (label: string, group: ActionRow[], emptyText: string) => <div className={styles.actionGroup}>
     <div className={styles.actionGroupHead}><strong>{label}</strong><span>{group.length}</span></div>
-    {group.length ? group.slice(0, 8).map(row => <div className={styles.actionRow} key={`${label}:${row.owner}:${row.ticker}`}>
-      <div className={styles.actionIdentity}><strong>{row.ticker}</strong><small>{compactOwner(row.owner)} · Confidence {Number(row.forecast?.confidence ?? 0)}/100 · Weighted {Number(row.forecast?.expectedReturnPct ?? 0) >= 0 ? "+" : ""}{Number(row.forecast?.expectedReturnPct ?? 0).toFixed(1)}%</small></div>
-      <span className={`${styles.actionBadge} ${actionTone(row.decision.action)}`}>{row.decision.action}</span>
-      <p>{row.decision.reason}</p>
-    </div>) : <div className={styles.actionEmpty}>{emptyText}</div>}
+    {group.length ? group.slice(0, 8).map(row => {
+      const plan = trimPlan(row);
+      const heldShares = Number(row.holding?.shares);
+      const currentPrice = Number(row.item?.price);
+      const currentValue = Number.isFinite(heldShares) && heldShares > 0 && Number.isFinite(currentPrice) && currentPrice > 0 ? heldShares * currentPrice : null;
+      return <div className={styles.actionRow} key={`${label}:${row.owner}:${row.ticker}`}>
+        <div className={styles.actionIdentity}><strong>{row.ticker}</strong><small>{compactOwner(row.owner)} · Confidence {Number(row.forecast?.confidence ?? 0)}/100 · Weighted {Number(row.forecast?.expectedReturnPct ?? 0) >= 0 ? "+" : ""}{Number(row.forecast?.expectedReturnPct ?? 0).toFixed(1)}%</small></div>
+        <span className={`${styles.actionBadge} ${actionTone(row.decision.action)}`}>{row.decision.action}</span>
+        {plan && <div className={styles.trimPlan}>
+          <strong>TRIM {plan.pct}%</strong>
+          <span>{lang === "th" ? `ขาย ≈ ${formatShares(plan.trimShares)} หุ้น · ≈ ${formatUsd(plan.trimValue)}` : `Sell ≈ ${formatShares(plan.trimShares)} shares · ≈ ${formatUsd(plan.trimValue)}`}</span>
+          <small>{lang === "th" ? `ถือปัจจุบัน ${formatShares(plan.heldShares)} หุ้น · หลัง Trim เหลือ ≈ ${formatShares(plan.remainingShares)} หุ้น · ≈ ${formatUsd(plan.remainingValue)}` : `Current ${formatShares(plan.heldShares)} shares · after trim ≈ ${formatShares(plan.remainingShares)} shares · ≈ ${formatUsd(plan.remainingValue)}`}</small>
+        </div>}
+        {row.decision.action === "SELL REVIEW" && row.holding && <div className={styles.reviewPosition}>
+          <strong>{lang === "th" ? "POSITION UNDER REVIEW" : "POSITION UNDER REVIEW"}</strong>
+          <span>{formatShares(row.holding.shares)} {lang === "th" ? "หุ้น" : "shares"} · ≈ {formatUsd(currentValue)}</span>
+          <small>{lang === "th" ? "ยังไม่กำหนดจำนวนขายจนกว่า Thesis / Fundamental Exit Gate จะอนุมัติ" : "No sell quantity is assigned until the Thesis / Fundamental Exit Gate approves the exit."}</small>
+        </div>}
+        <p>{row.decision.reason}</p>
+      </div>;
+    }) : <div className={styles.actionEmpty}>{emptyText}</div>}
   </div>;
 
-  return <section className={styles.workspace} data-forecast-workspace={`v26-${scope}`} data-team-separation="INV-AM-WATCHLIST">
-    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V26 · PROBABILITY</span><span className={styles.badge}>TEAM OWNERSHIP</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
+  return <section className={styles.workspace} data-forecast-workspace={`v26-${scope}`} data-team-separation="INV-AM-WATCHLIST" data-trim-sizing="shares-usd">
+    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V26.2 · POSITION SIZING</span><span className={styles.badge}>TEAM OWNERSHIP</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
 
     <div className={styles.sourceTabs} aria-label="Forecast source owner">
       {owners.map(owner => <button key={owner} type="button" className={`${styles.sourceTab} ${activeOwner === owner ? styles.sourceActive : ""}`} onClick={() => { setActiveOwner(owner); setFilter("ALL"); }}>
@@ -223,14 +279,14 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     {loading ? <div className={styles.empty}>Calculating team-owned probability forecasts…</div> : error ? <div className={styles.empty}>⚠ {error}</div> : visible.length ? <div className={styles.grid}>{visible.map(row => <div key={`${row.owner}:${row.ticker}`}><div className={styles.rowHead}><span className={styles.ticker}>{row.ticker}</span><span className={styles.context}>{compactOwner(row.owner)} · {row.item?.price ? `$${Number(row.item.price).toFixed(2)}` : "PRICE —"}</span></div><MomentumForecastCard forecast={row.forecast} context={row.owner === "AM_HOLDING" ? "holding" : row.owner === "WATCHLIST" ? "watchlist" : "cio"}/>{row.owner === "INV_RESEARCH" && row.research && <div className={styles.researchMeta}>INV gate · {String(row.research?.status ?? "RESEARCH")} · Valuation {row.research?.valuationReady ? "READY" : "REVIEW"} · Research upside {Number.isFinite(Number(row.research?.expectedReturnPct)) ? `${Number(row.research.expectedReturnPct).toFixed(1)}%` : "—"}</div>}</div>)}</div> : <div className={styles.empty}>{activeOwner === "INV_RESEARCH" ? "No INV Research names are available in this cycle. The board does not substitute Watchlist names for Research." : "No names in this source/filter."}</div>}
 
     <section className={styles.actionPanel} aria-label="Portfolio action summary">
-      <div className={styles.actionHead}><div><span>FORECAST → DECISION</span><h4>{lang === "th" ? "Portfolio Action Summary" : "Portfolio Action Summary"}</h4><p>{lang === "th" ? "สรุปสิ่งที่ควรทำต่อจาก Forecast โดยแยกอำนาจของ INV / AM / Watchlist ชัดเจน" : "Recommended next actions after Forecast, preserving INV / AM / Watchlist decision ownership."}</p></div><strong className={styles.posture}>{posture}</strong></div>
+      <div className={styles.actionHead}><div><span>FORECAST → DECISION → SIZE</span><h4>Portfolio Action Summary</h4><p>{lang === "th" ? "สรุปสิ่งที่ควรทำต่อจาก Forecast พร้อมขนาด TRIM เป็น % / จำนวนหุ้น / มูลค่า $ โดยใช้ Holdings จริง" : "Recommended next actions after Forecast, with TRIM sized as percent / shares / dollars from the actual holding."}</p></div><strong className={styles.posture}>{posture}</strong></div>
       <div className={styles.actionGrid}>
         {renderActionGroup(lang === "th" ? "BUY / ADD · เงินใหม่หรือเพิ่มของเดิม" : "BUY / ADD · CAPITAL DEPLOYMENT", deploy, lang === "th" ? "ยังไม่มี BUY/ADD ที่ผ่านเงื่อนไข" : "No qualified BUY/ADD action.")}
         {renderActionGroup(lang === "th" ? "TRIM / SELL REVIEW · ลดความเสี่ยง" : "TRIM / SELL REVIEW · RISK REDUCTION", reduce, lang === "th" ? "ยังไม่มีหุ้นที่ต้องลดหรือทบทวนขาย" : "No trim/sell review is required by the current forecast.")}
         {renderActionGroup(lang === "th" ? "WATCHLIST → INV · ส่งต่อให้ทีมลงทุน" : "WATCHLIST → INV · RESEARCH PROMOTION", promote, lang === "th" ? "ยังไม่มี Watchlist ที่ควรเลื่อนเข้า INV" : "No Watchlist name qualifies for INV promotion.")}
-        {renderActionGroup(lang === "th" ? "HOLD / WATCH / RESERVE" : "HOLD / WATCH / RESERVE", passive, lang === "th" ? "ไม่มีรายการรอ" : "No passive monitoring items.")}
+        {renderActionGroup("HOLD / WATCH / RESERVE", passive, lang === "th" ? "ไม่มีรายการรอ" : "No passive monitoring items.")}
       </div>
-      <div className={styles.actionFoot}>{lang === "th" ? "Action Summary เป็นคำแนะนำสำหรับการอนุมัติ ไม่ใช่คำสั่งซื้อขายอัตโนมัติ · BUY/ADD ต้องผ่าน Thesis, Fair Value, เงินทุน และ CIO · SELL REVIEW ต้องผ่าน Thesis/Fundamental Exit Gate · เงินสำรองเช่น JAAA/SGOV ไม่ถูก Forecast สั่งโยกเงิน" : "Action Summary is an approval queue, not automatic execution. BUY/ADD still requires thesis, Fair Value, funding and CIO approval. SELL REVIEW still requires the thesis/fundamental exit gate. Reserve assets such as JAAA/SGOV are not reallocated by Forecast."}</div>
+      <div className={styles.actionFoot}>{lang === "th" ? "TRIM sizing คำนวณจากจำนวนหุ้นใน Portfolio Ledger × ราคาตลาดล่าสุด และเป็นค่าประมาณจนกว่าจะ Fill จริง · ขนาด TRIM ปรับตามความรุนแรงของ Forecast (ประมาณ 20–35%) · SELL REVIEW ยังไม่กำหนดจำนวนขายจนกว่าจะผ่าน Thesis/Fundamental Exit Gate · ไม่มีการส่งคำสั่งซื้อขายอัตโนมัติ" : "TRIM sizing uses Portfolio Ledger shares × latest market price and remains approximate until fill. Trim size adapts to forecast severity (about 20–35%). SELL REVIEW receives no sell quantity until the Thesis/Fundamental Exit Gate passes. No automatic order is sent."}</div>
     </section>
 
     <div className={styles.foot}>MCDX remains a synthetic price/volume proxy. Scenario probability is a model weight, not a calibrated guarantee. Forecast confidence measures evidence quality/coverage and is intentionally separate from probability.</div>
