@@ -66,12 +66,14 @@ export function buildHoldingMarketItem(
     ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100))
     : null;
   const technicalOverlay = computePortfolioTechnicalOverlay(clean);
-  const momentumForecast = buildMomentumForecast(clean, { technicalOverlay });
+  // Missing history is an evidence gap, not bearish evidence. In particular,
+  // never manufacture BROKEN/WEAKENING lifecycle output from an empty series.
+  const momentumForecast = technicalOverlay ? buildMomentumForecast(clean, { technicalOverlay }) : null;
   const status: MarketDataStatus = technicalOverlay ? "COMPLETE" : price != null || clean.length ? "PARTIAL" : "UNAVAILABLE";
   const reason = status === "COMPLETE"
     ? `Technical overlay and Momentum Forecast calculated from ${clean.length} trading days.`
     : clean.length > 0
-      ? `Only ${clean.length}/220 trading days are available; price and chart can display but the institutional technical overlay may be withheld.`
+      ? `Only ${clean.length}/220 trading days are available; price and chart can display but the institutional technical overlay and Momentum Forecast are withheld.`
       : price != null
         ? "Current price is available, but price history is unavailable; the technical overlay and Momentum Forecast are withheld."
         : warnings[0] ?? "The market-data provider returned no price or history.";
