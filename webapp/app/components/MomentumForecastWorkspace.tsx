@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { buildCapitalRecyclingPlan } from "@/lib/research/capitalRecyclingPolicy";
 import { forecastActionPolicy, type ForecastActionRead, type ForecastOwner } from "@/lib/research/forecastActionPolicy";
 import MomentumForecastCard from "./MomentumForecastCard";
 import styles from "./MomentumForecastWorkspace.module.css";
@@ -11,10 +12,21 @@ type HoldingPosition = { shares: number; avgCost: number | null };
 type NamedRow = { ticker: string; owner: ForecastOwner; forecast: any; item: any; research?: any; holding?: HoldingPosition };
 type ActionRow = NamedRow & { decision: ForecastActionRead };
 type TrimPlan = { pct: number; heldShares: number; trimShares: number; remainingShares: number; price: number | null; trimValue: number | null; remainingValue: number | null };
-
+type CapitalSnapshot = {
+  totalNav: number | null;
+  currentBufferUsd: number | null;
+  currentBufferPct: number | null;
+  cashFloorPct: number | null;
+  targetValue: number | null;
+  shortfallValue: number | null;
+  deployableCash: number | null;
+  posture: string;
+  action: string;
+  verified: boolean;
+};
 type InvResearchPack = { asOf: string | null; stage: string; candidates: any[]; source: string };
 
-const INV_CACHE_KEY = "sentinel:inv-research-forecast:v26";
+const INV_CACHE_KEY = "sentinel:inv-research-forecast:v27";
 const INV_CACHE_MS = 15 * 60 * 1000;
 const clean = (value: unknown): string => String(value ?? "").trim().toUpperCase();
 const favorable = new Set<string>(["BULLISH", "SELECTIVE_BULLISH"]);
@@ -31,6 +43,7 @@ const ownerLabel = (owner: ForecastOwner, lang: "en" | "th") => owner === "INV_R
 const compactOwner = (owner: ForecastOwner) => owner === "INV_RESEARCH" ? "INV RESEARCH" : owner === "AM_HOLDING" ? "AM HOLDINGS" : "WATCHLIST";
 const formatShares = (value: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 7 }).format(value);
 const formatUsd = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+const safeNumber = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? n : 0; };
 
 function buildHoldingPositions(rows: any[]): Map<string, HoldingPosition> {
   const positions = new Map<string, { shares: number; costValue: number }>();
@@ -71,6 +84,12 @@ function trimPlan(row: ActionRow): TrimPlan | null {
   };
 }
 
+function positionValue(row: ActionRow) {
+  const shares = Number(row.holding?.shares);
+  const price = Number(row.item?.price);
+  return Number.isFinite(shares) && shares > 0 && Number.isFinite(price) && price > 0 ? shares * price : 0;
+}
+
 async function marketBatch(tickers: string[]) {
   const items: Record<string, any> = {};
   for (let index = 0; index < tickers.length; index += 25) {
@@ -97,20 +116,26 @@ function readInvCache(): InvResearchPack | null {
 async function loadInvResearch(): Promise<InvResearchPack> {
   const cached = readInvCache();
   if (cached) return cached;
-  const response = await fetch(`/api/alpha-discovery?mode=multifactor&sector=All&top=8&t=${Date.now()}`, { cache: "no-store" });
+  const response = await fetch(`/api/alpha-discovery?mode=multifactor&sector=All&top=10&t=${Date.now()}`, { cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error ?? "INV Research unavailable");
   const preferred = ["selected", "valuation", "momentum", "qualified", "analyzed"];
   const stage = preferred.find(name => Array.isArray(payload?.stageCandidates?.[name]) && payload.stageCandidates[name].length > 0) ?? "analyzed";
-  const candidates = (payload?.stageCandidates?.[stage] ?? payload?.picks ?? []).slice(0, 8);
-  const pack: InvResearchPack = {
-    asOf: payload?.asOf ?? null,
-    stage,
-    candidates,
-    source: `INV Cross-Engine Research · ${String(payload?.mode ?? "multifactor").toUpperCase()} · ${stage.toUpperCase()}`,
-  };
+  const candidates = (payload?.stageCandidates?.[stage] ?? payload?.picks ?? []).slice(0, 10);
+  const fast = payload?.fastScan ?? payload?.pipeline?.fastScan ?? null;
+  const source = fast?.scanned
+    ? `INV Full-Universe Fast Scan · ${fast.scanned}/${fast.requested} screened · ${stage.toUpperCase()}`
+    : `INV Cross-Engine Research · ${String(payload?.mode ?? "multifactor").toUpperCase()} · ${stage.toUpperCase()}`;
+  const pack: InvResearchPack = { asOf: payload?.asOf ?? null, stage, candidates, source };
   try { window.sessionStorage.setItem(INV_CACHE_KEY, JSON.stringify({ ...pack, savedAt: Date.now() })); } catch { /* browser storage is optional */ }
   return pack;
+}
+
+async function loadCapitalSnapshot(): Promise<CapitalSnapshot> {
+  const response = await fetch(`/api/capital-recycling?t=${Date.now()}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error ?? "Capital recycling snapshot unavailable");
+  return payload as CapitalSnapshot;
 }
 
 function allowedOwners(scope: Scope): ForecastOwner[] {
@@ -134,6 +159,8 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [researchWarning, setResearchWarning] = useState<string | null>(null);
+  const [capitalWarning, setCapitalWarning] = useState<string | null>(null);
+  const [capitalSnapshot, setCapitalSnapshot] = useState<CapitalSnapshot | null>(null);
   const [activeOwner, setActiveOwner] = useState<ForecastOwner>(defaultOwner(scope));
   const [filter, setFilter] = useState<Filter>("ALL");
 
@@ -142,17 +169,25 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
   useEffect(() => {
     let active = true;
     void (async () => {
-      setLoading(true); setError(null); setResearchWarning(null);
+      setLoading(true); setError(null); setResearchWarning(null); setCapitalWarning(null);
       try {
         const needResearch = scope !== "holdings";
-        const [portfolioResponse, watchResponse, invResult] = await Promise.all([
+        const capitalPromise = scope === "cio"
+          ? loadCapitalSnapshot().then(data => ({ data, error: null as string | null })).catch((cause) => ({ data: null, error: cause instanceof Error ? cause.message : "Capital snapshot unavailable" }))
+          : Promise.resolve({ data: null, error: null as string | null });
+        const [portfolioResponse, watchResponse, invResult, capitalResult] = await Promise.all([
           fetch("/api/portfolio", { cache: "no-store" }),
           fetch("/api/watchlist", { cache: "no-store" }),
           needResearch ? loadInvResearch().catch((cause) => ({ error: cause instanceof Error ? cause.message : "INV Research unavailable" })) : Promise.resolve(null),
+          capitalPromise,
         ]);
         const [portfolio, watch] = await Promise.all([portfolioResponse.json(), watchResponse.json()]);
         if (!portfolioResponse.ok) throw new Error(portfolio?.error ?? "Portfolio unavailable");
         if (!watchResponse.ok) throw new Error(watch?.error ?? "Watchlist unavailable");
+        if (active) {
+          setCapitalSnapshot(capitalResult.data);
+          if (capitalResult.error) setCapitalWarning(capitalResult.error);
+        }
 
         const holdingPositions = buildHoldingPositions(portfolio?.holdings ?? []);
         const holdings = Array.from(holdingPositions.keys());
@@ -221,6 +256,23 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
       ? (lang === "th" ? "SELECTIVE DEPLOYMENT · เลือกเพิ่มเฉพาะตัวที่ผ่าน" : "SELECTIVE DEPLOYMENT")
       : (lang === "th" ? "HOLD / RESEARCH · ยังไม่ต้องเร่งปรับพอร์ต" : "HOLD / RESEARCH");
 
+  const proposedTrimProceedsUsd = reduce.reduce((sum, row) => sum + (trimPlan(row)?.trimValue ?? 0), 0);
+  const sellReviewPotentialUsd = reduce.filter(row => row.decision.action === "SELL REVIEW").reduce((sum, row) => sum + positionValue(row), 0);
+  const recyclingPlan = useMemo(() => buildCapitalRecyclingPlan({
+    proposedTrimProceedsUsd,
+    sellReviewPotentialUsd,
+    existingDeployableCashUsd: safeNumber(capitalSnapshot?.deployableCash),
+    cashFloorShortfallUsd: safeNumber(capitalSnapshot?.shortfallValue),
+    totalNavUsd: safeNumber(capitalSnapshot?.totalNav),
+    candidates: deploy.map(row => ({
+      ticker: row.ticker,
+      action: row.decision.action as "BUY CANDIDATE" | "ADD",
+      priority: row.decision.priority,
+      confidence: safeNumber(row.forecast?.confidence),
+      expectedReturnPct: safeNumber(row.forecast?.expectedReturnPct),
+    })),
+  }), [proposedTrimProceedsUsd, sellReviewPotentialUsd, capitalSnapshot, deploy]);
+
   const title = scope === "holdings"
     ? "AM Momentum Forecast · Holdings"
     : scope === "research"
@@ -230,15 +282,13 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     ? (lang === "th" ? "ทีม Asset Management ใช้ Forecast เพื่อทบทวน ADD / HOLD / TRIM / SELL REVIEW ของหุ้นที่ถือจริง" : "Asset Management review of ADD / HOLD / TRIM / SELL REVIEW for actual holdings.")
     : scope === "research"
       ? (lang === "th" ? "แยก INV Research ออกจาก Watchlist ชัดเจน: Research หาโอกาสใหม่ ส่วน Watchlist เป็นคิวติดตาม" : "Separates INV Research from Watchlist: Research sources new ideas; Watchlist remains a monitoring pipeline.")
-      : (lang === "th" ? "แยกความรับผิดชอบ 3 ส่วน: INV Research · AM Holdings · Watchlist แล้วสรุปเป็น Action Queue ให้ CIO" : "Three-owner CIO view: INV Research · AM Holdings · Watchlist, followed by a team-owned Action Queue.");
+      : (lang === "th" ? "INV ค้นหาจาก Approved 3-Index universe แบบ full-universe fast scan ก่อน deep research และ CIO นำเงินจาก TRIM กลับมาใช้หลังเติม Cash Floor" : "INV full-universe fast-screens the approved three-index universe before deep research; CIO recycles approved trim proceeds after repairing the Cash Floor.");
 
   const renderActionGroup = (label: string, group: ActionRow[], emptyText: string) => <div className={styles.actionGroup}>
     <div className={styles.actionGroupHead}><strong>{label}</strong><span>{group.length}</span></div>
     {group.length ? group.slice(0, 8).map(row => {
       const plan = trimPlan(row);
-      const heldShares = Number(row.holding?.shares);
-      const currentPrice = Number(row.item?.price);
-      const currentValue = Number.isFinite(heldShares) && heldShares > 0 && Number.isFinite(currentPrice) && currentPrice > 0 ? heldShares * currentPrice : null;
+      const currentValue = positionValue(row) || null;
       return <div className={styles.actionRow} key={`${label}:${row.owner}:${row.ticker}`}>
         <div className={styles.actionIdentity}><strong>{row.ticker}</strong><small>{compactOwner(row.owner)} · Confidence {Number(row.forecast?.confidence ?? 0)}/100 · Weighted {Number(row.forecast?.expectedReturnPct ?? 0) >= 0 ? "+" : ""}{Number(row.forecast?.expectedReturnPct ?? 0).toFixed(1)}%</small></div>
         <span className={`${styles.actionBadge} ${actionTone(row.decision.action)}`}>{row.decision.action}</span>
@@ -248,17 +298,17 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
           <small>{lang === "th" ? `ถือปัจจุบัน ${formatShares(plan.heldShares)} หุ้น · หลัง Trim เหลือ ≈ ${formatShares(plan.remainingShares)} หุ้น · ≈ ${formatUsd(plan.remainingValue)}` : `Current ${formatShares(plan.heldShares)} shares · after trim ≈ ${formatShares(plan.remainingShares)} shares · ≈ ${formatUsd(plan.remainingValue)}`}</small>
         </div>}
         {row.decision.action === "SELL REVIEW" && row.holding && <div className={styles.reviewPosition}>
-          <strong>{lang === "th" ? "POSITION UNDER REVIEW" : "POSITION UNDER REVIEW"}</strong>
+          <strong>POSITION UNDER REVIEW</strong>
           <span>{formatShares(row.holding.shares)} {lang === "th" ? "หุ้น" : "shares"} · ≈ {formatUsd(currentValue)}</span>
-          <small>{lang === "th" ? "ยังไม่กำหนดจำนวนขายจนกว่า Thesis / Fundamental Exit Gate จะอนุมัติ" : "No sell quantity is assigned until the Thesis / Fundamental Exit Gate approves the exit."}</small>
+          <small>{lang === "th" ? "ยังไม่นับเป็นเงินลงทุนใหม่จนกว่า Thesis / Fundamental Exit Gate จะอนุมัติและขายจริง" : "Not counted as recyclable capital until the Thesis / Fundamental Exit Gate approves and the sale is executed."}</small>
         </div>}
         <p>{row.decision.reason}</p>
       </div>;
     }) : <div className={styles.actionEmpty}>{emptyText}</div>}
   </div>;
 
-  return <section className={styles.workspace} data-forecast-workspace={`v26-${scope}`} data-team-separation="INV-AM-WATCHLIST" data-trim-sizing="shares-usd">
-    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V26.2 · POSITION SIZING</span><span className={styles.badge}>TEAM OWNERSHIP</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
+  return <section className={styles.workspace} data-forecast-workspace={`v27-${scope}`} data-team-separation="INV-AM-WATCHLIST" data-trim-sizing="shares-usd" data-capital-recycling="cash-floor-first">
+    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V27 · FULL-UNIVERSE FUNNEL</span><span className={styles.badge}>CAPITAL RECYCLING</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
 
     <div className={styles.sourceTabs} aria-label="Forecast source owner">
       {owners.map(owner => <button key={owner} type="button" className={`${styles.sourceTab} ${activeOwner === owner ? styles.sourceActive : ""}`} onClick={() => { setActiveOwner(owner); setFilter("ALL"); }}>
@@ -276,17 +326,48 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     <div className={styles.filterBar}><span>{compactOwner(activeOwner)} FILTER</span><div className={styles.tabs}>{(["ALL", "FAVORABLE", "RISK"] as Filter[]).map(value => <button key={value} type="button" className={`${styles.tab} ${filter === value ? styles.active : ""}`} onClick={() => setFilter(value)}>{value} · {value === "ALL" ? sourceRows.length : value === "FAVORABLE" ? favorableCount : riskCount}</button>)}</div></div>
 
     {researchWarning && owners.includes("INV_RESEARCH") && <div className={styles.warning}>INV Research feed unavailable this cycle: {researchWarning}. Holdings/Watchlist remain independent and continue to display.</div>}
-    {loading ? <div className={styles.empty}>Calculating team-owned probability forecasts…</div> : error ? <div className={styles.empty}>⚠ {error}</div> : visible.length ? <div className={styles.grid}>{visible.map(row => <div key={`${row.owner}:${row.ticker}`}><div className={styles.rowHead}><span className={styles.ticker}>{row.ticker}</span><span className={styles.context}>{compactOwner(row.owner)} · {row.item?.price ? `$${Number(row.item.price).toFixed(2)}` : "PRICE —"}</span></div><MomentumForecastCard forecast={row.forecast} context={row.owner === "AM_HOLDING" ? "holding" : row.owner === "WATCHLIST" ? "watchlist" : "cio"}/>{row.owner === "INV_RESEARCH" && row.research && <div className={styles.researchMeta}>INV gate · {String(row.research?.status ?? "RESEARCH")} · Valuation {row.research?.valuationReady ? "READY" : "REVIEW"} · Research upside {Number.isFinite(Number(row.research?.expectedReturnPct)) ? `${Number(row.research.expectedReturnPct).toFixed(1)}%` : "—"}</div>}</div>)}</div> : <div className={styles.empty}>{activeOwner === "INV_RESEARCH" ? "No INV Research names are available in this cycle. The board does not substitute Watchlist names for Research." : "No names in this source/filter."}</div>}
+    {loading ? <div className={styles.empty}>Calculating team-owned probability forecasts…</div> : error ? <div className={styles.empty}>⚠ {error}</div> : visible.length ? <div className={styles.grid}>{visible.map(row => <div key={`${row.owner}:${row.ticker}`}><div className={styles.rowHead}><span className={styles.ticker}>{row.ticker}</span><span className={styles.context}>{compactOwner(row.owner)} · {row.item?.price ? `$${Number(row.item.price).toFixed(2)}` : "PRICE —"}</span></div><MomentumForecastCard forecast={row.forecast} context={row.owner === "AM_HOLDING" ? "holding" : row.owner === "WATCHLIST" ? "watchlist" : "cio"}/>{row.owner === "INV_RESEARCH" && row.research && <div className={styles.researchMeta}>INV gate · {String(row.research?.status ?? "RESEARCH")} · Valuation {row.research?.valuationReady ? "READY" : "REVIEW"} · Research upside {Number.isFinite(Number(row.research?.expectedReturnPct)) ? `${Number(row.research.expectedReturnPct).toFixed(1)}%` : "—"} · {String(row.research?.researchSource ?? "V27 Research")}</div>}</div>)}</div> : <div className={styles.empty}>{activeOwner === "INV_RESEARCH" ? "No INV Research names are available in this cycle. The board does not substitute Watchlist names for Research." : "No names in this source/filter."}</div>}
 
     <section className={styles.actionPanel} aria-label="Portfolio action summary">
-      <div className={styles.actionHead}><div><span>FORECAST → DECISION → SIZE</span><h4>Portfolio Action Summary</h4><p>{lang === "th" ? "สรุปสิ่งที่ควรทำต่อจาก Forecast พร้อมขนาด TRIM เป็น % / จำนวนหุ้น / มูลค่า $ โดยใช้ Holdings จริง" : "Recommended next actions after Forecast, with TRIM sized as percent / shares / dollars from the actual holding."}</p></div><strong className={styles.posture}>{posture}</strong></div>
+      <div className={styles.actionHead}><div><span>FORECAST → DECISION → SIZE → RECYCLE</span><h4>Portfolio Action Summary</h4><p>{lang === "th" ? "TRIM/SELL ลดความเสี่ยง แต่เงินที่ได้ต้องถูกจัดเส้นทาง: เติม Cash Floor ก่อน แล้วค่อยหมุนกลับไปยัง BUY/ADD ที่ผ่านเกณฑ์" : "Risk reductions feed a governed capital loop: repair the Cash Floor first, then recycle excess into qualified BUY/ADD candidates."}</p></div><strong className={styles.posture}>{posture}</strong></div>
       <div className={styles.actionGrid}>
         {renderActionGroup(lang === "th" ? "BUY / ADD · เงินใหม่หรือเพิ่มของเดิม" : "BUY / ADD · CAPITAL DEPLOYMENT", deploy, lang === "th" ? "ยังไม่มี BUY/ADD ที่ผ่านเงื่อนไข" : "No qualified BUY/ADD action.")}
         {renderActionGroup(lang === "th" ? "TRIM / SELL REVIEW · ลดความเสี่ยง" : "TRIM / SELL REVIEW · RISK REDUCTION", reduce, lang === "th" ? "ยังไม่มีหุ้นที่ต้องลดหรือทบทวนขาย" : "No trim/sell review is required by the current forecast.")}
         {renderActionGroup(lang === "th" ? "WATCHLIST → INV · ส่งต่อให้ทีมลงทุน" : "WATCHLIST → INV · RESEARCH PROMOTION", promote, lang === "th" ? "ยังไม่มี Watchlist ที่ควรเลื่อนเข้า INV" : "No Watchlist name qualifies for INV promotion.")}
         {renderActionGroup("HOLD / WATCH / RESERVE", passive, lang === "th" ? "ไม่มีรายการรอ" : "No passive monitoring items.")}
       </div>
-      <div className={styles.actionFoot}>{lang === "th" ? "TRIM sizing คำนวณจากจำนวนหุ้นใน Portfolio Ledger × ราคาตลาดล่าสุด และเป็นค่าประมาณจนกว่าจะ Fill จริง · ขนาด TRIM ปรับตามความรุนแรงของ Forecast (ประมาณ 20–35%) · SELL REVIEW ยังไม่กำหนดจำนวนขายจนกว่าจะผ่าน Thesis/Fundamental Exit Gate · ไม่มีการส่งคำสั่งซื้อขายอัตโนมัติ" : "TRIM sizing uses Portfolio Ledger shares × latest market price and remains approximate until fill. Trim size adapts to forecast severity (about 20–35%). SELL REVIEW receives no sell quantity until the Thesis/Fundamental Exit Gate passes. No automatic order is sent."}</div>
+
+      {scope === "cio" && <section className={styles.recyclePanel} aria-label="Capital recycling plan">
+        <div className={styles.recycleHead}><div><span>CAPITAL RECYCLING LOOP</span><h5>{lang === "th" ? "ใช้เงินจาก TRIM ให้เกิดประโยชน์ โดยรักษา Cash Floor ก่อน" : "Put trim proceeds back to work after protecting the Cash Floor"}</h5></div><strong>{capitalSnapshot?.posture ?? "VERIFY"}</strong></div>
+        {capitalWarning && <div className={styles.recycleWarning}>⚠ {capitalWarning}</div>}
+        <div className={styles.recycleMetrics}>
+          <div><small>{lang === "th" ? "TRIM ที่เสนอ" : "PROPOSED TRIMS"}</small><strong>{formatUsd(recyclingPlan.proposedTrimProceedsUsd)}</strong></div>
+          <div><small>{lang === "th" ? "เติม CASH FLOOR" : "CASH FLOOR REPAIR"}</small><strong>{formatUsd(recyclingPlan.cashFloorRepairUsd)}</strong></div>
+          <div><small>{lang === "th" ? "พร้อมหมุนลงทุน" : "RECYCLABLE POOL"}</small><strong>{formatUsd(recyclingPlan.totalDeployablePoolUsd)}</strong></div>
+          <div><small>{lang === "th" ? "SELL REVIEW (ยังไม่นับ)" : "SELL REVIEW · NOT COUNTED"}</small><strong>{formatUsd(recyclingPlan.sellReviewPotentialUsd)}</strong></div>
+        </div>
+        <div className={styles.recycleContext}>
+          <span>{lang === "th" ? `Cash Buffer ${capitalSnapshot?.currentBufferPct == null ? "—" : `${Number(capitalSnapshot.currentBufferPct).toFixed(1)}%`} · Floor ${capitalSnapshot?.cashFloorPct == null ? "—" : `${Number(capitalSnapshot.cashFloorPct).toFixed(1)}%`}` : `Cash Buffer ${capitalSnapshot?.currentBufferPct == null ? "—" : `${Number(capitalSnapshot.currentBufferPct).toFixed(1)}%`} · Floor ${capitalSnapshot?.cashFloorPct == null ? "—" : `${Number(capitalSnapshot.cashFloorPct).toFixed(1)}%`}`}</span>
+          <span>{lang === "th" ? `Shortfall ก่อน TRIM ${formatUsd(recyclingPlan.cashFloorShortfallUsd)}` : `Pre-trim shortfall ${formatUsd(recyclingPlan.cashFloorShortfallUsd)}`}</span>
+        </div>
+        {recyclingPlan.allocations.length ? <div className={styles.recycleAllocations}>
+          <div className={styles.recycleAllocationHead}><strong>{lang === "th" ? "PROVISIONAL REINVESTMENT QUEUE" : "PROVISIONAL REINVESTMENT QUEUE"}</strong><span>{formatUsd(recyclingPlan.allocatedUsd)} allocated</span></div>
+          {recyclingPlan.allocations.map(row => <div className={styles.recycleAllocation} key={`${row.action}:${row.ticker}`}>
+            <div><strong>{row.ticker}</strong><small>{row.action} · Confidence {Math.round(row.confidence)}/100 · Weighted {row.expectedReturnPct >= 0 ? "+" : ""}{row.expectedReturnPct.toFixed(1)}%</small></div>
+            <strong>{formatUsd(row.suggestedUsd)}</strong>
+          </div>)}
+          {recyclingPlan.unallocatedUsd > 0 && <div className={styles.recycleResidual}>{lang === "th" ? `คงเหลือ ${formatUsd(recyclingPlan.unallocatedUsd)} ใน Buffer จนกว่าจะมีปลายทางที่ผ่านเกณฑ์เพิ่ม` : `${formatUsd(recyclingPlan.unallocatedUsd)} remains in buffer pending additional qualified destinations.`}</div>}
+        </div> : <div className={styles.recycleEmpty}>
+          {recyclingPlan.totalDeployablePoolUsd > 0
+            ? (lang === "th" ? `มีเงินพร้อมใช้ ${formatUsd(recyclingPlan.totalDeployablePoolUsd)} แต่ยังไม่มี BUY/ADD ที่ผ่านครบ จึงพักไว้ใน Buffer และให้ INV Full-Universe Scan ค้นหาปลายทางต่อ` : `${formatUsd(recyclingPlan.totalDeployablePoolUsd)} is deployable, but no BUY/ADD has passed every gate. Keep it in buffer while the full-universe INV scan searches for a qualified destination.`)
+            : recyclingPlan.proposedTrimProceedsUsd > 0
+              ? (lang === "th" ? "เงินจาก TRIM รอบนี้ถูกใช้เติม Cash Floor ก่อนทั้งหมด/เกือบทั้งหมด ยังไม่มีส่วนเกินสำหรับซื้อหุ้นใหม่" : "Current trim proceeds are consumed by Cash Floor repair, leaving no excess for new deployment yet.")
+              : (lang === "th" ? "ยังไม่มีเงินจาก TRIM ที่อนุมัติเป็นแหล่งทุนใหม่" : "No proposed trim proceeds are available for recycling yet.")}
+        </div>}
+        <div className={styles.recycleFoot}>{lang === "th" ? "จำนวนเงินใน Reinvestment Queue เป็น sizing เบื้องต้น: BUY CANDIDATE จำกัดราว 3% NAV/ตัว และ ADD ราว 2% NAV/ตัว พร้อม cap ต่อ pool · ต้องผ่าน Funding/Risk/CIO ก่อนซื้อจริง · SELL REVIEW จะเข้าวงจรนี้หลังอนุมัติและเกิดรายการขายจริงเท่านั้น" : "Reinvestment sizing is provisional: BUY CANDIDATE is capped near 3% NAV/name and ADD near 2% NAV/name, with pool caps. Funding/Risk/CIO approval remains mandatory. SELL REVIEW proceeds enter this loop only after an approved, executed sale."}</div>
+      </section>}
+
+      <div className={styles.actionFoot}>{lang === "th" ? "TRIM sizing คำนวณจาก Portfolio Ledger × ราคาตลาดล่าสุด · ไม่มีการส่งคำสั่งซื้อขายอัตโนมัติ · เงินจากการลดพอร์ตจะไม่ถูกปล่อยทิ้ง: Cash Floor มาก่อน แล้วค่อย Recycle ไปยังหุ้นที่ผ่าน Research/Forecast" : "TRIM sizing uses Portfolio Ledger shares × latest price. No automatic orders are sent. Risk-reduction proceeds are routed deliberately: Cash Floor first, then qualified research/forecast destinations."}</div>
     </section>
 
     <div className={styles.foot}>MCDX remains a synthetic price/volume proxy. Scenario probability is a model weight, not a calibrated guarantee. Forecast confidence measures evidence quality/coverage and is intentionally separate from probability.</div>
