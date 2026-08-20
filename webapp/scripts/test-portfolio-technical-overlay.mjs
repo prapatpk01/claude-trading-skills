@@ -96,6 +96,13 @@ const invBuy = forecastActionPolicy({ ticker: "NVDA", owner: "INV_RESEARCH", for
 assert.equal(invBuy.action, "BUY CANDIDATE", "INV may recommend a new-capital candidate only after research and forecast gates agree");
 assert.equal(invBuy.requiresApproval, true, "INV action remains an approval queue item");
 
+const committeeReadyNeutralForecast = { outlook: "NEUTRAL", confidence: 68, expectedReturnPct: 2.9, lifecycleStage: "UNCONFIRMED" };
+const committeeReadyResearch = { passed: true, status: "COMMITTEE_READY", valuationReady: true, expectedReturnPct: 14, lifecycle: { stage: "EARLY_MARKUP" } };
+const committeeReadyBuy = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: committeeReadyNeutralForecast, research: committeeReadyResearch });
+assert.equal(committeeReadyBuy.action, "BUY CANDIDATE", "a COMMITTEE_READY primary-lifecycle research finalist is not silently demoted to WATCH by a merely neutral forecast overlay");
+const committeeReadyVeto = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: weakForecast, research: committeeReadyResearch });
+assert.equal(committeeReadyVeto.action, "AVOID", "a defensive/weakening forecast remains a real veto even for a COMMITTEE_READY research finalist");
+
 const amAdd = forecastActionPolicy({ ticker: "NVDA", owner: "AM_HOLDING", forecast: bullishForecast });
 assert.equal(amAdd.action, "ADD", "AM owns add decisions for actual holdings");
 assert.equal(amAdd.requiresApproval, true);
@@ -167,4 +174,4 @@ assert.equal(underfunded.cashFloorRepairUsd, 300);
 assert.equal(underfunded.totalDeployablePoolUsd, 0, "no capital is recycled into stocks while the Cash Floor still consumes all trim proceeds");
 assert.equal(underfunded.allocations.length, 0);
 
-console.log("portfolio technical overlay + Momentum Forecast V27 full-universe funnel and capital recycling: all assertions passed");
+console.log("portfolio technical overlay + Momentum Forecast V27.1 INV handoff and capital recycling: all assertions passed");
