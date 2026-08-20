@@ -7,6 +7,8 @@ const modulePath = path.join(process.cwd(), buildDir, "portfolioTechnicalOverlay
 const { computePortfolioTechnicalOverlay } = await import(pathToFileURL(modulePath).href);
 const modelPath = path.join(process.cwd(), buildDir, "holdingMarketModel.js");
 const { buildHoldingMarketItem, cleanMarketTicker, uniqueMarketTickers } = await import(pathToFileURL(modelPath).href);
+const actionPath = path.join(process.cwd(), buildDir, "research", "forecastActionPolicy.js");
+const { forecastActionPolicy } = await import(pathToFileURL(actionPath).href);
 
 function candles(count, drift) {
   let price = 100;
@@ -81,4 +83,31 @@ assert.equal(quoteOnly.price, 25);
 assert.equal(quoteOnly.technicalOverlay, null, "missing history never invents a technical decision");
 assert.equal(quoteOnly.momentumForecast, null, "missing history never invents a probability forecast");
 
-console.log("portfolio technical overlay + Momentum Forecast V26: all assertions passed");
+const bullishForecast = { outlook: "BULLISH", confidence: 82, expectedReturnPct: 9, lifecycleStage: "EARLY_MARKUP" };
+const weakForecast = { outlook: "DEFENSIVE", confidence: 76, expectedReturnPct: -4, lifecycleStage: "WEAKENING" };
+const brokenForecast = { outlook: "BEARISH", confidence: 84, expectedReturnPct: -10, lifecycleStage: "BROKEN" };
+
+const invBuy = forecastActionPolicy({ ticker: "NVDA", owner: "INV_RESEARCH", forecast: bullishForecast, research: { passed: true, valuationReady: true, expectedReturnPct: 12 } });
+assert.equal(invBuy.action, "BUY CANDIDATE", "INV may recommend a new-capital candidate only after research and forecast gates agree");
+assert.equal(invBuy.requiresApproval, true, "INV action remains an approval queue item");
+
+const amAdd = forecastActionPolicy({ ticker: "NVDA", owner: "AM_HOLDING", forecast: bullishForecast });
+assert.equal(amAdd.action, "ADD", "AM owns add decisions for actual holdings");
+assert.equal(amAdd.requiresApproval, true);
+
+const amTrim = forecastActionPolicy({ ticker: "MELI", owner: "AM_HOLDING", forecast: weakForecast });
+assert.equal(amTrim.action, "TRIM", "weakening holding becomes a trim review rather than an automatic exit");
+
+const amSellReview = forecastActionPolicy({ ticker: "QCOM", owner: "AM_HOLDING", forecast: brokenForecast });
+assert.equal(amSellReview.action, "SELL REVIEW", "broken holding is routed to thesis/fundamental sell review");
+assert.notEqual(amSellReview.action, "SELL", "forecast policy never emits an executable SELL instruction");
+
+const watchPromote = forecastActionPolicy({ ticker: "NET", owner: "WATCHLIST", forecast: bullishForecast });
+assert.equal(watchPromote.action, "PROMOTE TO INV", "Watchlist cannot become a direct BUY; it must pass through INV research");
+assert.notEqual(watchPromote.action, "BUY CANDIDATE");
+
+const reserve = forecastActionPolicy({ ticker: "JAAA", owner: "AM_HOLDING", forecast: bullishForecast });
+assert.equal(reserve.action, "RESERVE", "liquidity reserve policy overrides momentum action");
+assert.equal(reserve.requiresApproval, true);
+
+console.log("portfolio technical overlay + Momentum Forecast V26.1 team action policy: all assertions passed");
