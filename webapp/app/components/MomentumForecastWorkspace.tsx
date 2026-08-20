@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildCapitalRecyclingPlan } from "@/lib/research/capitalRecyclingPolicy";
 import { forecastActionPolicy, type ForecastActionRead, type ForecastOwner } from "@/lib/research/forecastActionPolicy";
+import { buildInvCandidatePool } from "@/lib/research/invCandidatePool";
 import MomentumForecastCard from "./MomentumForecastCard";
 import styles from "./MomentumForecastWorkspace.module.css";
 
@@ -24,10 +25,11 @@ type CapitalSnapshot = {
   action: string;
   verified: boolean;
 };
-type InvResearchPack = { asOf: string | null; stage: string; candidates: any[]; source: string };
+type InvResearchPack = { asOf: string | null; stage: string; candidates: any[]; source: string; stageCounts?: Record<string, number> };
 
-const INV_CACHE_KEY = "sentinel:inv-research-forecast:v27";
+const INV_CACHE_KEY = "sentinel:inv-research-forecast:v27.2";
 const INV_CACHE_MS = 15 * 60 * 1000;
+const INV_CANDIDATE_LIMIT = 15;
 const clean = (value: unknown): string => String(value ?? "").trim().toUpperCase();
 const favorable = new Set<string>(["BULLISH", "SELECTIVE_BULLISH"]);
 const risky = new Set<string>(["DEFENSIVE", "BEARISH"]);
@@ -109,24 +111,33 @@ function readInvCache(): InvResearchPack | null {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed?.candidates) || !parsed.candidates.length) return null;
     if (Date.now() - Number(parsed.savedAt ?? 0) > INV_CACHE_MS) return null;
-    return { asOf: parsed.asOf ?? null, stage: String(parsed.stage ?? "selected"), candidates: parsed.candidates, source: String(parsed.source ?? "INV Cross-Engine Research") };
+    return {
+      asOf: parsed.asOf ?? null,
+      stage: String(parsed.stage ?? "candidate-pool"),
+      candidates: parsed.candidates,
+      source: String(parsed.source ?? "INV Candidate Pool"),
+      stageCounts: parsed.stageCounts ?? undefined,
+    };
   } catch { return null; }
 }
 
 async function loadInvResearch(): Promise<InvResearchPack> {
   const cached = readInvCache();
   if (cached) return cached;
-  const response = await fetch(`/api/alpha-discovery?mode=multifactor&sector=All&top=10&t=${Date.now()}`, { cache: "no-store" });
+  const response = await fetch(`/api/alpha-discovery?mode=multifactor&sector=All&top=15&t=${Date.now()}`, { cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error ?? "INV Research unavailable");
-  const preferred = ["selected", "valuation", "momentum", "qualified", "analyzed"];
-  const stage = preferred.find(name => Array.isArray(payload?.stageCandidates?.[name]) && payload.stageCandidates[name].length > 0) ?? "analyzed";
-  const candidates = (payload?.stageCandidates?.[stage] ?? payload?.picks ?? []).slice(0, 10);
+
+  const pool = buildInvCandidatePool(payload?.stageCandidates, INV_CANDIDATE_LIMIT);
+  const fallback = Array.isArray(payload?.picks) ? payload.picks.slice(0, INV_CANDIDATE_LIMIT).map((row: any, index: number) => ({ ...row, candidatePoolStage: "PICKS", candidatePoolRank: index + 1 })) : [];
+  const candidates = pool.candidates.length ? pool.candidates : fallback;
+  const stage = "candidate-pool";
   const fast = payload?.fastScan ?? payload?.pipeline?.fastScan ?? null;
+  const stageSummary = `Selected ${pool.stageCounts.selected ?? 0} · Valuation ${pool.stageCounts.valuation ?? 0} · Momentum ${pool.stageCounts.momentum ?? 0} · Qualified ${pool.stageCounts.qualified ?? 0}`;
   const source = fast?.scanned
-    ? `INV Full-Universe Fast Scan · ${fast.scanned}/${fast.requested} screened · ${stage.toUpperCase()}`
-    : `INV Cross-Engine Research · ${String(payload?.mode ?? "multifactor").toUpperCase()} · ${stage.toUpperCase()}`;
-  const pack: InvResearchPack = { asOf: payload?.asOf ?? null, stage, candidates, source };
+    ? `INV Full-Universe Fast Scan · ${fast.scanned}/${fast.requested} screened · Candidate Pool ${candidates.length}/${INV_CANDIDATE_LIMIT} · ${stageSummary}`
+    : `INV Cross-Engine Research · ${String(payload?.mode ?? "multifactor").toUpperCase()} · Candidate Pool ${candidates.length}/${INV_CANDIDATE_LIMIT} · ${stageSummary}`;
+  const pack: InvResearchPack = { asOf: payload?.asOf ?? null, stage, candidates, source, stageCounts: pool.stageCounts };
   try { window.sessionStorage.setItem(INV_CACHE_KEY, JSON.stringify({ ...pack, savedAt: Date.now() })); } catch { /* browser storage is optional */ }
   return pack;
 }
@@ -282,7 +293,7 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     ? (lang === "th" ? "ทีม Asset Management ใช้ Forecast เพื่อทบทวน ADD / HOLD / TRIM / SELL REVIEW ของหุ้นที่ถือจริง" : "Asset Management review of ADD / HOLD / TRIM / SELL REVIEW for actual holdings.")
     : scope === "research"
       ? (lang === "th" ? "แยก INV Research ออกจาก Watchlist ชัดเจน: Research หาโอกาสใหม่ ส่วน Watchlist เป็นคิวติดตาม" : "Separates INV Research from Watchlist: Research sources new ideas; Watchlist remains a monitoring pipeline.")
-      : (lang === "th" ? "INV ค้นหาจาก Approved 3-Index universe แบบ full-universe fast scan ก่อน deep research และ CIO นำเงินจาก TRIM กลับมาใช้หลังเติม Cash Floor" : "INV full-universe fast-screens the approved three-index universe before deep research; CIO recycles approved trim proceeds after repairing the Cash Floor.");
+      : (lang === "th" ? "INV ค้นหาจาก Approved 3-Index universe แบบ full-universe fast scan ก่อน deep research รวม Candidate Pool หลาย stage แล้ว CIO นำเงินจาก TRIM กลับมาใช้หลังเติม Cash Floor" : "INV full-universe fast-screens the approved three-index universe, aggregates a multi-stage candidate pool before Forecast, and CIO recycles approved trim proceeds after repairing the Cash Floor.");
 
   const renderActionGroup = (label: string, group: ActionRow[], emptyText: string) => <div className={styles.actionGroup}>
     <div className={styles.actionGroupHead}><strong>{label}</strong><span>{group.length}</span></div>
@@ -307,8 +318,8 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     }) : <div className={styles.actionEmpty}>{emptyText}</div>}
   </div>;
 
-  return <section className={styles.workspace} data-forecast-workspace={`v27-${scope}`} data-team-separation="INV-AM-WATCHLIST" data-trim-sizing="shares-usd" data-capital-recycling="cash-floor-first">
-    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V27 · FULL-UNIVERSE FUNNEL</span><span className={styles.badge}>CAPITAL RECYCLING</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
+  return <section className={styles.workspace} data-forecast-workspace={`v27.2-${scope}`} data-team-separation="INV-AM-WATCHLIST" data-trim-sizing="shares-usd" data-capital-recycling="cash-floor-first" data-inv-candidate-pool="multi-stage-15">
+    <div className={styles.head}><div><h3 className={styles.title}>🔭 {title}</h3><p className={styles.subtitle}>{subtitle}</p></div><div className={styles.badges}><span className={styles.badge}>V27.2 · 15-NAME CANDIDATE POOL</span><span className={styles.badge}>CAPITAL RECYCLING</span><span className={styles.badge}>NO AUTO TRADE</span></div></div>
 
     <div className={styles.sourceTabs} aria-label="Forecast source owner">
       {owners.map(owner => <button key={owner} type="button" className={`${styles.sourceTab} ${activeOwner === owner ? styles.sourceActive : ""}`} onClick={() => { setActiveOwner(owner); setFilter("ALL"); }}>
@@ -326,7 +337,7 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     <div className={styles.filterBar}><span>{compactOwner(activeOwner)} FILTER</span><div className={styles.tabs}>{(["ALL", "FAVORABLE", "RISK"] as Filter[]).map(value => <button key={value} type="button" className={`${styles.tab} ${filter === value ? styles.active : ""}`} onClick={() => setFilter(value)}>{value} · {value === "ALL" ? sourceRows.length : value === "FAVORABLE" ? favorableCount : riskCount}</button>)}</div></div>
 
     {researchWarning && owners.includes("INV_RESEARCH") && <div className={styles.warning}>INV Research feed unavailable this cycle: {researchWarning}. Holdings/Watchlist remain independent and continue to display.</div>}
-    {loading ? <div className={styles.empty}>Calculating team-owned probability forecasts…</div> : error ? <div className={styles.empty}>⚠ {error}</div> : visible.length ? <div className={styles.grid}>{visible.map(row => <div key={`${row.owner}:${row.ticker}`}><div className={styles.rowHead}><span className={styles.ticker}>{row.ticker}</span><span className={styles.context}>{compactOwner(row.owner)} · {row.item?.price ? `$${Number(row.item.price).toFixed(2)}` : "PRICE —"}</span></div><MomentumForecastCard forecast={row.forecast} context={row.owner === "AM_HOLDING" ? "holding" : row.owner === "WATCHLIST" ? "watchlist" : "cio"}/>{row.owner === "INV_RESEARCH" && row.research && <div className={styles.researchMeta}>INV gate · {String(row.research?.status ?? "RESEARCH")} · Valuation {row.research?.valuationReady ? "READY" : "REVIEW"} · Research upside {Number.isFinite(Number(row.research?.expectedReturnPct)) ? `${Number(row.research.expectedReturnPct).toFixed(1)}%` : "—"} · {String(row.research?.researchSource ?? "V27 Research")}</div>}</div>)}</div> : <div className={styles.empty}>{activeOwner === "INV_RESEARCH" ? "No INV Research names are available in this cycle. The board does not substitute Watchlist names for Research." : "No names in this source/filter."}</div>}
+    {loading ? <div className={styles.empty}>Calculating team-owned probability forecasts…</div> : error ? <div className={styles.empty}>⚠ {error}</div> : visible.length ? <div className={styles.grid}>{visible.map(row => <div key={`${row.owner}:${row.ticker}`}><div className={styles.rowHead}><span className={styles.ticker}>{row.ticker}</span><span className={styles.context}>{compactOwner(row.owner)} · {row.item?.price ? `$${Number(row.item.price).toFixed(2)}` : "PRICE —"}</span></div><MomentumForecastCard forecast={row.forecast} context={row.owner === "AM_HOLDING" ? "holding" : row.owner === "WATCHLIST" ? "watchlist" : "cio"}/>{row.owner === "INV_RESEARCH" && row.research && <div className={styles.researchMeta}>POOL #{Number(row.research?.candidatePoolRank ?? 0) || "—"} · {String(row.research?.candidatePoolStage ?? "RESEARCH")} · INV gate {String(row.research?.status ?? "RESEARCH")} · Valuation {row.research?.valuationReady ? "READY" : "REVIEW"} · Research upside {Number.isFinite(Number(row.research?.expectedReturnPct)) ? `${Number(row.research.expectedReturnPct).toFixed(1)}%` : "—"} · {String(row.research?.researchSource ?? "V27.2 Research")}</div>}</div>)}</div> : <div className={styles.empty}>{activeOwner === "INV_RESEARCH" ? "No INV Research names are available in this cycle. The board does not substitute Watchlist names for Research." : "No names in this source/filter."}</div>}
 
     <section className={styles.actionPanel} aria-label="Portfolio action summary">
       <div className={styles.actionHead}><div><span>FORECAST → DECISION → SIZE → RECYCLE</span><h4>Portfolio Action Summary</h4><p>{lang === "th" ? "TRIM/SELL ลดความเสี่ยง แต่เงินที่ได้ต้องถูกจัดเส้นทาง: เติม Cash Floor ก่อน แล้วค่อยหมุนกลับไปยัง BUY/ADD ที่ผ่านเกณฑ์" : "Risk reductions feed a governed capital loop: repair the Cash Floor first, then recycle excess into qualified BUY/ADD candidates."}</p></div><strong className={styles.posture}>{posture}</strong></div>
@@ -359,7 +370,7 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
           {recyclingPlan.unallocatedUsd > 0 && <div className={styles.recycleResidual}>{lang === "th" ? `คงเหลือ ${formatUsd(recyclingPlan.unallocatedUsd)} ใน Buffer จนกว่าจะมีปลายทางที่ผ่านเกณฑ์เพิ่ม` : `${formatUsd(recyclingPlan.unallocatedUsd)} remains in buffer pending additional qualified destinations.`}</div>}
         </div> : <div className={styles.recycleEmpty}>
           {recyclingPlan.totalDeployablePoolUsd > 0
-            ? (lang === "th" ? `มีเงินพร้อมใช้ ${formatUsd(recyclingPlan.totalDeployablePoolUsd)} แต่ยังไม่มี BUY/ADD ที่ผ่านครบ จึงพักไว้ใน Buffer และให้ INV Full-Universe Scan ค้นหาปลายทางต่อ` : `${formatUsd(recyclingPlan.totalDeployablePoolUsd)} is deployable, but no BUY/ADD has passed every gate. Keep it in buffer while the full-universe INV scan searches for a qualified destination.`)
+            ? (lang === "th" ? `มีเงินพร้อมใช้ ${formatUsd(recyclingPlan.totalDeployablePoolUsd)} แต่ยังไม่มี BUY/ADD ที่ผ่านครบ จึงพักไว้ใน Buffer และให้ INV Candidate Pool จาก Full-Universe Scan ค้นหาปลายทางต่อ` : `${formatUsd(recyclingPlan.totalDeployablePoolUsd)} is deployable, but no BUY/ADD has passed every gate. Keep it in buffer while the multi-stage INV candidate pool searches for a qualified destination.`)
             : recyclingPlan.proposedTrimProceedsUsd > 0
               ? (lang === "th" ? "เงินจาก TRIM รอบนี้ถูกใช้เติม Cash Floor ก่อนทั้งหมด/เกือบทั้งหมด ยังไม่มีส่วนเกินสำหรับซื้อหุ้นใหม่" : "Current trim proceeds are consumed by Cash Floor repair, leaving no excess for new deployment yet.")
               : (lang === "th" ? "ยังไม่มีเงินจาก TRIM ที่อนุมัติเป็นแหล่งทุนใหม่" : "No proposed trim proceeds are available for recycling yet.")}
