@@ -19,6 +19,8 @@ export default function ReinvestmentBuilder({
   totalNavUsd,
   sellReviewPotentialUsd,
   cashFloorRepairUsd,
+  researchPassesRun = 1,
+  completionReason = "",
   lang = "th",
 }: {
   candidates: ReinvestmentCandidate[];
@@ -26,9 +28,11 @@ export default function ReinvestmentBuilder({
   totalNavUsd: number;
   sellReviewPotentialUsd: number;
   cashFloorRepairUsd: number;
+  researchPassesRun?: number;
+  completionReason?: string;
   lang?: "th" | "en";
 }) {
-  const ranked = useMemo(() => rankReinvestmentCandidates(candidates).slice(0, 12), [candidates]);
+  const ranked = useMemo(() => rankReinvestmentCandidates(candidates).slice(0, 16), [candidates]);
   const curation = useMemo(() => curateReinvestmentCandidates({
     candidates: ranked,
     deployableUsd,
@@ -52,14 +56,14 @@ export default function ReinvestmentBuilder({
   const readyCount = ranked.filter(row => row.readiness === "READY").length;
   const reviewCount = ranked.filter(row => row.readiness === "CIO_REVIEW").length;
 
-  return <section className={styles.builder} data-reinvestment-builder="v28.1" data-selection-owner="INV_RESEARCH" data-max-names="8" data-auto-trade="false">
+  return <section className={styles.builder} data-reinvestment-builder="v28.2" data-selection-owner="INV_RESEARCH" data-max-names="8" data-auto-trade="false">
     <div className={styles.head}>
       <div>
         <span>04 · REINVESTMENT BUILDER</span>
         <h5>{lang === "th" ? "INV คัดสรรหุ้น · AM/CIO จัด Position Size" : "INV-curated investments · AM/CIO position sizing"}</h5>
         <p>{lang === "th"
-          ? "ทีม Investment Research คัดชุดลงทุน 5–8 ตัวอัตโนมัติจาก Research + Momentum Lifecycle + Forecast + Valuation โดยไม่ต้องกดเลือก Top 5/8 เอง หากหุ้นผ่านจริงไม่ถึง 5 ระบบจะไม่ฝืนเติมหุ้นคุณภาพต่ำ"
-          : "Investment Research automatically curates a 5–8 name basket from Research, Momentum Lifecycle, Forecast and Valuation. If fewer than five clear the quality floor, the system will not force lower-quality names."}</p>
+          ? "ทีม Investment Research คัดชุดลงทุน 5–8 ตัวอัตโนมัติจาก Research + Momentum Lifecycle + Forecast + Valuation และถ้ารอบแรกยังใช้เงินได้ไม่เต็ม ระบบจะขยาย Deep Research ไปยัง Candidate tranche ถัดไปจาก Full-Universe Scan โดยอัตโนมัติ"
+          : "Investment Research automatically curates a 5–8 name basket and expands into the next full-universe deep-research tranche when the first pass leaves material capital unallocated."}</p>
       </div>
       <strong>{formatUsd(deployableUsd)}</strong>
     </div>
@@ -77,10 +81,11 @@ export default function ReinvestmentBuilder({
     </div>
 
     <div className={styles.curationNote}>
-      <strong>{lang === "th" ? "INV SELECTION POLICY" : "INV SELECTION POLICY"}</strong>
+      <strong>INV BASKET COMPLETION · {researchPassesRun}/3 PASSES</strong>
       <span>{lang === "th"
         ? `เป้าหมาย 5–8 ตัว · เงินรองรับได้สูงสุด ${curation.capitalCapacityNames} ตัว · Candidate ที่ใช้พิจารณา ${curation.availableCount} ตัว`
         : `Target 5–8 names · capital supports up to ${curation.capitalCapacityNames} names · ${curation.availableCount} candidates reviewed`}</span>
+      <small>{completionReason || curation.rationale}</small>
       <small>{curation.rationale}</small>
     </div>
 
@@ -100,7 +105,7 @@ export default function ReinvestmentBuilder({
           <span className={`${styles.readiness} ${row.readiness === "READY" ? styles.ready : styles.review}`}>{row.readiness === "READY" ? row.action : "CIO REVIEW"}</span>
           <span className={styles.check} title={selected ? "INV SELECTED" : "INV STANDBY"}>{selected ? "✓" : "—"}</span>
         </div>;
-      }) : <div className={styles.empty}>{lang === "th" ? "ยังไม่มี candidate ที่ผ่านขั้นต่ำสำหรับให้ทีม INV คัดสรรในรอบนี้" : "No candidate currently meets the minimum INV curation threshold."}</div>}
+      }) : <div className={styles.empty}>{lang === "th" ? "ยังไม่มี candidate ที่ผ่านขั้นต่ำหลัง INV ขยาย Research ตาม policy แล้ว เงินคงเหลือจะพักใน Buffer" : "No candidate cleared the minimum after governed INV expansion; residual capital remains in Buffer."}</div>}
     </div>
 
     <div className={styles.sizing}>
@@ -133,8 +138,8 @@ export default function ReinvestmentBuilder({
         <div className={styles.orderMeta}><span>{order.portfolioPct.toFixed(2)}% NAV</span><span>{order.poolPct.toFixed(1)}% pool</span><span>@ {formatUsd(order.price)}</span></div>
       </div>) : <div className={styles.empty}>{lang === "th" ? "เงิน/position cap ทำให้ยังสร้างรายการขั้นต่ำ $100 ไม่ได้" : "No order cleared the minimum $100 draft size after policy caps."}</div>}
       <div className={styles.approval}>{lang === "th"
-        ? "INV คัดสรรหุ้นแล้ว แต่ Draft ยังไม่ใช่คำสั่งซื้อ · ต้องผ่าน AM sizing → Funding → Risk → CIO และยืนยันเงินจาก TRIM/SELL ที่เกิดขึ้นจริงก่อน"
-        : "INV has curated the basket, but this remains a draft. AM sizing → Funding → Risk → CIO approval and executed funding are still required."}</div>
+        ? "INV คัดสรรและขยาย Basket แล้ว แต่ Draft ยังไม่ใช่คำสั่งซื้อ · ต้องผ่าน AM sizing → Funding → Risk → CIO และยืนยันเงินจาก TRIM/SELL ที่เกิดขึ้นจริงก่อน"
+        : "INV has curated and expanded the basket, but this remains a draft. AM sizing → Funding → Risk → CIO approval and executed funding are still required."}</div>
     </div>}
   </section>;
 }
