@@ -66,17 +66,20 @@ export function buildHoldingMarketItem(
     ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100))
     : null;
   const technicalOverlay = computePortfolioTechnicalOverlay(clean);
-  // Missing history is an evidence gap, not bearish evidence. In particular,
-  // never manufacture BROKEN/WEAKENING lifecycle output from an empty series.
-  const momentumForecast = technicalOverlay ? buildMomentumForecast(clean, { technicalOverlay }) : null;
+  // 60+ bars can still support a deliberately low-confidence probability
+  // forecast. A true provider outage (0–59 bars) is an evidence gap and must
+  // never be translated into BROKEN/WEAKENING momentum output.
+  const momentumForecast = clean.length >= 60 ? buildMomentumForecast(clean, { technicalOverlay }) : null;
   const status: MarketDataStatus = technicalOverlay ? "COMPLETE" : price != null || clean.length ? "PARTIAL" : "UNAVAILABLE";
   const reason = status === "COMPLETE"
     ? `Technical overlay and Momentum Forecast calculated from ${clean.length} trading days.`
-    : clean.length > 0
-      ? `Only ${clean.length}/220 trading days are available; price and chart can display but the institutional technical overlay and Momentum Forecast are withheld.`
-      : price != null
-        ? "Current price is available, but price history is unavailable; the technical overlay and Momentum Forecast are withheld."
-        : warnings[0] ?? "The market-data provider returned no price or history.";
+    : clean.length >= 60
+      ? `Only ${clean.length}/220 trading days are available; the institutional technical overlay is withheld and Momentum Forecast confidence is reduced.`
+      : clean.length > 0
+        ? `Only ${clean.length}/220 trading days are available; both the institutional technical overlay and Momentum Forecast are withheld.`
+        : price != null
+          ? "Current price is available, but price history is unavailable; the technical overlay and Momentum Forecast are withheld."
+          : warnings[0] ?? "The market-data provider returned no price or history.";
 
   return {
     price,
