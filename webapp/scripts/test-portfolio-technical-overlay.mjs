@@ -9,6 +9,10 @@ const modelPath = path.join(process.cwd(), buildDir, "holdingMarketModel.js");
 const { buildHoldingMarketItem, cleanMarketTicker, uniqueMarketTickers } = await import(pathToFileURL(modelPath).href);
 const actionPath = path.join(process.cwd(), buildDir, "research", "forecastActionPolicy.js");
 const { forecastActionPolicy } = await import(pathToFileURL(actionPath).href);
+const recyclingPath = path.join(process.cwd(), buildDir, "research", "capitalRecyclingPolicy.js");
+const { buildCapitalRecyclingPlan } = await import(pathToFileURL(recyclingPath).href);
+const fastScanPath = path.join(process.cwd(), buildDir, "research", "universeFastScan.js");
+const { chooseDeepResearchQueue } = await import(pathToFileURL(fastScanPath).href);
 
 function candles(count, drift) {
   let price = 100;
@@ -120,4 +124,47 @@ assert.equal(reserve.action, "RESERVE", "liquidity reserve policy overrides mome
 assert.equal(reserve.requiresApproval, true);
 assert.equal(reserve.recommendedTrimPct, undefined, "reserve assets are never assigned a trim size by momentum forecast");
 
-console.log("portfolio technical overlay + Momentum Forecast V26.2 dynamic trim sizing: all assertions passed");
+const fastRows = [
+  { ticker: "EARLY", score: 78, stage: "EARLY_MARKUP", rs3m: 8, return3m: 15 },
+  { ticker: "ACCUM", score: 74, stage: "ACCUMULATION", rs3m: 3, return3m: 6 },
+  { ticker: "EXPAND", score: 80, stage: "MOMENTUM_EXPANSION", rs3m: 10, return3m: 22 },
+  { ticker: "MATURE1", score: 92, stage: "MATURE", rs3m: 15, return3m: 38 },
+  { ticker: "MATURE2", score: 90, stage: "MATURE", rs3m: 14, return3m: 35 },
+  { ticker: "WEAK", score: 70, stage: "WEAKENING", rs3m: -5, return3m: -8 },
+].map(row => ({ ...row, price: 100, return1m: 5, aboveEma20: true, aboveEma50: true, ema20Above50: true, distanceEma20Pct: 4, volumeRatio: 1.2, liquidityScore: 70 }));
+const deepQueue = chooseDeepResearchQueue({ provider: "TEST", requested: 6, scanned: 6, failed: 0, coveragePct: 100, rows: fastRows, warnings: [], asOf: new Date().toISOString() }, 4);
+assert.equal(deepQueue.length, 4);
+assert.ok(deepQueue.slice(0, 3).every(row => ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(row.stage)), "primary lifecycle fast-screen names must fill the deep queue before MATURE fallback");
+assert.equal(deepQueue.filter(row => row.stage === "MATURE").length, 1, "MATURE is limited to fallback capacity even when its raw score is higher");
+assert.equal(deepQueue.some(row => row.stage === "WEAKENING"), false, "WEAKENING fast-screen names never displace investable lifecycle stages");
+
+const recycling = buildCapitalRecyclingPlan({
+  proposedTrimProceedsUsd: 1_000,
+  sellReviewPotentialUsd: 2_500,
+  existingDeployableCashUsd: 0,
+  cashFloorShortfallUsd: 400,
+  totalNavUsd: 12_000,
+  candidates: [
+    { ticker: "AAA", action: "BUY CANDIDATE", priority: 95, confidence: 80, expectedReturnPct: 12 },
+    { ticker: "BBB", action: "ADD", priority: 80, confidence: 75, expectedReturnPct: 8 },
+  ],
+});
+assert.equal(recycling.cashFloorRepairUsd, 400, "trim proceeds must repair the Cash Floor first");
+assert.equal(recycling.recyclableAfterFloorUsd, 600, "only the trim excess after Cash Floor repair is recyclable");
+assert.equal(recycling.sellReviewPotentialUsd, 2500, "SELL REVIEW value is disclosed separately");
+assert.equal(recycling.totalDeployablePoolUsd, 600, "unapproved SELL REVIEW proceeds are excluded from deployable capital");
+assert.ok(recycling.allocations.length > 0, "qualified BUY/ADD destinations receive a provisional recycle allocation");
+assert.ok(recycling.allocations.every(row => row.suggestedUsd <= row.maxPolicyUsd), "reinvestment sizing respects per-name NAV/pool caps");
+assert.equal(recycling.automaticTrading, false, "capital recycling never sends an automatic trade");
+
+const underfunded = buildCapitalRecyclingPlan({
+  proposedTrimProceedsUsd: 300,
+  cashFloorShortfallUsd: 500,
+  totalNavUsd: 12_000,
+  candidates: [{ ticker: "AAA", action: "BUY CANDIDATE", priority: 95, confidence: 80, expectedReturnPct: 12 }],
+});
+assert.equal(underfunded.cashFloorRepairUsd, 300);
+assert.equal(underfunded.totalDeployablePoolUsd, 0, "no capital is recycled into stocks while the Cash Floor still consumes all trim proceeds");
+assert.equal(underfunded.allocations.length, 0);
+
+console.log("portfolio technical overlay + Momentum Forecast V27 full-universe funnel and capital recycling: all assertions passed");
