@@ -63,7 +63,7 @@ export function buildHoldingMarketItem(
   const low52 = year.length ? Math.min(...year.map(candle => candle.low)) : null;
   const high52 = year.length ? Math.max(...year.map(candle => candle.high)) : null;
   const pos52 = price != null && low52 != null && high52 != null && high52 > low52
-    ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100)
+    ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100))
     : null;
   const technicalOverlay = computePortfolioTechnicalOverlay(clean);
   const momentumForecast = buildMomentumForecast(clean, { technicalOverlay });
