@@ -8,9 +8,9 @@ type Scope = "holdings" | "watchlist" | "cio";
 type Filter = "ALL" | "FAVORABLE" | "RISK";
 type NamedRow = { ticker: string; kind: "HOLDING" | "WATCHLIST"; forecast: any; item: any };
 
-const clean = (value: unknown) => String(value ?? "").trim().toUpperCase();
-const favorable = new Set(["BULLISH", "SELECTIVE_BULLISH"]);
-const risky = new Set(["DEFENSIVE", "BEARISH"]);
+const clean = (value: unknown): string => String(value ?? "").trim().toUpperCase();
+const favorable = new Set<string>(["BULLISH", "SELECTIVE_BULLISH"]);
+const risky = new Set<string>(["DEFENSIVE", "BEARISH"]);
 
 async function marketBatch(tickers: string[]) {
   const items: Record<string, any> = {};
@@ -42,15 +42,18 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
         const [portfolio, watch] = await Promise.all([portfolioResponse.json(), watchResponse.json()]);
         if (!portfolioResponse.ok) throw new Error(portfolio?.error ?? "Portfolio unavailable");
         if (!watchResponse.ok) throw new Error(watch?.error ?? "Watchlist unavailable");
-        const holdings = (portfolio?.holdings ?? [])
+        const holdings: string[] = (portfolio?.holdings ?? [])
           .filter((row: any) => !row?.closed_at && Number(row?.shares) > 0)
-          .map((row: any) => clean(row.ticker)).filter(Boolean);
-        const held = new Set(holdings);
-        const watchlist = (watch?.watchlist ?? []).map((row: any) => clean(row.ticker)).filter((ticker: string) => ticker && !held.has(ticker));
-        const selected = scope === "holdings" ? holdings : scope === "watchlist" ? watchlist : [...holdings, ...watchlist];
-        const tickers = Array.from(new Set(selected));
+          .map((row: any) => clean(row.ticker))
+          .filter((ticker: string) => Boolean(ticker));
+        const held = new Set<string>(holdings);
+        const watchlist: string[] = (watch?.watchlist ?? [])
+          .map((row: any) => clean(row.ticker))
+          .filter((ticker: string) => Boolean(ticker) && !held.has(ticker));
+        const selected: string[] = scope === "holdings" ? holdings : scope === "watchlist" ? watchlist : [...holdings, ...watchlist];
+        const tickers: string[] = Array.from(new Set<string>(selected));
         const market = await marketBatch(tickers);
-        const result: NamedRow[] = tickers.map(ticker => ({
+        const result: NamedRow[] = tickers.map((ticker: string) => ({
           ticker,
           kind: held.has(ticker) ? "HOLDING" : "WATCHLIST",
           forecast: market[ticker]?.momentumForecast ?? null,
@@ -70,7 +73,7 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
     const classB = favorable.has(fb?.outlook) ? 2 : risky.has(fb?.outlook) ? 0 : 1;
     return classB - classA || Number(fb?.confidence ?? 0) - Number(fa?.confidence ?? 0) || Number(fb?.expectedReturnPct ?? -999) - Number(fa?.expectedReturnPct ?? -999);
   }), [rows]);
-  const visible = sorted.filter(row => filter === "ALL" || filter === "FAVORABLE" ? filter === "ALL" || favorable.has(row.forecast?.outlook) : risky.has(row.forecast?.outlook));
+  const visible = sorted.filter(row => filter === "ALL" || (filter === "FAVORABLE" ? favorable.has(row.forecast?.outlook) : risky.has(row.forecast?.outlook)));
   const withForecast = rows.filter(row => row.forecast);
   const favorableCount = withForecast.filter(row => favorable.has(row.forecast.outlook)).length;
   const riskCount = withForecast.filter(row => risky.has(row.forecast.outlook)).length;
@@ -78,9 +81,9 @@ export default function MomentumForecastWorkspace({ scope, lang = "en" }: { scop
   const avgExpected = withForecast.length ? withForecast.reduce((sum, row) => sum + Number(row.forecast.expectedReturnPct ?? 0), 0) / withForecast.length : null;
 
   const title = scope === "holdings"
-    ? (lang === "th" ? "Momentum Forecast · Holdings" : "Momentum Forecast · Holdings")
+    ? "Momentum Forecast · Holdings"
     : scope === "watchlist"
-      ? (lang === "th" ? "Momentum Forecast · Watchlist" : "Momentum Forecast · Watchlist")
+      ? "Momentum Forecast · Watchlist"
       : (lang === "th" ? "CIO Momentum Forecast Board" : "CIO Momentum Forecast Board");
   const subtitle = scope === "holdings"
     ? (lang === "th" ? "มองเส้นทางราคา 20–60 วันทำการเพื่อช่วยตัดสินใจ ADD / HOLD / TRIM โดยไม่แทนที่ Thesis และ Fair Value" : "20–60 trading-day scenario view for ADD / HOLD / TRIM review without replacing thesis or Fair Value.")
