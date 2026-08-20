@@ -13,6 +13,8 @@ const recyclingPath = path.join(process.cwd(), buildDir, "research", "capitalRec
 const { buildCapitalRecyclingPlan } = await import(pathToFileURL(recyclingPath).href);
 const fastScanPath = path.join(process.cwd(), buildDir, "research", "universeFastScan.js");
 const { chooseDeepResearchQueue } = await import(pathToFileURL(fastScanPath).href);
+const candidatePoolPath = path.join(process.cwd(), buildDir, "research", "invCandidatePool.js");
+const { buildInvCandidatePool } = await import(pathToFileURL(candidatePoolPath).href);
 
 function candles(count, drift) {
   let price = 100;
@@ -131,6 +133,32 @@ assert.equal(reserve.action, "RESERVE", "liquidity reserve policy overrides mome
 assert.equal(reserve.requiresApproval, true);
 assert.equal(reserve.recommendedTrimPct, undefined, "reserve assets are never assigned a trim size by momentum forecast");
 
+const candidatePool = buildInvCandidatePool({
+  selected: [
+    { ticker: "AAA", status: "COMMITTEE_READY", valuationReady: true, valuationValid: true, expectedReturnPct: 14, momentum: 78, lifecycle: { stage: "EARLY_MARKUP" } },
+  ],
+  valuation: [
+    { ticker: "AAA", status: "QUALIFIED_NOT_SELECTED", valuationReady: true, expectedReturnPct: 14, momentum: 78, lifecycle: { stage: "EARLY_MARKUP" } },
+    { ticker: "BBB", status: "QUALIFIED_NOT_SELECTED", valuationReady: true, valuationValid: true, expectedReturnPct: 16, momentum: 74, lifecycle: { stage: "ACCUMULATION" } },
+    { ticker: "WEAK", status: "QUALIFIED_NOT_SELECTED", valuationReady: true, expectedReturnPct: 20, momentum: 90, lifecycle: { stage: "WEAKENING" } },
+  ],
+  momentum: [
+    { ticker: "CCC", status: "QUALIFIED_NOT_SELECTED", expectedReturnPct: 11, momentum: 82, lifecycle: { stage: "MOMENTUM_EXPANSION" } },
+    { ticker: "DDD", status: "QUALIFIED_NOT_SELECTED", expectedReturnPct: 9, momentum: 70, lifecycle: { stage: "EARLY_MARKUP" } },
+  ],
+  qualified: [
+    { ticker: "EEE", status: "QUALIFIED", expectedReturnPct: 8, momentum: 66, lifecycle: { stage: "ACCUMULATION" } },
+  ],
+  analyzed: [],
+}, 5);
+assert.equal(candidatePool.candidates.length, 5, "candidate pool fills beyond a one-name selected stage by aggregating later research stages");
+assert.equal(candidatePool.candidates[0].ticker, "AAA", "COMMITTEE_READY remains highest priority in the aggregated pool");
+assert.equal(candidatePool.candidates.filter(row => row.ticker === "AAA").length, 1, "candidate pool deduplicates tickers that appear in multiple research stages");
+assert.equal(candidatePool.candidates.some(row => row.ticker === "WEAK"), false, "WEAKENING/BROKEN names are excluded from the new-capital candidate pool");
+assert.equal(candidatePool.stageCounts.selected, 1);
+assert.equal(candidatePool.stageCounts.valuation, 3);
+assert.ok(candidatePool.candidates.every((row, index) => row.candidatePoolRank === index + 1), "candidate pool exposes a stable CIO rank");
+
 const fastRows = [
   { ticker: "EARLY", score: 78, stage: "EARLY_MARKUP", rs3m: 8, return3m: 15 },
   { ticker: "ACCUM", score: 74, stage: "ACCUMULATION", rs3m: 3, return3m: 6 },
@@ -174,4 +202,4 @@ assert.equal(underfunded.cashFloorRepairUsd, 300);
 assert.equal(underfunded.totalDeployablePoolUsd, 0, "no capital is recycled into stocks while the Cash Floor still consumes all trim proceeds");
 assert.equal(underfunded.allocations.length, 0);
 
-console.log("portfolio technical overlay + Momentum Forecast V27.1 INV handoff and capital recycling: all assertions passed");
+console.log("portfolio technical overlay + Momentum Forecast V27.2 candidate pool, INV handoff and capital recycling: all assertions passed");
