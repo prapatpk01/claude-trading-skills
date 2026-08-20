@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 const buildDir = process.argv[2];
 const policyPath = path.join(process.cwd(), buildDir, "research", "reinvestmentBuilderPolicy.js");
 const { buildReinvestmentDraft, curateReinvestmentCandidates, rankReinvestmentCandidates } = await import(pathToFileURL(policyPath).href);
+const completionPath = path.join(process.cwd(), buildDir, "research", "invBasketCompletionPolicy.js");
+const { shouldExpandInvBasket } = await import(pathToFileURL(completionPath).href);
 
 const candidates = [
   { ticker: "AAA", action: "BUY CANDIDATE", readiness: "READY", price: 100, confidence: 82, expectedReturnPct: 14, priority: 95 },
@@ -55,4 +57,51 @@ assert.ok(coreSatellite.unallocatedUsd >= 0, "policy caps leave residual cash ra
 const noCapital = buildReinvestmentDraft({ deployableUsd: 0, totalNavUsd: 12867, selected: candidates.slice(0, 5), mode: "EQUAL" });
 assert.equal(noCapital.orders.length, 0, "no draft is created when Cash Floor/funding leaves zero deployable capital");
 
-console.log("Reinvestment Builder V28.1 INV curation + position sizing: all assertions passed");
+const shopOnlyDraft = buildReinvestmentDraft({
+  deployableUsd: 1688.5,
+  totalNavUsd: 12946,
+  selected: [{ ticker: "SHOP", action: "BUY DRAFT", readiness: "CIO_REVIEW", price: 146.58, confidence: 68, expectedReturnPct: 2.9, priority: 60 }],
+  mode: "EQUAL",
+});
+assert.ok(shopOnlyDraft.unallocatedUsd > 1000, "SHOP-only case leaves material residual capital after the 3% NAV cap");
+const expandShop = shouldExpandInvBasket({
+  selectedCount: 1,
+  targetMinNames: 5,
+  targetMaxNames: 8,
+  deployableUsd: shopOnlyDraft.deployableUsd,
+  allocatedUsd: shopOnlyDraft.allocatedUsd,
+  unallocatedUsd: shopOnlyDraft.unallocatedUsd,
+  minOrderUsd: 100,
+  pass: 0,
+  maxPasses: 3,
+});
+assert.equal(expandShop.shouldExpand, true, "a one-name basket with $1k+ residual automatically triggers the next INV research pass");
+assert.equal(expandShop.nextPass, 1);
+
+const completeBasket = shouldExpandInvBasket({
+  selectedCount: 6,
+  targetMinNames: 5,
+  targetMaxNames: 8,
+  deployableUsd: 1688.5,
+  allocatedUsd: 1588.5,
+  unallocatedUsd: 100,
+  minOrderUsd: 100,
+  pass: 1,
+  maxPasses: 3,
+});
+assert.equal(completeBasket.shouldExpand, false, "a diversified basket with only one minimum-order unit left does not keep expanding unnecessarily");
+
+const passLimit = shouldExpandInvBasket({
+  selectedCount: 2,
+  targetMinNames: 5,
+  targetMaxNames: 8,
+  deployableUsd: 1688.5,
+  allocatedUsd: 600,
+  unallocatedUsd: 1088.5,
+  minOrderUsd: 100,
+  pass: 2,
+  maxPasses: 3,
+});
+assert.equal(passLimit.shouldExpand, false, "basket completion stops after the governed third deep-research tranche");
+
+console.log("Reinvestment Builder V28.2 INV curation + basket completion + position sizing: all assertions passed");
