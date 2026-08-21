@@ -8,6 +8,7 @@ import {
   type ReinvestmentCandidate,
   type ReinvestmentSizingMode,
 } from "@/lib/research/reinvestmentBuilderPolicy";
+import FundingWaterfallSummary from "./FundingWaterfallSummary";
 import styles from "./ReinvestmentBuilder.module.css";
 
 const formatUsd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value || 0);
@@ -19,6 +20,9 @@ export default function ReinvestmentBuilder({
   totalNavUsd,
   sellReviewPotentialUsd,
   cashFloorRepairUsd,
+  cashBufferExcessUsd = 0,
+  proposedTrimProceedsUsd = 0,
+  executedSellProceedsUsd = 0,
   researchPassesRun = 1,
   completionReason = "",
   lang = "th",
@@ -28,6 +32,9 @@ export default function ReinvestmentBuilder({
   totalNavUsd: number;
   sellReviewPotentialUsd: number;
   cashFloorRepairUsd: number;
+  cashBufferExcessUsd?: number;
+  proposedTrimProceedsUsd?: number;
+  executedSellProceedsUsd?: number;
   researchPassesRun?: number;
   completionReason?: string;
   lang?: "th" | "en";
@@ -56,7 +63,7 @@ export default function ReinvestmentBuilder({
   const readyCount = ranked.filter(row => row.readiness === "READY").length;
   const reviewCount = ranked.filter(row => row.readiness === "CIO_REVIEW").length;
 
-  return <section className={styles.builder} data-reinvestment-builder="v28.2" data-selection-owner="INV_RESEARCH" data-max-names="8" data-auto-trade="false">
+  return <section className={styles.builder} data-reinvestment-builder="v28.3" data-selection-owner="INV_RESEARCH" data-max-names="8" data-auto-trade="false">
     <div className={styles.head}>
       <div>
         <span>04 · REINVESTMENT BUILDER</span>
@@ -76,6 +83,8 @@ export default function ReinvestmentBuilder({
     </div>
 
     <div className={styles.sourceNote}>
+      <span>{lang === "th" ? `Cash Buffer ส่วนเกิน ${formatUsd(cashBufferExcessUsd)}` : `Cash Buffer excess ${formatUsd(cashBufferExcessUsd)}`}</span>
+      <span>{lang === "th" ? `TRIM ที่เสนอ ${formatUsd(proposedTrimProceedsUsd)}` : `Proposed TRIM ${formatUsd(proposedTrimProceedsUsd)}`}</span>
       <span>{`Cash Floor repair ${formatUsd(cashFloorRepairUsd)}`}</span>
       <span>{lang === "th" ? `SELL REVIEW ${formatUsd(sellReviewPotentialUsd)} ยังไม่นับจนขายจริง` : `SELL REVIEW ${formatUsd(sellReviewPotentialUsd)} excluded until executed`}</span>
     </div>
@@ -137,9 +146,19 @@ export default function ReinvestmentBuilder({
         <div className={styles.orderSize}><strong>{formatUsd(order.suggestedUsd)}</strong><small>≈ {formatShares(order.estimatedShares)} {lang === "th" ? "หุ้น" : "shares"}</small></div>
         <div className={styles.orderMeta}><span>{order.portfolioPct.toFixed(2)}% NAV</span><span>{order.poolPct.toFixed(1)}% pool</span><span>@ {formatUsd(order.price)}</span></div>
       </div>) : <div className={styles.empty}>{lang === "th" ? "เงิน/position cap ทำให้ยังสร้างรายการขั้นต่ำ $100 ไม่ได้" : "No order cleared the minimum $100 draft size after policy caps."}</div>}
+
+      <FundingWaterfallSummary
+        requestedInvestmentUsd={draft.allocatedUsd}
+        cashBufferExcessUsd={cashBufferExcessUsd}
+        approvedTrimProceedsUsd={proposedTrimProceedsUsd}
+        executedSellProceedsUsd={executedSellProceedsUsd}
+        sellReviewPotentialUsd={sellReviewPotentialUsd}
+        lang={lang}
+      />
+
       <div className={styles.approval}>{lang === "th"
-        ? "INV คัดสรรและขยาย Basket แล้ว แต่ Draft ยังไม่ใช่คำสั่งซื้อ · ต้องผ่าน AM sizing → Funding → Risk → CIO และยืนยันเงินจาก TRIM/SELL ที่เกิดขึ้นจริงก่อน"
-        : "INV has curated and expanded the basket, but this remains a draft. AM sizing → Funding → Risk → CIO approval and executed funding are still required."}</div>
+        ? "INV คัดสรรและขยาย Basket แล้ว แต่ Draft ยังไม่ใช่คำสั่งซื้อ · Funding ใช้ Cash Buffer ส่วนเกินก่อน จากนั้นจึงใช้ TRIM ที่อนุมัติ และ SELL เฉพาะรายการที่ขายจริงแล้ว · ต้องผ่าน AM sizing → Funding → Risk → CIO ก่อนซื้อจริง"
+        : "INV has curated and expanded the basket, but this remains a draft. Funding uses excess Cash Buffer first, then approved TRIM proceeds, then only executed SELL proceeds. AM sizing → Funding → Risk → CIO approval is still required."}</div>
     </div>}
   </section>;
 }
