@@ -276,13 +276,56 @@ export async function fastScanApprovedUniverse(tickers: string[]): Promise<FastU
   return request;
 }
 
+// V32 Momentum Hunt score. Fast Scan cannot know fundamental Fair Value yet,
+// so its job is to spend scarce deep-research slots on the strongest technical
+// leaders that are not already excessively mature. Deep Research then supplies
+// the independent valuation/upside gate.
+export function highOpportunityFastScore(row: FastUniverseRow) {
+  const stageBonus = row.stage === "EARLY_MARKUP" ? 18
+    : row.stage === "MOMENTUM_EXPANSION" ? 16
+      : row.stage === "ACCUMULATION" ? 8
+        : row.stage === "MATURE" ? -18
+          : row.stage === "WEAKENING" ? -35
+            : 0;
+  const volumeBonus = row.volumeRatio == null ? 0 : clamp((row.volumeRatio - 1) * 16, -5, 14);
+  const extensionPenalty = row.distanceEma20Pct > 10 ? (row.distanceEma20Pct - 10) * 1.8 : 0;
+  return Math.round(clamp(
+    row.score * .45 +
+    clamp(row.rs3m, -10, 25) * 1.2 +
+    clamp(row.return1m, -8, 18) * .75 +
+    clamp(row.return3m, -15, 35) * .22 +
+    volumeBonus + stageBonus - extensionPenalty,
+    0,
+    100,
+  ));
+}
+
+function fastPrimaryEligible(row: FastUniverseRow) {
+  if (row.stage === "MOMENTUM_EXPANSION") return row.score >= 62 && row.rs3m >= 3 && row.return1m >= 3;
+  if (row.stage === "EARLY_MARKUP") return row.score >= 60 && row.rs3m >= 1 && row.return1m >= 1;
+  if (row.stage === "ACCUMULATION") return row.score >= 58 && row.rs3m >= 0 && row.return1m >= -1 && (row.volumeRatio ?? 0) >= 1.1;
+  return false;
+}
+
 export function chooseDeepResearchQueue(scan: FastUniverseScan, limit: number) {
   const desired = Math.max(1, Math.min(56, limit));
-  const primaryStages = new Set<FastMomentumStage>(["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"]);
-  const primary = scan.rows.filter(row => primaryStages.has(row.stage) && row.score >= 55);
-  const mature = scan.rows.filter(row => row.stage === "MATURE" && row.score >= 58 && row.rs3m > -2);
-  const other = scan.rows.filter(row => row.stage === "UNCONFIRMED" && row.score >= 60);
-  const primaryLimit = Math.max(1, Math.round(desired * .82));
+  const byOpportunity = (left: FastUniverseRow, right: FastUniverseRow) =>
+    highOpportunityFastScore(right) - highOpportunityFastScore(left)
+    || right.rs3m - left.rs3m
+    || right.return1m - left.return1m
+    || left.ticker.localeCompare(right.ticker);
+
+  const primary = scan.rows.filter(fastPrimaryEligible).sort(byOpportunity);
+  const mature = scan.rows
+    .filter(row => row.stage === "MATURE" && row.score >= 66 && row.rs3m >= 4 && row.return1m >= 4 && row.distanceEma20Pct < 16)
+    .sort(byOpportunity);
+  const other = scan.rows
+    .filter(row => row.stage === "UNCONFIRMED" && row.score >= 68 && row.rs3m >= 4 && row.return1m >= 3)
+    .sort(byOpportunity);
+
+  // Keep at least ~90% of the first queue for primary lifecycle candidates.
+  // MATURE becomes true fallback capacity rather than a routine allocation.
+  const primaryLimit = Math.max(1, Math.round(desired * .92));
   const matureLimit = Math.max(0, desired - primaryLimit);
   const selected = [...primary.slice(0, primaryLimit), ...mature.slice(0, matureLimit)];
   const used = new Set(selected.map(row => row.ticker));
