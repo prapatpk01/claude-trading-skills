@@ -26,19 +26,28 @@ const finite = (value: unknown) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// V31: workflow progress is evidence, not alpha. Older ranking gave +1000 to
+// COMMITTEE_READY and +700 to MATURE fallback, which could dominate upside,
+// lifecycle and momentum. The pool now rewards investable stage + valuation +
+// expected return while retaining a modest bonus for completed underwriting.
 function rowScore(row: InvCandidatePoolRow) {
   const status = String(row?.status ?? "");
   const stage = String(row?.lifecycle?.stage ?? "UNCONFIRMED");
+  const expected = Math.max(-20, Math.min(40, finite(row?.expectedReturnPct)));
   let score = 0;
-  if (status === "COMMITTEE_READY") score += 1000;
-  else if (status === "MATURE_FALLBACK_REVIEW") score += 700;
-  else if (row?.valuationValid || row?.valuationReady) score += 500;
-  else if (PRIMARY_STAGES.has(stage)) score += 350;
-  else score += 100;
-  score += Math.max(0, finite(row?.researchEvidence?.fundFit?.score)) * 2;
-  score += Math.max(0, finite(row?.momentum));
-  score += Math.max(0, finite(row?.composite)) * .5;
-  score += Math.max(-20, Math.min(40, finite(row?.expectedReturnPct))) * 2;
+
+  if (status === "COMMITTEE_READY") score += 120;
+  else if (status === "MATURE_FALLBACK_REVIEW") score += 10;
+
+  if (row?.valuationValid || row?.valuationReady) score += 100;
+  if (PRIMARY_STAGES.has(stage)) score += 140;
+  else if (stage === "MATURE") score -= 80;
+  else score += 10;
+
+  score += Math.max(0, finite(row?.researchEvidence?.fundFit?.score)) * 1.3;
+  score += Math.max(0, finite(row?.momentum)) * .7;
+  score += Math.max(0, finite(row?.composite)) * .35;
+  score += expected * 7;
   return score;
 }
 

@@ -6,6 +6,13 @@ const favorable = new Set(["BULLISH", "SELECTIVE_BULLISH"]);
 const risky = new Set(["DEFENSIVE", "BEARISH"]);
 const entryStages = new Set(["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"]);
 
+// V31 Opportunity Efficiency Gate. Passing research is necessary but no longer
+// sufficient to consume new capital. A 20–60 trading-day forecast must offer
+// enough probability-weighted return to justify time, drawdown and opportunity cost.
+const INV_MIN_WEIGHTED_UPSIDE_PCT = 6;
+const INV_MIN_RESEARCH_UPSIDE_PCT = 12;
+const INV_MIN_CONFIDENCE = 62;
+
 export type ForecastActionInput = {
   ticker: string;
   owner: ForecastOwner;
@@ -50,35 +57,48 @@ export function forecastActionPolicy(input: ForecastActionInput): ForecastAction
   if (input.owner === "INV_RESEARCH") {
     const researchStage = String(input.research?.lifecycle?.stage ?? "UNCONFIRMED");
     const researchStatus = String(input.research?.status ?? "");
+    const researchUpside = Number(input.research?.expectedReturnPct ?? 0);
     const researchPrimaryLifecycle = entryStages.has(researchStage);
     const committeeReady = researchStatus === "COMMITTEE_READY" && researchPrimaryLifecycle;
     const researchReady = input.research?.passed !== false
-      && (input.research?.valuationReady === true || Number(input.research?.expectedReturnPct ?? 0) >= 8);
+      && (input.research?.valuationReady === true || input.research?.valuationValid === true)
+      && researchUpside >= INV_MIN_RESEARCH_UPSIDE_PCT;
     const forecastRiskVeto = risky.has(outlook)
       || ["WEAKENING", "BROKEN"].includes(stage)
       || confidence < 55
       || expected < -1;
+    const opportunityEfficient = confidence >= INV_MIN_CONFIDENCE
+      && expected >= INV_MIN_WEIGHTED_UPSIDE_PCT;
 
-    // V27.1 authority rule: a fully underwritten COMMITTEE_READY research idea
-    // is already lifecycle/valuation qualified. Momentum Forecast is a veto
-    // overlay for fresh deterioration, not a second lifecycle gate that can
-    // silently demote every approved INV idea back to WATCH.
-    if (researchReady && committeeReady && !forecastRiskVeto) {
+    // V31 refines V27.1: Research still authorizes the thesis and Forecast still
+    // owns deterioration vetoes, but capital deployment now has a separate
+    // positive Opportunity Efficiency Gate. A name can remain valid research
+    // without being good enough to spend scarce new capital on today.
+    if (researchReady && committeeReady && !forecastRiskVeto && opportunityEfficient) {
       return {
         action: "BUY CANDIDATE",
-        priority: 94 + Math.min(5, Math.round(Math.max(0, Number(input.research?.expectedReturnPct ?? expected)) / 4)),
+        priority: 94 + Math.min(5, Math.round(Math.max(0, Math.max(researchUpside, expected)) / 4)),
         owner: input.owner,
-        reason: "INV Research is COMMITTEE_READY in a primary lifecycle with valuation support. Forecast shows no defensive/bearish veto, so send this name to CIO capital sizing and funding approval.",
+        reason: `INV Research is COMMITTEE_READY in a primary lifecycle and clears V31 capital efficiency: research upside ${researchUpside.toFixed(1)}%, probability-weighted 20–60d upside ${expected.toFixed(1)}%, confidence ${Math.round(confidence)}/100. Send to CIO capital sizing and funding approval.`,
         requiresApproval: true,
       };
     }
 
-    // Non-finalist research names keep the stricter confirmation rule.
-    if (researchReady && favorable.has(outlook) && confidence >= 60 && (entryStages.has(stage) || researchPrimaryLifecycle) && expected > 0) {
-      return { action: "BUY CANDIDATE", priority: 90 + Math.min(9, Math.round(Math.max(0, expected))), owner: input.owner, reason: "INV research passed its shortlist/valuation gate and the momentum path remains favorable. Send to CIO for sizing and funding approval.", requiresApproval: true };
+    // Non-finalist research names must also clear the same opportunity hurdle.
+    if (researchReady && favorable.has(outlook) && opportunityEfficient && (entryStages.has(stage) || researchPrimaryLifecycle)) {
+      return { action: "BUY CANDIDATE", priority: 90 + Math.min(9, Math.round(Math.max(0, expected))), owner: input.owner, reason: `INV research and the momentum path agree, with probability-weighted upside ${expected.toFixed(1)}% and confidence ${Math.round(confidence)}/100 above the V31 opportunity floor. Send to CIO for sizing and funding approval.`, requiresApproval: true };
     }
     if (forecastRiskVeto) {
       return { action: "AVOID", priority: 20, owner: input.owner, reason: "Forecast risk veto conflicts with a new-capital decision. Keep out of the buy queue until the path repairs.", requiresApproval: true };
+    }
+    if ((researchReady || committeeReady) && !opportunityEfficient) {
+      return {
+        action: "WATCH",
+        priority: 42,
+        owner: input.owner,
+        reason: `Research may remain valid, but new capital is not efficient enough: V31 requires ≥${INV_MIN_WEIGHTED_UPSIDE_PCT}% probability-weighted upside, ≥${INV_MIN_CONFIDENCE} confidence and ≥${INV_MIN_RESEARCH_UPSIDE_PCT}% research upside. Keep this name on standby and let INV search the approved universe for a stronger destination.`,
+        requiresApproval: true,
+      };
     }
     return { action: "WATCH", priority: 50, owner: input.owner, reason: "Research idea is not yet fully underwritten/selected for capital deployment. Continue valuation, catalyst and lifecycle review.", requiresApproval: true };
   }
