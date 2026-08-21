@@ -1,3 +1,5 @@
+import { HIGH_OPPORTUNITY_POLICY, passesHighOpportunityResearchGate, researchOpportunityScore } from "@/lib/research/highOpportunityPolicy";
+
 export type ResearchEngineMode="momentum"|"dividend"|"thematic"|"growth"|"quality"|"value"|"institutional"|"ai"|"multifactor";
 export type ResearchCandidateLike=Record<string,any>;
 
@@ -98,12 +100,42 @@ function momentumReview(candidate:ResearchCandidateLike){
  return{passed:checks.every(check=>check.pass),gateReasons:checks.filter(check=>check.pass).map(check=>check.label),failedGates:checks.filter(check=>!check.pass).map(check=>check.label)};
 }
 
+function highOpportunityReview(candidate:ResearchCandidateLike){
+ const opportunityScore=researchOpportunityScore(candidate);
+ const checks=[
+  {label:`Momentum score ≥ ${HIGH_OPPORTUNITY_POLICY.minMomentum}`,pass:(num(candidate?.momentum)??0)>=HIGH_OPPORTUNITY_POLICY.minMomentum},
+  {label:`Thomas/Fair Value upside ≥ ${HIGH_OPPORTUNITY_POLICY.minResearchUpsidePct}%`,pass:(num(candidate?.expectedReturnPct)??-Infinity)>=HIGH_OPPORTUNITY_POLICY.minResearchUpsidePct},
+  {label:"Primary momentum lifecycle is entry-eligible",pass:Boolean(candidate?.lifecycle?.entryEligible)},
+  {label:"Decision-ready valuation evidence",pass:candidate?.valuationReady===true},
+ ];
+ const passed=passesHighOpportunityResearchGate({
+  momentum:num(candidate?.momentum),
+  expectedReturnPct:num(candidate?.expectedReturnPct),
+  lifecycleEntryEligible:Boolean(candidate?.lifecycle?.entryEligible),
+  valuationReady:candidate?.valuationReady===true,
+ });
+ return{passed,opportunityScore,gateReasons:checks.filter(check=>check.pass).map(check=>check.label),failedGates:checks.filter(check=>!check.pass).map(check=>check.label)};
+}
+
 export function applyIndependentEnginePolicy(mode:ResearchEngineMode,candidate:ResearchCandidateLike){
- let review={passed:Boolean(candidate?.passed),gateReasons:[...(candidate?.gateReasons??[])],failedGates:[...(candidate?.failedGates??[])]};
+ let review:any={passed:Boolean(candidate?.passed),gateReasons:[...(candidate?.gateReasons??[])],failedGates:[...(candidate?.failedGates??[])]};
+ let opportunityScore:number|null=null;
  if(mode==="dividend")review=dividendReview(candidate);
  if(mode==="momentum")review=momentumReview(candidate);
+ if(mode==="multifactor"){
+  const highOpportunity=highOpportunityReview(candidate);
+  review=highOpportunity;
+  opportunityScore=highOpportunity.opportunityScore;
+ }
  const tradePlan=buildTradePlan(mode,candidate);
- return{...candidate,...review,passed:review.passed,status:review.passed?"QUALIFIED":"REJECTED",tradePlan};
+ return{
+  ...candidate,
+  ...(mode==="multifactor"?{balancedComposite:candidate?.composite??null,composite:opportunityScore,opportunityScore}:{}),
+  ...review,
+  passed:review.passed,
+  status:review.passed?"QUALIFIED":"REJECTED",
+  tradePlan,
+ };
 }
 
 export function engineSelectionLimit(mode:ResearchEngineMode){
@@ -126,7 +158,7 @@ export function engineProfile(mode:ResearchEngineMode){
  if(mode==="quality")return{id:"quality-compounder-v23",title:"Quality Compounder Engine",objective:"Find high-ROE, cash-generative businesses with durable margins and balance sheets that can support a momentum run.",holdingPeriod:"3–12 months while quality holds",benchmark:"QUAL / SPY",performanceMetrics:["ROE persistence","FCF conversion","Drawdown","Quality alpha"],independentState:true};
  if(mode==="value")return{id:"valuation-gap-v23",title:"Valuation Gap Engine",objective:"Require a defensible DCF or fundamental multiple Fair Value and measure remaining upside; synthetic spot-price targets are rejected.",holdingPeriod:"Until Fair Value closes or thesis changes",benchmark:"SPY",performanceMetrics:["Fair Value calibration","Gap capture","Target hit rate","Model error"],independentState:true};
  if(mode==="ai")return{id:"innovation-leadership-v23",title:"AI & Innovation Leadership Engine",objective:"Search AI infrastructure, software, cloud, cyber, automation and semiconductor leadership, then require the same Momentum Stage and Fair Value gates.",holdingPeriod:"Theme leadership cycle",benchmark:"QQQ / SOXX",performanceMetrics:["Theme alpha","Leadership persistence","Drawdown","Target hit rate"],independentState:true};
- if(mode==="multifactor")return{id:"cross-engine-confirmation-v23",title:"Cross-Engine Confirmation",objective:"Combine independent Momentum, Accumulation, Growth, Quality, Valuation and Theme evidence without allowing the composite to bypass any mandatory gate.",holdingPeriod:"Active-cycle dependent",benchmark:"SPY",performanceMetrics:["Cross-engine hit rate","Alpha vs SPY","Drawdown","Signal stability"],independentState:true};
+ if(mode==="multifactor")return{id:"high-opportunity-discovery-v32",title:"High Momentum · High Upside Discovery",objective:`Rank approved-index stocks by an opportunity score led by Momentum (30%) and valuation upside (25%), then institutional accumulation, growth and quality. Require Momentum ≥${HIGH_OPPORTUNITY_POLICY.minMomentum}, decision-ready Fair Value upside ≥${HIGH_OPPORTUNITY_POLICY.minResearchUpsidePct}% and an entry-eligible primary lifecycle before capital research can qualify.`,holdingPeriod:"20–60 trading days / active momentum cycle",benchmark:"SPY / QQQ",performanceMetrics:["Probability-weighted upside","Alpha vs SPY","Opportunity score","Drawdown","Signal stability"],independentState:true};
  return{id:`${mode}-v23`,title:mode,objective:"Independent research engine with a separate universe, gate and performance record.",holdingPeriod:"Engine specific",benchmark:"SPY",performanceMetrics:["Total return"],independentState:true};
 }
 
