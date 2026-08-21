@@ -1,4 +1,11 @@
-import type { TradingViewIntelligenceEventRow } from "@/lib/integrations/tradingViewIntelligenceStore";
+export type EarningsEventLike = {
+  eps_surprise_pct?: number | null;
+  revenue_surprise_pct?: number | null;
+  next_earnings_at?: string | null;
+  fiscal_period?: string | null;
+  guidance?: string | null;
+  ai_summary?: string | null;
+};
 
 export type EarningsIntelligenceRead = {
   version: "30.0";
@@ -38,7 +45,7 @@ function guidanceBias(guidance: string | null | undefined): EarningsIntelligence
   return "NEUTRAL";
 }
 
-export function assessTradingViewEarnings(event: TradingViewIntelligenceEventRow | null | undefined): EarningsIntelligenceRead {
+export function assessTradingViewEarnings(event: EarningsEventLike | null | undefined): EarningsIntelligenceRead {
   const eps = finite(event?.eps_surprise_pct);
   const revenue = finite(event?.revenue_surprise_pct);
   const guidance = guidanceBias(event?.guidance);
