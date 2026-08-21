@@ -95,13 +95,16 @@ const moderateTrimForecast = { outlook: "DEFENSIVE", confidence: 68, expectedRet
 const brokenForecast = { outlook: "BEARISH", confidence: 84, expectedReturnPct: -10, lifecycleStage: "BROKEN" };
 
 const invBuy = forecastActionPolicy({ ticker: "NVDA", owner: "INV_RESEARCH", forecast: bullishForecast, research: { passed: true, valuationReady: true, expectedReturnPct: 12 } });
-assert.equal(invBuy.action, "BUY CANDIDATE", "INV may recommend a new-capital candidate only after research and forecast gates agree");
+assert.equal(invBuy.action, "BUY CANDIDATE", "INV may recommend a new-capital candidate only after research and forecast opportunity gates agree");
 assert.equal(invBuy.requiresApproval, true, "INV action remains an approval queue item");
 
-const committeeReadyNeutralForecast = { outlook: "NEUTRAL", confidence: 68, expectedReturnPct: 2.9, lifecycleStage: "UNCONFIRMED" };
+const committeeReadyLowUpside = { outlook: "NEUTRAL", confidence: 68, expectedReturnPct: 2.9, lifecycleStage: "UNCONFIRMED" };
 const committeeReadyResearch = { passed: true, status: "COMMITTEE_READY", valuationReady: true, expectedReturnPct: 14, lifecycle: { stage: "EARLY_MARKUP" } };
-const committeeReadyBuy = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: committeeReadyNeutralForecast, research: committeeReadyResearch });
-assert.equal(committeeReadyBuy.action, "BUY CANDIDATE", "a COMMITTEE_READY primary-lifecycle research finalist is not silently demoted to WATCH by a merely neutral forecast overlay");
+const committeeReadyWait = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: committeeReadyLowUpside, research: committeeReadyResearch });
+assert.equal(committeeReadyWait.action, "WATCH", "COMMITTEE_READY research with only +2.9% weighted 20-60d upside stays on standby instead of consuming new capital");
+const committeeReadyEfficientForecast = { outlook: "NEUTRAL", confidence: 70, expectedReturnPct: 7, lifecycleStage: "UNCONFIRMED" };
+const committeeReadyBuy = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: committeeReadyEfficientForecast, research: committeeReadyResearch });
+assert.equal(committeeReadyBuy.action, "BUY CANDIDATE", "COMMITTEE_READY research can proceed when the 20-60d opportunity-efficiency floor is cleared");
 const committeeReadyVeto = forecastActionPolicy({ ticker: "SHOP", owner: "INV_RESEARCH", forecast: weakForecast, research: committeeReadyResearch });
 assert.equal(committeeReadyVeto.action, "AVOID", "a defensive/weakening forecast remains a real veto even for a COMMITTEE_READY research finalist");
 
@@ -152,12 +155,22 @@ const candidatePool = buildInvCandidatePool({
   analyzed: [],
 }, 5);
 assert.equal(candidatePool.candidates.length, 5, "candidate pool fills beyond a one-name selected stage by aggregating later research stages");
-assert.equal(candidatePool.candidates[0].ticker, "AAA", "COMMITTEE_READY remains highest priority in the aggregated pool");
+assert.equal(candidatePool.candidates[0].ticker, "AAA", "completed underwriting retains a modest priority when opportunity quality is otherwise competitive");
 assert.equal(candidatePool.candidates.filter(row => row.ticker === "AAA").length, 1, "candidate pool deduplicates tickers that appear in multiple research stages");
 assert.equal(candidatePool.candidates.some(row => row.ticker === "WEAK"), false, "WEAKENING/BROKEN names are excluded from the new-capital candidate pool");
 assert.equal(candidatePool.stageCounts.selected, 1);
 assert.equal(candidatePool.stageCounts.valuation, 3);
 assert.ok(candidatePool.candidates.every((row, index) => row.candidatePoolRank === index + 1), "candidate pool exposes a stable CIO rank");
+
+const matureVsPrimaryPool = buildInvCandidatePool({
+  selected: [],
+  valuation: [
+    { ticker: "MATURE", status: "MATURE_FALLBACK_REVIEW", valuationReady: true, expectedReturnPct: 15, momentum: 82, lifecycle: { stage: "MATURE" } },
+    { ticker: "EARLY2", status: "QUALIFIED_NOT_SELECTED", valuationReady: true, expectedReturnPct: 16, momentum: 78, lifecycle: { stage: "EARLY_MARKUP" } },
+  ],
+  momentum: [], qualified: [], analyzed: [],
+}, 5);
+assert.equal(matureVsPrimaryPool.candidates[0].ticker, "EARLY2", "MATURE workflow status no longer overwhelms a stronger primary-lifecycle opportunity");
 
 const fastRows = [
   { ticker: "EARLY", score: 78, stage: "EARLY_MARKUP", rs3m: 8, return3m: 15 },
@@ -202,4 +215,4 @@ assert.equal(underfunded.cashFloorRepairUsd, 300);
 assert.equal(underfunded.totalDeployablePoolUsd, 0, "no capital is recycled into stocks while the Cash Floor still consumes all trim proceeds");
 assert.equal(underfunded.allocations.length, 0);
 
-console.log("portfolio technical overlay + Momentum Forecast V27.2 candidate pool, INV handoff and capital recycling: all assertions passed");
+console.log("portfolio technical overlay + Momentum Forecast V31 opportunity efficiency, candidate pool, INV handoff and capital recycling: all assertions passed");
