@@ -128,9 +128,25 @@ export default function ReinvestmentBuilderWorkspace({ lang = "th" }: { lang?: "
     totalNavUsd: number;
     sellReviewPotentialUsd: number;
     cashFloorRepairUsd: number;
+    cashBufferExcessUsd: number;
+    proposedTrimProceedsUsd: number;
+    executedSellProceedsUsd: number;
     researchPassesRun: number;
     completionReason: string;
-  }>({ loading: true, error: null, candidates: [], deployableUsd: 0, totalNavUsd: 0, sellReviewPotentialUsd: 0, cashFloorRepairUsd: 0, researchPassesRun: 0, completionReason: "" });
+  }>({
+    loading: true,
+    error: null,
+    candidates: [],
+    deployableUsd: 0,
+    totalNavUsd: 0,
+    sellReviewPotentialUsd: 0,
+    cashFloorRepairUsd: 0,
+    cashBufferExcessUsd: 0,
+    proposedTrimProceedsUsd: 0,
+    executedSellProceedsUsd: 0,
+    researchPassesRun: 0,
+    completionReason: "",
+  });
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -236,6 +252,9 @@ export default function ReinvestmentBuilderWorkspace({ lang = "th" }: { lang?: "
           totalNavUsd,
           sellReviewPotentialUsd: recycling.sellReviewPotentialUsd,
           cashFloorRepairUsd: recycling.cashFloorRepairUsd,
+          cashBufferExcessUsd: recycling.existingDeployableCashUsd,
+          proposedTrimProceedsUsd: recycling.recyclableAfterFloorUsd,
+          executedSellProceedsUsd: 0,
           researchPassesRun,
           completionReason,
         });
@@ -256,6 +275,9 @@ export default function ReinvestmentBuilderWorkspace({ lang = "th" }: { lang?: "
       totalNavUsd={state.totalNavUsd}
       sellReviewPotentialUsd={state.sellReviewPotentialUsd}
       cashFloorRepairUsd={state.cashFloorRepairUsd}
+      cashBufferExcessUsd={state.cashBufferExcessUsd}
+      proposedTrimProceedsUsd={state.proposedTrimProceedsUsd}
+      executedSellProceedsUsd={state.executedSellProceedsUsd}
       researchPassesRun={state.researchPassesRun}
       completionReason={state.completionReason}
       lang={lang}
