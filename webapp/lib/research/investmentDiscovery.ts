@@ -13,6 +13,7 @@ import {
   type LifecycleDiscoveryTier,
 } from "@/lib/research/lifecycleDiscoveryPolicy";
 import { buildFundResearchEvidence, type FundResearchEvidence } from "@/lib/research/fundResearchEvidence";
+import { applyTradingViewResearchOverlay } from "@/lib/research/tradingViewResearchOverlay";
 
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
 export type ResearchEngineId =
@@ -228,10 +229,11 @@ function commonFundGate(row: EngineCandidate) {
 async function underwrite(rows: EngineCandidate[]) {
   return mapLimit(rows, 3, async row => {
     const tier = lifecycleDiscoveryTier(row.lifecycle.stage);
-    const researchEvidence = await buildFundResearchEvidence(row.candidate, {
+    const baseEvidence = await buildFundResearchEvidence(row.candidate, {
       discoveryTier: tier,
       marketFitScore: row.marketFitScore,
     });
+    const researchEvidence = await applyTradingViewResearchOverlay(row.candidate.ticker, baseEvidence);
     return { ...row, researchEvidence } as UnderwrittenCandidate;
   });
 }
@@ -335,7 +337,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
       reviewCadence: mandate.reviewCadence,
       reviewCadenceTh: mandate.reviewCadenceTh,
       primaryEngine: engine.label,
-      discoveryEngines: [...models.map(model => model.toUpperCase()), "SENTINEL X", "MCDX PROXY", "STRUCTURE", "CATALYST"],
+      discoveryEngines: [...models.map(model => model.toUpperCase()), "SENTINEL X", "MCDX PROXY", "STRUCTURE", "CATALYST", "TRADINGVIEW EARNINGS"],
       lifecycleEvidence: [...lifecycle.evidence, ...researchEvidence.structure.evidence.slice(0, 3)],
       valuationSource: candidate.valuationSource,
       valuationGapPct: expected,
@@ -449,7 +451,7 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
   const qualifiedByEngines = results.reduce((sum, run) => sum + run.result.stats.qualified, 0);
 
   return {
-    version: "25.0-lifecycle-first-fund-underwriting",
+    version: "30.0-tradingview-earnings-intelligence",
     proposals,
     researchQueue,
     lifecyclePolicy: {
@@ -476,6 +478,6 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose, ...researchMandate(engine.id) })),
     engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle, ...researchMandate(report.id) })),
     rotationCoverageCycles: Math.max(1, Math.ceil(marketUniverse.masterUniverseSize / Math.max(1, analyzed))),
-    methodology: `Sentinel Investment Research OS V25 searches the CIO-approved rotating market universe and prioritizes Momentum Lifecycle in this order: ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION. MATURE is considered only when those primary stages do not fill the shortlist, and only after stricter Fair Value room, Sentinel X trend/room and MCDX price-volume distribution checks. Every shortlisted name receives a fund-aligned evidence pack covering Structure, Quant, Sentinel X, synthetic MCDX Proxy, Thesis, Catalyst and Fund Fit. New capital still requires Momentum ≥65, non-lagging sector alignment or exceptional idiosyncratic strength, defensible Fair Value gap ≥8%, funding, risk and CIO approval.`,
+    methodology: `Sentinel Investment Research OS V30 keeps the V25 lifecycle-first policy and adds measured TradingView Earnings Intelligence as an optional evidence layer. ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION remain primary; MATURE remains fallback. Measured EPS/revenue surprises may modestly adjust Catalyst and Fund Fit, while missing TradingView data has no penalty and TradingView provider AI summary text never changes a score by itself. Every shortlisted name still requires Structure, Quant, Sentinel X, synthetic MCDX Proxy, Thesis, governed Valuation, Funding, Risk and CIO approval.`,
   };
 }
