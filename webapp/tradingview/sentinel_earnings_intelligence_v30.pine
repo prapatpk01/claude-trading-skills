@@ -1,0 +1,69 @@
+//@version=6
+indicator("Sentinel Earnings Intelligence Bridge V30", overlay=true, dynamic_requests=true)
+
+// Sentinel intake is research evidence only. This script never places orders.
+// Create a TradingView alert using: Any alert() function call.
+// Set the webhook URL to your Sentinel /api/tradingview/webhook endpoint.
+
+secret = input.string("", "Sentinel webhook secret", confirm=true)
+sendTechnicalContext = input.bool(true, "Include lightweight technical context")
+
+// Earnings data supplied by TradingView.
+epsActual   = request.earnings(syminfo.tickerid, earnings.actual, barmerge.gaps_on)
+epsEstimate = request.earnings(syminfo.tickerid, earnings.estimate, barmerge.gaps_on)
+revenueActual   = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "FQ", barmerge.gaps_on)
+revenueEstimate = request.financial(syminfo.tickerid, "SALES_ESTIMATES", "FQ", barmerge.gaps_on)
+
+// TradingView exposes these next-report estimates as built-ins.
+nextEarningsTime = earnings.future_time
+nextEpsEstimate  = earnings.future_eps
+nextRevenueEstimate = earnings.future_revenue
+
+// Optional lightweight chart context sent alongside the event.
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+rsi14 = ta.rsi(close, 14)
+trend = close > ema20 and ema20 > ema50 ? "BULL" : close < ema20 and ema20 < ema50 ? "BEAR" : "NEUTRAL"
+
+pctSurprise(actual, estimate) =>
+    not na(actual) and not na(estimate) and estimate != 0 ? (actual - estimate) / math.abs(estimate) * 100 : na
+
+jsonNumber(float value) => na(value) ? "null" : str.tostring(value)
+jsonInt(int value) => na(value) ? "null" : str.tostring(value)
+jsonString(string value) => '"' + value + '"'
+
+epsSurprise = pctSurprise(epsActual, epsEstimate)
+revenueSurprise = pctSurprise(revenueActual, revenueEstimate)
+
+// With gaps_on, a non-na earnings/financial value marks a newly published data point.
+newEarningsData = not na(epsActual) or not na(epsEstimate) or not na(revenueActual) or not na(revenueEstimate)
+
+if barstate.isconfirmed and newEarningsData and str.length(secret) > 0
+    technicalJson = sendTechnicalContext
+         ? ',"financials":{"ema20":' + jsonNumber(ema20) + ',"ema50":' + jsonNumber(ema50) + ',"rsi14":' + jsonNumber(rsi14) + ',"trend":' + jsonString(trend) + ',"nextEpsEstimate":' + jsonNumber(nextEpsEstimate) + ',"nextRevenueEstimate":' + jsonNumber(nextRevenueEstimate) + '}'
+         : ',"financials":{"nextEpsEstimate":' + jsonNumber(nextEpsEstimate) + ',"nextRevenueEstimate":' + jsonNumber(nextRevenueEstimate) + '}'
+
+    message = '{' +
+      '"secret":' + jsonString(secret) + ',' +
+      '"source":"TRADINGVIEW_PINE_V30",' +
+      '"eventType":"EARNINGS_FINANCIAL",' +
+      '"ticker":' + jsonString(syminfo.tickerid) + ',' +
+      '"timeframe":' + jsonString(timeframe.period) + ',' +
+      '"signal":"EARNINGS_RELEASE",' +
+      '"strategy":"SENTINEL_EARNINGS_INTELLIGENCE_V30",' +
+      '"price":' + jsonNumber(close) + ',' +
+      '"timestamp":' + jsonInt(time) + ',' +
+      '"epsActual":' + jsonNumber(epsActual) + ',' +
+      '"epsEstimate":' + jsonNumber(epsEstimate) + ',' +
+      '"epsSurprisePct":' + jsonNumber(epsSurprise) + ',' +
+      '"revenueActual":' + jsonNumber(revenueActual) + ',' +
+      '"revenueEstimate":' + jsonNumber(revenueEstimate) + ',' +
+      '"revenueSurprisePct":' + jsonNumber(revenueSurprise) + ',' +
+      '"nextEarningsAt":' + jsonInt(nextEarningsTime) +
+      technicalJson +
+      '}'
+
+    alert(message, alert.freq_once_per_bar_close)
+
+plot(ema20, "EMA20", display=display.none)
+plot(ema50, "EMA50", display=display.none)
