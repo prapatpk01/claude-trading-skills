@@ -61,6 +61,9 @@ jobs:
       - name: Momentum Forecast V26 probability policy
         run: npm run test:technical-overlay
 
+      - name: TradingView Earnings Intelligence V30
+        run: npm run test:tradingview-v30
+
       - name: TypeScript check
         run: npm run typecheck
 
