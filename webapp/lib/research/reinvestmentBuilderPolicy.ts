@@ -44,6 +44,7 @@ export type ReinvestmentDraft = {
   requiresFundingRiskCioApproval: true;
 };
 
+const PRIMARY_STAGES = new Set(["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"]);
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const finite = (value: unknown, fallback = 0) => {
   const n = Number(value);
@@ -52,19 +53,47 @@ const finite = (value: unknown, fallback = 0) => {
 const money = (value: number) => Math.round(value * 100) / 100;
 const shares = (value: number) => Math.round(value * 1e7) / 1e7;
 
+// V31 Opportunity Efficiency Floor for actual capital deployment.
+// Research can keep lower-upside names on WATCH, but the reinvestment basket
+// must not consume capital merely to fill a 5-name target.
+export function meetsReinvestmentOpportunityFloor(row: ReinvestmentCandidate) {
+  const stage = String(row.lifecycleStage ?? "UNCONFIRMED").toUpperCase();
+  const expected = finite(row.expectedReturnPct, -999);
+  const confidence = finite(row.confidence, 0);
+
+  if (row.action === "ADD") return expected >= 5 && confidence >= 70;
+  if (PRIMARY_STAGES.has(stage)) return expected >= 6 && confidence >= 62;
+  if (stage === "MATURE") return expected >= 8 && confidence >= 68;
+  return expected >= 8 && confidence >= 68;
+}
+
+function meetsExtensionFloor(row: ReinvestmentCandidate) {
+  const stage = String(row.lifecycleStage ?? "UNCONFIRMED").toUpperCase();
+  const expected = finite(row.expectedReturnPct, -999);
+  const confidence = finite(row.confidence, 0);
+  if (row.action === "ADD") return expected >= 7 && confidence >= 72;
+  if (PRIMARY_STAGES.has(stage)) return expected >= 8 && confidence >= 68;
+  return expected >= 10 && confidence >= 72;
+}
+
 function convictionScore(row: ReinvestmentCandidate) {
-  const readinessBonus = row.readiness === "READY" ? 18 : 0;
+  const stage = String(row.lifecycleStage ?? "UNCONFIRMED").toUpperCase();
+  const readinessBonus = row.readiness === "READY" ? 8 : 0;
+  const stageBonus = PRIMARY_STAGES.has(stage) ? 8 : stage === "MATURE" ? -8 : 0;
   return Math.max(1,
-    clamp(row.confidence, 0, 100) * .55 +
-    clamp(row.expectedReturnPct, -10, 35) * 1.6 +
-    clamp(row.priority, 0, 100) * .2 + readinessBonus
+    clamp(row.confidence, 0, 100) * .35 +
+    clamp(row.expectedReturnPct, -10, 35) * 3.2 +
+    clamp(row.priority, 0, 100) * .12 +
+    readinessBonus + stageBonus
   );
 }
 
 export function rankReinvestmentCandidates(rows: ReinvestmentCandidate[]) {
   return rows.slice().sort((a, b) => {
+    const scoreDiff = convictionScore(b) - convictionScore(a);
+    if (Math.abs(scoreDiff) > .001) return scoreDiff;
     if (a.readiness !== b.readiness) return a.readiness === "READY" ? -1 : 1;
-    return convictionScore(b) - convictionScore(a) || b.expectedReturnPct - a.expectedReturnPct || a.ticker.localeCompare(b.ticker);
+    return b.expectedReturnPct - a.expectedReturnPct || a.ticker.localeCompare(b.ticker);
   });
 }
 
@@ -79,9 +108,10 @@ export function curateReinvestmentCandidates(input: {
   const maxNames = Math.max(minNames, Math.min(8, Math.round(finite(input.maxNames, 8))));
   const minOrderUsd = Math.max(1, finite(input.minOrderUsd, 100));
   const deployableUsd = Math.max(0, finite(input.deployableUsd));
-  const ranked = rankReinvestmentCandidates(input.candidates)
+  const rawRanked = rankReinvestmentCandidates(input.candidates)
     .filter(row => row.ticker && row.price > 0)
     .filter((row, index, rows) => rows.findIndex(other => other.ticker === row.ticker) === index);
+  const ranked = rawRanked.filter(meetsReinvestmentOpportunityFloor);
 
   const capitalCapacityNames = deployableUsd > 0 ? Math.min(maxNames, Math.floor(deployableUsd / minOrderUsd)) : 0;
   const maximumSelectable = Math.min(maxNames, capitalCapacityNames, ranked.length);
@@ -92,28 +122,29 @@ export function curateReinvestmentCandidates(input: {
     targetMinNames: minNames,
     targetMaxNames: maxNames,
     capitalCapacityNames,
-    qualityLimited: ranked.length > 0,
+    qualityLimited: rawRanked.length > 0,
     rationale: deployableUsd <= 0
       ? "INV has no deployable capital to curate this cycle."
-      : "Available capital is below the minimum draft-order threshold.",
+      : rawRanked.length > 0
+        ? "INV found research candidates, but none cleared the V31 opportunity-efficiency floor. Keep capital in Buffer and continue the approved-universe research passes."
+        : "Available capital is below the minimum draft-order threshold or no governed candidates are available.",
   };
 
+  // The first five are selected only from names that already passed the capital
+  // efficiency floor. We never force a 0–3% weighted-return name into the basket.
   const selected = ranked.slice(0, Math.min(minNames, maximumSelectable));
   for (let index = selected.length; index < maximumSelectable; index += 1) {
     const row = ranked[index];
-    const strongEnough = row.readiness === "READY"
-      ? row.confidence >= 60 && row.expectedReturnPct >= 0
-      : row.confidence >= 65 && row.expectedReturnPct >= 5;
-    if (!strongEnough) break;
+    if (!meetsExtensionFloor(row)) break;
     selected.push(row);
   }
 
-  const qualityLimited = selected.length < Math.min(maxNames, capitalCapacityNames, ranked.length);
+  const qualityLimited = selected.length < Math.min(maxNames, capitalCapacityNames, rawRanked.length);
   const rationale = selected.length < minNames
-    ? `INV found only ${selected.length} names that can be funded without forcing lower-quality selections; the 5-name floor is intentionally not forced.`
+    ? `INV found only ${selected.length} names that clear the V31 opportunity floor; the 5-name floor is intentionally not forced and the next approved-universe pass should search for stronger destinations.`
     : selected.length === maxNames
-      ? `INV filled the full ${maxNames}-name quality band from the ranked Research/Forecast pool.`
-      : `INV selected ${selected.length} names; lower-ranked candidates remain standby because they did not clear the extension-quality threshold.`;
+      ? `INV filled the full ${maxNames}-name basket with opportunity-efficient Research/Forecast candidates.`
+      : `INV selected ${selected.length} opportunity-efficient names; lower-ranked candidates remain standby because they did not clear the stronger extension threshold.`;
 
   return {
     owner: "INV_RESEARCH",
@@ -166,6 +197,7 @@ export function buildReinvestmentDraft(input: {
   const minOrderUsd = Math.max(0, finite(input.minOrderUsd, 100));
   const selected = rankReinvestmentCandidates(input.selected)
     .filter(row => row.ticker && row.price > 0 && row.confidence >= 0)
+    .filter(meetsReinvestmentOpportunityFloor)
     .filter((row, index, rows) => rows.findIndex(other => other.ticker === row.ticker) === index)
     .slice(0, maxNames);
 
