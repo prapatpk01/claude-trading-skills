@@ -51,16 +51,73 @@ function toRow(alert: NormalizedTradingViewAlert): TradingViewIntelligenceEventR
   };
 }
 
+function legacyTicker(ticker: string) {
+  return `__TV_${String(ticker ?? "").trim().toUpperCase()}__`;
+}
+
+function mapLegacy(row: any): TradingViewIntelligenceEventRow | null {
+  const intelligence = row?.audit?.tradingview_intelligence;
+  if (!intelligence || typeof intelligence !== "object") return null;
+  return {
+    ...(intelligence as TradingViewIntelligenceEventRow),
+    id: String(row?.id ?? ""),
+    received_at: String((intelligence as any)?.received_at ?? row?.created_at ?? "") || undefined,
+  };
+}
+
+async function saveLegacy(sb: ReturnType<typeof getSupabaseAdmin>, row: TradingViewIntelligenceEventRow) {
+  if (!sb) return { ok: false as const, error: "Supabase admin is not configured" };
+  const receivedAt = new Date().toISOString();
+  const legacyRow = {
+    ticker: legacyTicker(row.ticker),
+    requested_action: "PORTFOLIO_REBALANCE",
+    final_action: "MEETING_MEMORY",
+    approved: false,
+    conviction: 0,
+    confidence: 0,
+    proposed_weight_pct: 0,
+    funding_source: "MULTI_SOURCE",
+    evidence: [],
+    votes: [],
+    issues: [],
+    dissent: [],
+    portfolio_context: {},
+    audit: { tradingview_intelligence: { ...row, received_at: receivedAt } },
+    human_approved: false,
+    execution_status: "PENDING",
+  };
+  const { data, error } = await sb.from("institutional_decisions").insert(legacyRow).select("id,created_at").single();
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const, event: { id: data?.id, ticker: row.ticker, event_type: row.event_type, received_at: data?.created_at ?? receivedAt }, backend: "institutional_decisions" as const };
+}
+
 export async function saveTradingViewIntelligence(alert: NormalizedTradingViewAlert) {
   const sb = getSupabaseAdmin();
   if (!sb) return { ok: false as const, error: "Supabase admin is not configured" };
-  const { data, error } = await sb
+  const row = toRow(alert);
+  const direct = await sb
     .from("tradingview_intelligence_events")
-    .insert(toRow(alert))
+    .insert(row)
     .select("id,ticker,event_type,received_at")
     .single();
-  if (error) return { ok: false as const, error: error.message };
-  return { ok: true as const, event: data };
+  if (!direct.error) return { ok: true as const, event: direct.data, backend: "tradingview_intelligence_events" as const };
+
+  const legacy = await saveLegacy(sb, row);
+  if (legacy.ok) return legacy;
+  return { ok: false as const, error: `Dedicated store: ${direct.error.message}; legacy store: ${legacy.error}` };
+}
+
+async function readLegacy(ticker: string, limit: number): Promise<TradingViewIntelligenceEventRow[]> {
+  const sb = getSupabaseAdmin();
+  if (!sb) return [];
+  const { data, error } = await sb
+    .from("institutional_decisions")
+    .select("id,audit,created_at")
+    .eq("ticker", legacyTicker(ticker))
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return (data ?? []).map(mapLegacy).filter((row): row is TradingViewIntelligenceEventRow => Boolean(row));
 }
 
 export async function getTradingViewIntelligence(ticker: string, limit = 10): Promise<TradingViewIntelligenceEventRow[]> {
@@ -68,31 +125,25 @@ export async function getTradingViewIntelligence(ticker: string, limit = 10): Pr
   if (!sb) return [];
   const normalized = String(ticker ?? "").trim().toUpperCase();
   if (!normalized) return [];
-  const { data, error } = await sb
+  const bounded = Math.max(1, Math.min(50, Math.round(limit || 10)));
+  const direct = await sb
     .from("tradingview_intelligence_events")
     .select("id,ticker,event_type,timeframe,signal,strategy,price,event_timestamp,source,eps_actual,eps_estimate,eps_surprise_pct,revenue_actual,revenue_estimate,revenue_surprise_pct,next_earnings_at,fiscal_period,ai_summary,guidance,financials,received_at")
     .eq("ticker", normalized)
     .order("received_at", { ascending: false })
-    .limit(Math.max(1, Math.min(50, Math.round(limit || 10))));
-  if (error) return [];
-  return (data ?? []) as TradingViewIntelligenceEventRow[];
+    .limit(bounded);
+  if (!direct.error) return (direct.data ?? []) as TradingViewIntelligenceEventRow[];
+  return readLegacy(normalized, bounded);
 }
 
 export async function getLatestTradingViewEarnings(ticker: string, freshnessDays = 45): Promise<TradingViewIntelligenceEventRow | null> {
-  const sb = getSupabaseAdmin();
-  if (!sb) return null;
   const normalized = String(ticker ?? "").trim().toUpperCase();
   if (!normalized) return null;
-  const cutoff = new Date(Date.now() - Math.max(1, freshnessDays) * 86_400_000).toISOString();
-  const { data, error } = await sb
-    .from("tradingview_intelligence_events")
-    .select("id,ticker,event_type,timeframe,signal,strategy,price,event_timestamp,source,eps_actual,eps_estimate,eps_surprise_pct,revenue_actual,revenue_estimate,revenue_surprise_pct,next_earnings_at,fiscal_period,ai_summary,guidance,financials,received_at")
-    .eq("ticker", normalized)
-    .in("event_type", ["EARNINGS", "EARNINGS_FINANCIAL"])
-    .gte("received_at", cutoff)
-    .order("received_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error || !data) return null;
-  return data as TradingViewIntelligenceEventRow;
+  const rows = await getTradingViewIntelligence(normalized, 25);
+  const cutoff = Date.now() - Math.max(1, freshnessDays) * 86_400_000;
+  return rows.find(row => {
+    if (!["EARNINGS", "EARNINGS_FINANCIAL"].includes(row.event_type)) return false;
+    const stamp = new Date(row.received_at ?? row.event_timestamp ?? 0).getTime();
+    return Number.isFinite(stamp) && stamp >= cutoff;
+  }) ?? null;
 }
