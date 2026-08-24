@@ -16,6 +16,9 @@ const RANGES: ChartRange[] = ["1M", "3M", "6M", "YTD", "1Y"];
 const pc = (v: number | null) => v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 const cleanTicker = (value: unknown) => String(value ?? "").trim().toUpperCase();
 const today = () => new Date().toISOString().slice(0, 10);
+const signedMoney = (value: number | null) => value == null || !Number.isFinite(value)
+  ? "—"
+  : `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`;
 
 function actionClass(action: string) {
   if (action === "ADD") return "add";
@@ -174,7 +177,7 @@ export default function HoldingsMarketMonitor({ onUpdated }: { onUpdated?: () =>
 
   if (loading) return <div className="card"><span className="spinner" /> Loading unified technical intelligence…</div>;
 
-  return <div className="card holdings-monitor-card" data-feature="unified-technical-v34 holding-reconciliation watchlist-management">
+  return <div className="card holdings-monitor-card" data-feature="unified-technical-v34 holding-reconciliation watchlist-management cost-pl chart-return-color">
     <div className="holdings-monitor-head">
       <div><h2 className="section" style={{ margin: 0 }}>📈 Portfolio & Watchlist Market Monitor</h2><p className="muted" style={{ fontSize: 12, marginTop: 6 }}>V34 uses one policy everywhere: Trend (Sentinel X) → Flow (MCDX) → Location (ATR room) → Action. Location alone never forces a trim.</p></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><span className="tag">{holdings.length} open positions</span><span className="tag">{watchlist.length} watchlist names</span><span className="tag">UNIFIED V34</span></div>
@@ -206,10 +209,14 @@ function RangeSelector({ value, onChange }: { value: ChartRange; onChange: (rang
 
 function HoldingsTable({ holdings, market, nav, range, onEdit }: { holdings: Holding[]; market: Record<string, any>; nav: number; range: ChartRange; onEdit: (h: Holding) => void }) {
   if (!holdings.length) return <div className="notice" style={{ marginTop: 12 }}>No open holdings.</div>;
-  return <div className="table-wrap" style={{ marginTop: 12 }}><table className="tbl holdings-market-table"><thead><tr><th>Ticker</th><th className="num">Current</th><th>V34 Unified Decision</th><th>Targets</th><th>{range}</th><th className="num">Weight</th><th>Edit</th></tr></thead><tbody>{holdings.map(row => {
+  return <div className="table-wrap" style={{ marginTop: 12 }}><table className="tbl holdings-market-table"><thead><tr><th>Ticker</th><th className="num">Current / vs Cost</th><th>V34 Unified Decision</th><th>Targets</th><th>{range}</th><th className="num">Weight</th><th>Edit</th></tr></thead><tbody>{holdings.map(row => {
     const item = market[row.ticker], overlay = item?.technicalOverlay, price = item?.price ?? null, chart = selectedRange(item, range);
     const value = (price ?? row.avg_cost) * row.shares, weight = nav ? value / nav * 100 : 0;
-    return <tr key={row.id || row.ticker}><td><strong>{row.ticker}</strong><small className="muted" style={{ display: "block" }}>{row.shares.toLocaleString(undefined, { maximumFractionDigits: 7 })} sh · cost {money(row.avg_cost)}</small></td><td className="num"><strong>{price == null ? "—" : money(price)}</strong><small className="muted" style={{ display: "block" }}>1W {pc(item?.change1w ?? null)}</small></td><td style={{ minWidth: 300 }}><UnifiedCell overlay={overlay} item={item}/></td><td style={{ minWidth: 145 }}><Targets overlay={overlay}/></td><td style={{ minWidth: 150 }}><Spark points={chart.series ?? []}/><small className={chart.changePct == null ? "muted" : chart.changePct >= 0 ? "pos" : "neg"}>{range} {pc(chart.changePct ?? null)}</small></td><td className="num">{weight.toFixed(1)}%</td><td><button className="holding-edit-btn" onClick={() => onEdit(row)}>Edit</button></td></tr>;
+    const deltaPerShare = price == null ? null : price - row.avg_cost;
+    const deltaPct = price == null || !(row.avg_cost > 0) ? null : (price / row.avg_cost - 1) * 100;
+    const unrealizedUsd = deltaPerShare == null ? null : deltaPerShare * row.shares;
+    const pnlClass = deltaPct == null ? "muted" : deltaPct >= 0 ? "pos" : "neg";
+    return <tr key={row.id || row.ticker}><td><strong>{row.ticker}</strong><small className="muted" style={{ display: "block" }}>{row.shares.toLocaleString(undefined, { maximumFractionDigits: 7 })} sh · cost {money(row.avg_cost)}</small></td><td className="num" style={{ minWidth: 180 }}><strong>{price == null ? "—" : money(price)}</strong><small className={pnlClass} style={{ display: "block", marginTop: 3 }}>vs cost {signedMoney(deltaPerShare)}/sh · {pc(deltaPct)}</small><small className={pnlClass} style={{ display: "block" }}>Unrealized {signedMoney(unrealizedUsd)}</small><small className="muted" style={{ display: "block", marginTop: 2 }}>1W {pc(item?.change1w ?? null)}</small></td><td style={{ minWidth: 300 }}><UnifiedCell overlay={overlay} item={item}/></td><td style={{ minWidth: 145 }}><Targets overlay={overlay}/></td><td style={{ minWidth: 150 }}><Spark points={chart.series ?? []} changePct={chart.changePct ?? null}/><small className={chart.changePct == null ? "muted" : chart.changePct >= 0 ? "pos" : "neg"}>{range} {pc(chart.changePct ?? null)}</small></td><td className="num">{weight.toFixed(1)}%</td><td><button className="holding-edit-btn" onClick={() => onEdit(row)}>Edit</button></td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -217,7 +224,10 @@ function WatchlistTable({ watchlist, market, range, pendingDelete, deleting, onR
   if (!watchlist.length) return <div className="notice" style={{ marginTop: 12 }}>No watchlist-only names.</div>;
   return <div className="table-wrap" style={{ marginTop: 12 }}><table className="tbl holdings-market-table"><thead><tr><th>Ticker</th><th className="num">Current</th><th>Watchlist Decision</th><th>V34 Technical</th><th>Targets</th><th>{range}</th><th>Manage</th></tr></thead><tbody>{watchlist.map(row => {
     const item = market[row.ticker], overlay = item?.technicalOverlay, price = item?.price ?? null, chart = selectedRange(item, range), presentation = watchlistDecision(overlay?.action ?? "HOLD");
-    return <tr key={row.id || row.ticker}><td><strong>{row.ticker}</strong><small className="muted" style={{ display: "block" }}>{row.source ?? "Watchlist"}</small></td><td className="num"><strong>{price == null ? "—" : money(price)}</strong></td><td><span className={`overlay-action ${presentation.className}`}>{presentation.label}</span><div className="overlay-reason">{watchReason(overlay)}</div></td><td style={{ minWidth: 300 }}><UnifiedCell overlay={overlay} item={item}/></td><td><Targets overlay={overlay}/></td><td><Spark points={chart.series ?? []}/><small className={chart.changePct == null ? "muted" : chart.changePct >= 0 ? "pos" : "neg"}>{pc(chart.changePct ?? null)}</small></td><td>{pendingDelete === row.id ? <><button className="btn danger sm" disabled={deleting === row.id} onClick={() => void onRemove(row)}>{deleting === row.id ? "Removing…" : "Confirm"}</button><button className="btn ghost sm" onClick={() => onRequestDelete(null)}>Cancel</button></> : <button className="btn ghost sm" onClick={() => onRequestDelete(row.id)}>Remove</button>}</td></tr>;
+    const referenceDelta = price != null && row.entry_price != null ? price - Number(row.entry_price) : null;
+    const referencePct = price != null && row.entry_price != null && Number(row.entry_price) > 0 ? (price / Number(row.entry_price) - 1) * 100 : null;
+    const referenceClass = referencePct == null ? "muted" : referencePct >= 0 ? "pos" : "neg";
+    return <tr key={row.id || row.ticker}><td><strong>{row.ticker}</strong><small className="muted" style={{ display: "block" }}>{row.source ?? "Watchlist"}</small></td><td className="num"><strong>{price == null ? "—" : money(price)}</strong>{row.entry_price != null && <small className={referenceClass} style={{ display: "block" }}>vs ref {signedMoney(referenceDelta)} · {pc(referencePct)}</small>}</td><td><span className={`overlay-action ${presentation.className}`}>{presentation.label}</span><div className="overlay-reason">{watchReason(overlay)}</div></td><td style={{ minWidth: 300 }}><UnifiedCell overlay={overlay} item={item}/></td><td><Targets overlay={overlay}/></td><td><Spark points={chart.series ?? []} changePct={chart.changePct ?? null}/><small className={chart.changePct == null ? "muted" : chart.changePct >= 0 ? "pos" : "neg"}>{pc(chart.changePct ?? null)}</small></td><td>{pendingDelete === row.id ? <><button className="btn danger sm" disabled={deleting === row.id} onClick={() => void onRemove(row)}>{deleting === row.id ? "Removing…" : "Confirm"}</button><button className="btn ghost sm" onClick={() => onRequestDelete(null)}>Cancel</button></> : <button className="btn ghost sm" onClick={() => onRequestDelete(row.id)}>Remove</button>}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -245,11 +255,14 @@ function marketDataNote(item: any) {
   return item?.dataQuality?.reason ?? "Market data unavailable. Use Retry market data; no technical decision is inferred.";
 }
 
-function Spark({ points }: { points: any[] }) {
+function Spark({ points, changePct }: { points: any[]; changePct: number | null }) {
   if (!points || points.length < 2) return <span className="muted">—</span>;
   const values = points.map(row => Number(row.close)).filter(Number.isFinite);
   if (values.length < 2) return <span className="muted">—</span>;
   const low = Math.min(...values), high = Math.max(...values), span = Math.max(.0001, high - low), width = 140, height = 36;
   const path = values.map((value, index) => `${index ? "L" : "M"}${index / (values.length - 1) * width},${height - (value - low) / span * height}`).join(" ");
-  return <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Price sparkline"><path d={path} fill="none" stroke="currentColor" strokeWidth="2"/></svg>;
+  const fallbackChange = values[0] > 0 ? (values.at(-1)! / values[0] - 1) * 100 : 0;
+  const effectiveChange = changePct != null && Number.isFinite(changePct) ? changePct : fallbackChange;
+  const tone = effectiveChange >= 0 ? "pos" : "neg";
+  return <svg className={tone} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${effectiveChange >= 0 ? "Positive" : "Negative"} price sparkline`}><path d={path} fill="none" stroke="currentColor" strokeWidth="2"/></svg>;
 }
