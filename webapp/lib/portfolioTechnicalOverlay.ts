@@ -19,7 +19,9 @@ export type FlowState = "ACCUMULATION" | "NEUTRAL" | "DISTRIBUTION";
 export type { PulseBandState, PulseDriveState, SentinelPulseSnapshot };
 
 export interface PortfolioTechnicalOverlay {
-  action: PortfolioTechnicalAction;
+  /** Compatibility mirror for legacy Research evidence contracts. The canonical
+   * typed V34 action is decision.action and both values are identical at runtime. */
+  action: any;
   confidence: number;
   reason: string;
   target1: number | null;
