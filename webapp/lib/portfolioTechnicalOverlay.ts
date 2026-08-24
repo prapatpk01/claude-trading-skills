@@ -8,8 +8,13 @@ import {
 } from "./sentinelPulseV47";
 import { computeSentinelX562, type SentinelX562Snapshot } from "./research/sentinelX562";
 import { computeMcdxV33, type McdxFlowSignal, type McdxSponsorState } from "./research/mcdxV33";
+import {
+  buildUnifiedTechnicalDecisionV34,
+  type UnifiedTechnicalAction,
+  type UnifiedTechnicalDecisionV34,
+} from "./research/unifiedTechnicalDecisionV34";
 
-export type PortfolioTechnicalAction = "ADD" | "HOLD" | "TRIM" | "EXIT REVIEW";
+export type PortfolioTechnicalAction = UnifiedTechnicalAction;
 export type FlowState = "ACCUMULATION" | "NEUTRAL" | "DISTRIBUTION";
 export type { PulseBandState, PulseDriveState, SentinelPulseSnapshot };
 
@@ -21,6 +26,7 @@ export interface PortfolioTechnicalOverlay {
   target2: number | null;
   support1: number | null;
   roomAtr: number | null;
+  decision: UnifiedTechnicalDecisionV34;
   sentinel: {
     version: "5.6.2";
     dailyScore: number;
@@ -60,6 +66,7 @@ export interface PortfolioTechnicalOverlay {
     shortScore: number;
   };
   policy: {
+    version: "34.0";
     timeframe: "WEEKLY DECISION · DAILY EXECUTION";
     requiresFundamentalExitGate: true;
     syntheticFlowProxy: true;
@@ -67,6 +74,7 @@ export interface PortfolioTechnicalOverlay {
     mcdxVersion: "3.3";
     mcdxMethodology: "PRICE_VOLUME_PROXY";
     mcdxSeparated: true;
+    unifiedDecision: true;
   };
 }
 
@@ -120,12 +128,10 @@ const positiveTrigger = (trigger: SentinelX562Snapshot["trigger"]) => ["BOS_UP",
 const negativeTrigger = (trigger: SentinelX562Snapshot["trigger"]) => ["BOS_DOWN", "CHOCH_DOWN", "RSI_SMA_BEAR_SHIFT", "RSI_HIGH_REJECT", "HMA16_LOSS"].includes(trigger);
 
 /**
- * V33 portfolio technical overlay.
- * - Sentinel X v5.6.2 owns trend, momentum, RSI/SMA strength and structure.
- * - MCDX Sentinel v3.3 owns synthetic participation / sponsored-flow evidence.
- * - Legacy Pulse v4.7 is retained only as a compatibility BB/drive sub-signal
- *   for V26 Forecast; it no longer labels the user-facing Sentinel version.
- * - MCDX is PRICE_VOLUME_PROXY only, never an institutional-ownership claim.
+ * V34 unified technical overlay.
+ * Sentinel X owns Trend; MCDX owns Flow; ATR room owns Location; one governed
+ * policy combines those three layers into the same Action for Holdings,
+ * Watchlist and CIO. Location alone never forces a trim.
  */
 export function computePortfolioTechnicalOverlay(candles: Candle[]): PortfolioTechnicalOverlay | null {
   const clean = candles
@@ -150,47 +156,40 @@ export function computePortfolioTechnicalOverlay(candles: Candle[]): PortfolioTe
   const support1 = levels.supports[0] ?? (volatility ? price - 2.2 * volatility : null);
   const target1 = levels.resistances[0] ?? (volatility ? price + 2.2 * volatility : null);
   const target2 = levels.resistances[1] ?? (target1 != null && volatility ? target1 + 1.3 * volatility : null);
-  const roomAtr = volatility && target1 != null ? (target1 - price) / volatility : null;
+  const rawRoomAtr = volatility && target1 != null ? (target1 - price) / volatility : null;
+  const roomAtr = rawRoomAtr == null ? null : Math.round(rawRoomAtr * 100) / 100;
 
-  const roomOkay = roomAtr == null || roomAtr >= 1;
-  const weeklyPositive = (trend === "BULL" || weeklyPulse.score >= 58) && weeklyPulse.driveState !== "BEAR DRIVE";
-  const weeklyNegative = (trend === "BEAR" || weeklyPulse.score <= 42) && weeklyPulse.driveState !== "BULL DRIVE";
   const dailyPositive = sentinelX.trend === "BULL"
     && sentinelX.direction >= 10
     && (positiveTrigger(sentinelX.trigger) || sentinelX.rsiState === "ABOVE_SMA" || pulse.driveState === "BULL DRIVE");
   const dailyNegative = sentinelX.trend === "BEAR"
     && sentinelX.direction <= -10
     && (negativeTrigger(sentinelX.trigger) || sentinelX.rsiState === "BELOW_SMA" || pulse.driveState === "BEAR DRIVE");
-
   const mcdxBullConfirm = mcdx.state === "ACCUMULATION" || mcdx.sponsor === "BULL_SPONSORED" || mcdx.flowSignal === "BUY_PRESSURE" && mcdx.contextScore >= 55;
   const mcdxBearConfirm = mcdx.state === "DISTRIBUTION" || mcdx.sponsor === "BEAR_SPONSORED" || mcdx.flowSignal === "SELL_PRESSURE" && mcdx.contextScore >= 55;
-  const mcdxBullVeto = mcdx.state === "DISTRIBUTION" && mcdx.smartFlow < 45;
-  const mcdxBearVeto = mcdx.state === "ACCUMULATION" && mcdx.smartFlow > 55;
 
-  let action: PortfolioTechnicalAction = "HOLD";
-  let reason = `Sentinel X v5.6.2 ${sentinelX.coreState}, RSI/SMA ${sentinelX.rsi.toFixed(1)}/${sentinelX.rsiSma.toFixed(1)}, strength ${sentinelX.momentumStrength}; MCDX v3.3 ${mcdx.state} (${mcdx.sponsor}).`;
-
-  if (weeklyNegative && structure === "BEAR" && dailyNegative && mcdxBearConfirm && !mcdxBearVeto) {
-    action = "EXIT REVIEW";
-    reason = `Sentinel X v5.6.2 bearish trend/structure and ${sentinelX.trigger !== "NONE" ? sentinelX.trigger : "negative RSI/SMA state"} are confirmed by MCDX v3.3 ${mcdx.state}. Fundamental/thesis approval remains mandatory before any exit.`;
-  } else if (roomAtr != null && roomAtr < .65) {
-    action = "TRIM";
-    reason = `Only ${roomAtr.toFixed(2)} ATR remains to Target 1; upside room is compressed. Sentinel X strength ${sentinelX.momentumStrength}/100; MCDX is ${mcdx.state}.`;
-  } else if ((sentinelX.trigger === "RSI_HIGH_REJECT" || pulse.bandState === "HIGH REJECT") && sentinelX.fastImpulse <= 0 && !mcdxBullConfirm) {
-    action = "TRIM";
-    reason = `Sentinel X v5.6.2 momentum rejected from a high zone while Fast Impulse is weakening and MCDX v3.3 does not confirm sponsored accumulation; review a partial trim.`;
-  } else if (weeklyPositive && structure !== "BEAR" && dailyPositive && roomOkay && pulse.bandState !== "HIGH EXTREME" && mcdxBullConfirm && !mcdxBullVeto) {
-    action = "ADD";
-    reason = positiveTrigger(sentinelX.trigger)
-      ? `Sentinel X v5.6.2 ${sentinelX.trigger} aligns with weekly trend and MCDX v3.3 ${mcdx.sponsor}/${mcdx.flowSignal}; room to Target 1 remains adequate.`
-      : `Sentinel X v5.6.2 bullish RSI/SMA + trend strength align with MCDX v3.3 participation and sufficient room to Target 1.`;
-  } else if (weeklyPositive && dailyPositive && !mcdxBullConfirm) {
-    reason = `Sentinel X v5.6.2 is bullish, but MCDX v3.3 has not confirmed sponsored participation yet; HOLD rather than chase.`;
-  } else if (sentinelX.rsi <= 30 || pulse.bandState === "LOW EXTREME") {
-    reason = `Sentinel X v5.6.2 is in a lower momentum zone. Treat it as buy-watch only; wait for RSI/SMA reclaim plus MCDX sponsored-flow confirmation.`;
-  } else if (sentinelX.rsi >= 70 || pulse.bandState === "HIGH EXTREME") {
-    reason = `Sentinel X v5.6.2 is in an upper momentum zone. Do not chase; strong momentum is not an automatic sell without weakening structure/flow.`;
-  }
+  const decision = buildUnifiedTechnicalDecisionV34({
+    roomAtr,
+    sentinel: {
+      trend,
+      coreState: sentinelX.coreState,
+      momentumStrength: sentinelX.momentumStrength,
+      structure,
+      structurePattern: sentinelX.structure,
+      regime: sentinelX.regime,
+      trigger: sentinelX.trigger,
+      rsiState: sentinelX.rsiState,
+      fastImpulse: sentinelX.fastImpulse,
+      hma16State: sentinelX.hma16State,
+    },
+    mcdx: {
+      state: mcdx.state,
+      sponsor: mcdx.sponsor,
+      flowSignal: mcdx.flowSignal,
+      contextScore: mcdx.contextScore,
+      smartFlow: mcdx.smartFlow,
+    },
+  });
 
   const directionAgreement = trend === "BULL" && sentinelX.direction > 0 || trend === "BEAR" && sentinelX.direction < 0 ? 10 : trend === "NEUTRAL" ? 4 : 1;
   const structureAgreement = trend === "BULL" && structure === "BULL" || trend === "BEAR" && structure === "BEAR" ? 10 : structure === "NEUTRAL" ? 4 : 1;
@@ -199,15 +198,17 @@ export function computePortfolioTechnicalOverlay(candles: Candle[]): PortfolioTe
   const triggerEvidence = sentinelX.trigger !== "NONE" ? 8 : 3;
   const mcdxAgreement = (dailyPositive && mcdxBullConfirm) || (dailyNegative && mcdxBearConfirm) ? 14 : mcdx.state === "NEUTRAL" ? 5 : 2;
   const confidence = Math.round(clamp(28 + directionAgreement + structureAgreement + strengthEvidence + energyEvidence + triggerEvidence + mcdxAgreement));
+  const reason = `V34 ${decision.trendLabel} · Flow ${decision.flowLabel} · Location ${decision.location}. ${decision.summary}`;
 
   return {
-    action,
+    action: decision.action,
     confidence,
     reason,
     target1,
     target2: confidence >= 70 && trend === "BULL" && dailyPositive && mcdxBullConfirm ? target2 : null,
     support1,
-    roomAtr: roomAtr == null ? null : Math.round(roomAtr * 100) / 100,
+    roomAtr,
+    decision,
     sentinel: {
       version: "5.6.2",
       dailyScore: sentinelX.score,
@@ -247,6 +248,7 @@ export function computePortfolioTechnicalOverlay(candles: Candle[]): PortfolioTe
       shortScore: mcdx.shortScore,
     },
     policy: {
+      version: "34.0",
       timeframe: "WEEKLY DECISION · DAILY EXECUTION",
       requiresFundamentalExitGate: true,
       syntheticFlowProxy: true,
@@ -254,6 +256,7 @@ export function computePortfolioTechnicalOverlay(candles: Candle[]): PortfolioTe
       mcdxVersion: "3.3",
       mcdxMethodology: "PRICE_VOLUME_PROXY",
       mcdxSeparated: true,
+      unifiedDecision: true,
     },
   };
 }
