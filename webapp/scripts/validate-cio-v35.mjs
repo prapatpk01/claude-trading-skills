@@ -15,6 +15,7 @@ const forbidTokens = (file, pairs) => {
   for (const [token, reason] of pairs) if (source.includes(token)) failures.push(`${file}: ${reason} (${token})`);
 };
 
+// V35 remains archived for rollback and proves the five-step architecture did not disappear.
 requireTokens("app/components/CIOCommandCenterV35.tsx", [
   'data-cio-version="35.0"',
   'data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION"',
@@ -24,23 +25,52 @@ requireTokens("app/components/CIOCommandCenterV35.tsx", [
   "/api/holding-market",
   "MeetingPlanApprovalPanel",
   "MeetingApprovalPanel",
-  "NO SALE REQUIRED",
-  "Cash Buffer Excess",
-  "Approved TRIM if required",
-  "Executed SELL only",
+]);
+
+// V35.1 is the live capital-clarity surface. It must never blur candidate,
+// funding, liquidity repair or reserve conversion into one ambiguous action.
+requireTokens("app/components/CIOCommandCenterV351.tsx", [
+  'data-cio-version="35.1"',
+  'data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION"',
+  "CAPITAL CLARITY",
+  "BROKER USD CASH",
+  "DIVIDEND CASH",
+  "RESERVE ASSETS",
+  "TOTAL LIQUIDITY BUFFER",
+  "BUY CANDIDATE",
+  "NOT FUNDED",
+  "Approved Funding",
+  "NOT APPROVED",
+  "Approved Trim Size —",
+  "LANE A · LIQUIDITY REPAIR",
+  "LANE B · INVESTMENT FUNDING",
+  "Broker USD Cash (default parking)",
+  "SGOV/JAAA requires a separate approved BUY action",
+  "DESTINATIONS · SOURCE OF TRUTH",
+  "NO BROKER ACTION AUTHORIZED",
   "Sentinel does not auto-trade",
-  "Research upside",
-  "Forecast 20–60D",
   "Trend / Flow / Location / gates",
-  "Governance, risk register & committee evidence",
+]);
+
+requireTokens("app/api/capital-recycling/route.ts", [
+  "brokerUsdCash",
+  "dividendCash",
+  "reserveMarketValue",
+  "reserveHoldings",
+  'defaultRepairParking: "BROKER_USD_CASH"',
+  "reserveConversionRequiresSeparateApprovedBuy: true",
+  "liquidityRepairIsRingFenced: true",
 ]);
 
 requireTokens("app/page.tsx", [
+  'import CIOCommandCenterV35 from "./components/CIOCommandCenterV351"',
   "CIOCommandCenterV35",
   'data-sentinel-version="35.0"',
+  'data-capital-clarity-version="35.1"',
   'data-workspace="cio-v35"',
   'data-command-steps="5"',
   "STATUS → OPPORTUNITIES → PORTFOLIO → CAPITAL → CIO DECISION",
+  "Human approval remains mandatory",
 ]);
 
 forbidTokens("app/page.tsx", [
@@ -57,8 +87,8 @@ requireTokens("app/components/MeetingApprovalPanel.tsx", ["RECONCILE_EXISTING", 
 requireTokens("lib/portfolioSource.ts", ["live_holdings_ledger"]);
 
 if (failures.length) {
-  console.error(`CIO V35 validation FAILED (${failures.length})`);
+  console.error(`CIO V35.1 validation FAILED (${failures.length})`);
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("CIO V35 validation PASSED");
+console.log("CIO V35.1 validation PASSED");
