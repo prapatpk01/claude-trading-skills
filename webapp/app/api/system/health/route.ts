@@ -6,6 +6,7 @@ import {
   supabaseConfigured,
 } from "@/lib/supabase";
 import { callSupabaseWriteGateway } from "@/lib/supabaseWriteGateway";
+import { SENTINEL_RELEASE } from "@/lib/release";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,7 +64,14 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(
     {
       ok: ready,
-      release: "Sentinel-Investment-OS-v14.2",
+      release: SENTINEL_RELEASE.healthRelease,
+      versions: {
+        app: SENTINEL_RELEASE.appVersion,
+        capitalClarity: SENTINEL_RELEASE.capitalClarityVersion,
+        research: SENTINEL_RELEASE.researchVersion,
+        technical: SENTINEL_RELEASE.technicalVersion,
+        forecast: SENTINEL_RELEASE.forecastVersion,
+      },
       checkedAt: new Date().toISOString(),
       checks: { ...checks, databaseReachable, holdingsCount, watchlistCount },
       failures: [
