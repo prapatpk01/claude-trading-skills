@@ -27,11 +27,19 @@ requireTokens("app/components/CIOCommandCenterV35.tsx", [
   "MeetingApprovalPanel",
 ]);
 
-// V35.1 is the live capital-clarity surface. It must never blur candidate,
-// funding, liquidity repair or reserve conversion into one ambiguous action.
+// V35.2 is the live market-brief + capital-clarity surface. It must use measured
+// market evidence and never blur candidate, funding, liquidity repair or reserve conversion.
 requireTokens("app/components/CIOCommandCenterV351.tsx", [
-  'data-cio-version="35.1"',
+  'data-cio-version="35.2"',
   'data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION"',
+  "CIO MARKET BRIEF",
+  "Executive Market Brief",
+  "MARKET_BENCHMARKS",
+  '"SPY", "QQQ", "IWM", "HYG"',
+  "BREADTH",
+  "MOMENTUM",
+  "CIO STANCE",
+  "DATA LIMITED",
   "CAPITAL CLARITY",
   "BROKER USD CASH",
   "DIVIDEND CASH",
@@ -87,8 +95,8 @@ requireTokens("app/components/MeetingApprovalPanel.tsx", ["RECONCILE_EXISTING", 
 requireTokens("lib/portfolioSource.ts", ["live_holdings_ledger"]);
 
 if (failures.length) {
-  console.error(`CIO V35.1 validation FAILED (${failures.length})`);
+  console.error(`CIO V35.2 validation FAILED (${failures.length})`);
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("CIO V35.1 validation PASSED");
+console.log("CIO V35.2 validation PASSED");
