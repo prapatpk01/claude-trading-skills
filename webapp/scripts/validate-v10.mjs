@@ -86,10 +86,9 @@ for (const component of ["PortfolioTruthSummary", "PortfolioTransactionOverride"
   if (!liveNames.includes(component)) failures.push(`${component} is not reachable from app/page.tsx`);
 }
 
-// Every workspace section must render something. Research was upgraded from
-// v13 to v14; the validator follows the live shell rather than intentionally
-// pinning an obsolete marker that prevents typecheck/build from ever running.
-for (const workspace of ["cio-v20", "portfolio-v13", "research-v14"]) {
+// Every workspace section must render something. CIO is V35; portfolio and
+// research retain their current workspace markers.
+for (const workspace of ["cio-v35", "portfolio-v13", "research-v14"]) {
   if (!liveSource.includes(`data-workspace="${workspace}"`)) failures.push(`workspace marker missing: ${workspace}`);
 }
 
@@ -118,17 +117,8 @@ requireAll("app/components/ExecutiveDashboard.tsx", [
   "function WorkspaceCard",
 ]);
 
-// EndToEndInvestmentCommittee is not mounted by the V12/V13 shell — the
-// investment committee is now /api/committee/meeting rendered by
-// CIOCommandCenterV20, and its own contracts are covered by
-// scripts/validate-cio-v12.mjs. The deep structural assertions that used to sit
-// here were gating the build on a component nobody renders, which is how this
-// suite stayed red before it ever reached typecheck or build.
-//
-// The governance guarantee those assertions protected is asserted below against
-// the live approval path instead. Whether the component is reconnected or
-// retired is still an open decision; the file check above keeps it on disk
-// either way.
+// Governance is now surfaced by CIOCommandCenterV35; legacy committee files
+// remain on disk for audit/rollback but no longer define the primary workspace.
 const approvalPath = read("app/components/MeetingApprovalPanel.tsx") + read("app/api/committee/minutes/route.ts");
 for (const contract of ["humanApproved: true", "humanApproved !== true", "approvedBy is required", '"APPROVED"', '"AMENDED"', '"REJECTED"']) {
   if (!approvalPath.includes(contract)) failures.push(`human-approval contract missing from the live approval path: ${contract}`);
