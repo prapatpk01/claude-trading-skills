@@ -11,14 +11,13 @@ const requireTokens = (file, tokens) => {
   for (const token of tokens) if (!source.includes(token)) failures.push(`${file}: missing ${token}`);
 };
 
-// V13 introduced the feedback loop. The live Watchlist is now V14.2 and stores
-// its promotion state through /api/watchlist rather than the retired V13
-// component. Validate the current workflow, not the superseded component name.
+// V13 introduced the feedback loop. The live Watchlist is V14.2 and CIO is V35.
+// Validate the current workflow, not superseded component/version names.
 requireTokens("app/page.tsx", [
-  'data-sentinel-version="20.0"',
+  'data-sentinel-version="35.0"',
   "PortfolioPerformanceV13",
   "WatchlistIntelligenceV14",
-  "CIOCommandCenterV20",
+  "CIOCommandCenterV35",
 ]);
 requireTokens("app/components/PortfolioPerformanceV13.tsx", [
   'data-performance-version="13.0"',
@@ -38,12 +37,13 @@ requireTokens("app/components/WatchlistIntelligenceV14.tsx", [
   "/api/watchlist",
   "Nothing is auto-promoted or auto-bought",
 ]);
-requireTokens("app/components/CIOCommandCenterV20.tsx", [
-  'data-cio-version="20.0"',
+requireTokens("app/components/CIOCommandCenterV35.tsx", [
+  'data-cio-version="35.0"',
   "/api/committee/meeting",
+  "MeetingPlanApprovalPanel",
   "MeetingApprovalPanel",
-  "ONE ACTION LIST",
-  "HUMAN APPROVAL REQUIRED",
+  "No duplicate workspaces",
+  "Sentinel does not auto-trade",
 ]);
 requireTokens("app/api/committee/minutes/route.ts", [
   "humanApproved !== true",
@@ -62,4 +62,4 @@ if (failures.length) {
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("Sentinel V20 feedback loop and governed execution validation PASSED");
+console.log("Sentinel V35 feedback loop and governed execution validation PASSED");
