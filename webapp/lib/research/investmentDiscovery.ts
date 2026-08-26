@@ -2,7 +2,7 @@ import { runFactorDiscovery, type FactorMode, type ResearchCandidate } from "@/l
 import { buildTradePlan } from "@/lib/researchEnginePolicies";
 import { classifyMomentumLifecycle, type MomentumLifecycleRead, type MomentumLifecycleStage } from "@/lib/research/momentumLifecycle";
 import { researchMandate } from "@/lib/research/researchMandates";
-import { buildRotatingMarketUniverse, type ResearchRotationCadence, type RotatingResearchName } from "@/lib/research/marketUniverse";
+import { buildRotatingMarketUniverse, MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT, type ResearchRotationCadence, type RotatingResearchName } from "@/lib/research/marketUniverse";
 import { buildMarketLeadershipMap, sectorLeadershipFor, type MarketLeadershipMap, type SectorLeadershipRow } from "@/lib/research/marketLeadership";
 import {
   LIFECYCLE_DISCOVERY_POLICY_V25,
@@ -449,9 +449,14 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
   }));
   const analyzed = results.reduce((sum, run) => sum + run.result.stats.analyzed, 0);
   const qualifiedByEngines = results.reduce((sum, run) => sum + run.result.stats.qualified, 0);
+  const fastScan = marketUniverse.fastScan;
+  const screenedUniverseSize = fastScan?.scanned ?? 0;
+  const screenRequestedSize = fastScan?.requested ?? marketUniverse.masterUniverseSize;
+  const screenCoveragePct = fastScan?.coveragePct ?? 0;
+  const screenCoverageReady = Boolean(fastScan && screenCoveragePct >= MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT);
 
   return {
-    version: "30.0-tradingview-earnings-intelligence",
+    version: "32.1-full-universe-screen-clarity",
     proposals,
     researchQueue,
     lifecyclePolicy: {
@@ -466,8 +471,15 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     universeSource: marketUniverse.masterSource,
     rotationWindows: marketUniverse.windows,
     marketLeadership,
+    fastScan,
+    screenedUniverseSize,
+    screenRequestedSize,
+    screenCoveragePct,
+    minimumScreenCoveragePct: MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT,
+    screenCoverageReady,
     scheduledUniverse: researchQueueUniverse,
     detailedUniverseSize: analyzed,
+    deepResearchSize: analyzed,
     analyzed,
     qualified: proposals.length,
     engineQualified: qualifiedByEngines,
@@ -478,6 +490,6 @@ export async function runInvestmentResearchOS(options: { exclude?: Iterable<stri
     engineDefinitions: RESEARCH_ENGINES.map(engine => ({ id: engine.id, name: engine.label, role: engine.priority <= 2 ? "PRIMARY" : engine.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "CONFIRM", searches: engine.purpose, ...researchMandate(engine.id) })),
     engineStats: engineReports.map(report => ({ id: report.id, name: report.label, role: report.id === "VALUATION_ROOM" ? "MANDATORY GATE" : "INDEPENDENT", searches: report.purpose, qualified: report.selectedForActiveLifecycle, ...researchMandate(report.id) })),
     rotationCoverageCycles: Math.max(1, Math.ceil(marketUniverse.masterUniverseSize / Math.max(1, analyzed))),
-    methodology: `Sentinel Investment Research OS V30 keeps the V25 lifecycle-first policy and adds measured TradingView Earnings Intelligence as an optional evidence layer. ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION remain primary; MATURE remains fallback. Measured EPS/revenue surprises may modestly adjust Catalyst and Fund Fit, while missing TradingView data has no penalty and TradingView provider AI summary text never changes a score by itself. Every shortlisted name still requires Structure, Quant, Sentinel X, synthetic MCDX Proxy, Thesis, governed Valuation, Funding, Risk and CIO approval.`,
+    methodology: `Sentinel Investment Research OS V32.1 uses a two-stage approved-universe process. Stage A fast-screens the full S&P 500 + Nasdaq-100 + Russell 2000 eligible universe with price, relative-strength, trend, volume and lifecycle evidence. Stage B applies bounded deep research only to the highest-ranked finalists because SEC, valuation and external evidence calls are materially more expensive. A NO_BUY conclusion is not allowed unless the Stage A screen reaches at least ${MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT}% coverage. ACCUMULATION / EARLY_MARKUP / MOMENTUM_EXPANSION remain primary; MATURE remains fallback. Every shortlisted name still requires Structure, Quant, Sentinel X, synthetic MCDX Proxy, Thesis, governed Valuation, Funding, Risk and CIO approval.`,
   };
 }
