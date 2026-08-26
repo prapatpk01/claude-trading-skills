@@ -231,8 +231,8 @@ export async function GET(req: NextRequest) {
     const tradeContext = buildTradeContext(recentTrades, asOf);
     const recentSales = new Set([...tradeContext.entries()].filter(([, value]) => value.daysSinceSell != null && value.daysSinceSell < 30).map(([ticker]) => ticker));
     const discoveryHeld = new Set([...holdings.map(row => String(row.ticker).toUpperCase()), ...watchlistTickers, ...recentSales]);
-    // Active Momentum Research V23 is the Investment Team's broad sourcing layer.
-    // Start it early so independent engines run while meeting evidence is gathered.
+    // Research V32.1 fast-screens the full approved index universe first, then
+    // spends the meeting's bounded deep-research budget on the strongest names.
     const phase1ResearchPromise = Promise.race([
       runInvestmentResearchOS({ exclude: discoveryHeld, topN: 6, universeLimit: 32 }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Active Momentum Research exceeded its meeting time budget")), 42_000)),
@@ -506,7 +506,24 @@ export async function GET(req: NextRequest) {
     const scanWarnings: string[] = [];
     let scanStages: Array<{ stage: string; owner: string; analyzed: number; passed: number; rejected: number; note: string }> = [];
     let scanNearMisses: Array<{ ticker: string; engine: string; gate: string; reason: string; score: number | null }> = [];
-    let researchOS: any = { universeSize: 0, universeSource: null, rotationWindows: [], analyzed: 0, rejected: 0, warnings: [], models: [], engineReports: [], methodology: null };
+    let researchOS: any = {
+      universeSize: 0,
+      universeSource: null,
+      rotationWindows: [],
+      fastScan: null,
+      screenedUniverseSize: 0,
+      screenRequestedSize: 0,
+      screenCoveragePct: 0,
+      minimumScreenCoveragePct: 80,
+      screenCoverageReady: false,
+      deepResearchSize: 0,
+      analyzed: 0,
+      rejected: 0,
+      warnings: [],
+      models: [],
+      engineReports: [],
+      methodology: null,
+    };
     try {
       const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
       const referred = new Set(ideas.map((i) => i.ticker));
@@ -608,6 +625,13 @@ export async function GET(req: NextRequest) {
         universeSize: phase1.universeSize,
         universeSource: phase1.universeSource,
         rotationWindows: phase1.rotationWindows,
+        fastScan: phase1.fastScan,
+        screenedUniverseSize: phase1.screenedUniverseSize,
+        screenRequestedSize: phase1.screenRequestedSize,
+        screenCoveragePct: phase1.screenCoveragePct,
+        minimumScreenCoveragePct: phase1.minimumScreenCoveragePct,
+        screenCoverageReady: phase1.screenCoverageReady,
+        deepResearchSize: phase1.deepResearchSize,
         analyzed: phase1.analyzed,
         rejected: phase1.rejected,
         warnings: phase1.warnings,
@@ -665,7 +689,7 @@ export async function GET(req: NextRequest) {
       const phase1Tickers = new Set(phase1Proposals.map(proposal => proposal.ticker));
       proposals = [...phase1Proposals, ...proposals.filter(proposal => !phase1Tickers.has(proposal.ticker))].slice(0, 10);
     } catch (e: any) {
-      unavailable.push(`Active Momentum Research V23 (${e?.message ?? "unavailable"})`);
+      unavailable.push(`Active Momentum Research V32.1 (${e?.message ?? "unavailable"})`);
     }
 
     // ── Priya's record: the fund's own closed decisions ──
@@ -694,6 +718,18 @@ export async function GET(req: NextRequest) {
       portfolioRevision: portfolioRevision(holdings, recentTrades),
     });
 
+    const minimumScreenCoveragePct = finite(researchOS.minimumScreenCoveragePct) ?? 80;
+    const screenedUniverseSize = Math.max(0, Number(researchOS.fastScan?.scanned ?? researchOS.screenedUniverseSize ?? 0));
+    const screenRequestedSize = Math.max(0, Number(researchOS.fastScan?.requested ?? researchOS.screenRequestedSize ?? researchOS.universeSize ?? 0));
+    const screenCoveragePct = finite(researchOS.fastScan?.coveragePct) ?? finite(researchOS.screenCoveragePct) ?? 0;
+    const deepResearchSize = Math.max(0, Number(researchOS.deepResearchSize ?? researchOS.analyzed ?? 0));
+    const fullUniverseScreenReady = Boolean(
+      researchOS.screenCoverageReady ??
+      (screenRequestedSize > 0 && screenedUniverseSize > 0 && screenCoveragePct >= minimumScreenCoveragePct)
+    );
+    const scanStatus = proposals.length ? "QUALIFIED" : fullUniverseScreenReady ? "NO_BUY" : "DATA_BLOCKED";
+    const coverageSummary = `${screenedUniverseSize}/${screenRequestedSize || researchOS.universeSize || 0} (${screenCoveragePct.toFixed(1)}%)`;
+
     return NextResponse.json(
       {
         ...meeting,
@@ -702,24 +738,31 @@ export async function GET(req: NextRequest) {
         newsPulse,
         proposals,
         scan: {
-          status: proposals.length ? "QUALIFIED" : researchOS.analyzed > 0 || scanUniverseSize > 0 ? "NO_BUY" : "DATA_BLOCKED",
+          status: scanStatus,
           asOf: new Date().toISOString(),
           regime: scanRegime,
           universeSize: scanUniverseSize,
+          screenedUniverseSize,
+          screenRequestedSize,
+          screenCoveragePct,
+          minimumScreenCoveragePct,
+          deepResearchSize,
           rejected: scanRejected,
           warnings: Array.from(new Set([...scanWarnings, ...(researchOS.warnings ?? [])])),
           stages: scanStages,
           nearMisses: scanNearMisses,
           researchOS,
           note: proposals.length
-            ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Active Momentum Research analyzed ${researchOS.analyzed}/${researchOS.universeSize} names across ${researchOS.models.length || 0} independent engines, then required an eligible lifecycle stage and defensible Fair Value; the tactical swing lens scanned ${scanUniverseSize}.`
-            : `No name cleared the combined Investment process. Active Momentum Research and the tactical swing lens retain every rejection reason rather than force a weak idea.`,
+            ? `${proposals.length} unique name(s) were sourced by the combined Investment process. Stage A fast-screened ${coverageSummary} of the approved three-index universe; Stage B deep-researched ${deepResearchSize} ranked finalists across ${researchOS.models.length || 0} independent engines before lifecycle and defensible Fair Value gates.`
+            : fullUniverseScreenReady
+              ? `No name cleared the combined Investment process after Stage A fast-screened ${coverageSummary} of the approved universe and Stage B deep-researched ${deepResearchSize} ranked finalists. Rejection reasons are retained rather than forcing a weak idea.`
+              : `Research coverage is incomplete: Stage A fast-screened only ${coverageSummary} of the approved universe, below the ${minimumScreenCoveragePct}% minimum. Stage B deep-researched ${deepResearchSize} finalists, but Sentinel blocks a NO_BUY conclusion until broad-screen coverage is sufficient.`,
         },
         // The five stages of the fund's meeting, and whether each has its
         // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
           { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.label ?? regime.regime} ${regime.score}/100 · Macro ${regime.macroScore ?? "—"} · Tape ${regime.tapeScore ?? "—"} · Vol/Risk ${regime.volatilityScore ?? "—"}; risk budget ${regime.riskBudgetPct ?? "—"}% and Cash Floor ${regime.cashMinPct}% are authoritative.` : "Investment Team cannot present without the authoritative CIO Deployment Regime." },
-          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0, detail: ideas.length ? `${ideas.length} name(s) presented. Independent discovery engines source ideas; the Active Momentum lifecycle and Fair Value gates determine whether capital may be allocated. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : `Active Momentum Research and Swing returned no qualified name. Sofia presents NO NEW BUY rather than forcing a candidate.` },
+          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0 || fullUniverseScreenReady, detail: ideas.length ? `${ideas.length} name(s) presented. Independent discovery engines source ideas; the Active Momentum lifecycle and Fair Value gates determine whether capital may be allocated. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : fullUniverseScreenReady ? `Full-universe Stage A coverage reached ${screenCoveragePct.toFixed(1)}%; ${deepResearchSize} finalists received Stage B deep research and no name cleared every gate. Sofia may present NO NEW BUY without forcing a candidate.` : `Research remains DATA BLOCKED because Stage A covered only ${screenCoveragePct.toFixed(1)}%, below the ${minimumScreenCoveragePct}% minimum. NO_BUY is not an authorized conclusion.` },
           { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
           { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
           { n: 5, name: "Broker reconciliation and minutes", owner: "Fund owner", ready: false, detail: "Record actual broker activity in Holdings first. The checklist then matches ticker, side and approximate size; the owner confirms or rejects each line without creating a duplicate trade." },

@@ -24,6 +24,31 @@ type DestinationLine = {
   category: "CASH_RESERVE" | "NEW_INVESTMENT" | "ADD_HOLDING" | "TEMPORARY_PARKING";
   label: string; amountUsd: number; owner: string; reviewBy: string | null;
 };
+type FastScanSummary = {
+  provider?: string;
+  requested: number;
+  scanned: number;
+  failed?: number;
+  coveragePct: number;
+  minimumCoveragePct?: number;
+  coverageReady?: boolean;
+  asOf?: string;
+  fallbackUsed?: boolean;
+};
+type ResearchOSSummary = {
+  universeSize: number;
+  analyzed: number;
+  rejected: number;
+  models: string[];
+  methodology: string | null;
+  fastScan?: FastScanSummary | null;
+  screenedUniverseSize?: number;
+  screenRequestedSize?: number;
+  screenCoveragePct?: number;
+  minimumScreenCoveragePct?: number;
+  screenCoverageReady?: boolean;
+  deepResearchSize?: number;
+};
 type Meeting = {
   meetingId: string; asOf: string; nav: number;
   cashBuffer?: { valueUsd: number; pct: number | null; targetPct: number | null; reserveHoldings?: { ticker?: string; marketValue?: number }[] };
@@ -32,10 +57,11 @@ type Meeting = {
   proposals?: Proposal[];
   scan?: {
     status: "QUALIFIED" | "NO_BUY" | "DATA_BLOCKED"; asOf: string; universeSize: number; rejected: number;
+    screenedUniverseSize?: number; screenRequestedSize?: number; screenCoveragePct?: number; minimumScreenCoveragePct?: number; deepResearchSize?: number;
     warnings: string[]; note: string;
     stages: { stage: string; owner: string; analyzed: number; passed: number; rejected: number; note: string }[];
     nearMisses: { ticker: string; engine: string; gate: string; reason: string; score: number | null }[];
-    researchOS?: { universeSize: number; analyzed: number; rejected: number; models: string[]; methodology: string | null };
+    researchOS?: ResearchOSSummary;
   };
   motions: Motion[];
   capitalPlan: {
@@ -169,13 +195,18 @@ function buildMarketBrief(lang: AppLang, meeting: Meeting, capital: CapitalSnaps
   const riskText = highRisks.length
     ? tr(lang, `${highRisks.length} high-severity portfolio risk item(s) remain open; they override an otherwise favorable market tape for execution.`, `ยังมี High-severity portfolio risk ${highRisks.length} รายการ จึงมีสิทธิ์บล็อกการดำเนินการแม้ภาพตลาดจะเป็นบวก`)
     : tr(lang, "No high-severity portfolio risk is currently overriding the market stance.", "ขณะนี้ไม่มี High-severity portfolio risk มาหักล้าง Market Stance");
+  const research = meeting.scan?.researchOS;
+  const fast = research?.fastScan;
+  const screened = fast?.scanned ?? research?.screenedUniverseSize ?? meeting.scan?.screenedUniverseSize ?? 0;
+  const requested = fast?.requested ?? research?.screenRequestedSize ?? meeting.scan?.screenRequestedSize ?? research?.universeSize ?? 0;
+  const coverage = fast?.coveragePct ?? research?.screenCoveragePct ?? meeting.scan?.screenCoveragePct ?? null;
   return {
     stance,
     breadth,
     momentum,
     regime: regimeLabel,
     narrative: `${marketText} ${liquidityText} ${opportunityText} ${riskText}`,
-    evidence: `As of ${meeting.asOf} · Benchmarks ${reads.length}/4 · Data Health ${meeting.sources?.priced ?? 0}/${meeting.sources?.positions ?? 0} · Research ${meeting.scan?.status ?? "—"}`,
+    evidence: `As of ${meeting.asOf} · Benchmarks ${reads.length}/4 · Data Health ${meeting.sources?.priced ?? 0}/${meeting.sources?.positions ?? 0} · Research ${meeting.scan?.status ?? "—"} · Screen ${screened}/${requested}${coverage == null ? "" : ` (${coverage.toFixed(1)}%)`}`,
   };
 }
 
@@ -260,7 +291,7 @@ export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLa
   const noSaleRequired = buyNeed > 0 && saleGap < 1;
   const currentStepIndex = STEPS.findIndex(row => row.id === step);
 
-  return <section className={styles.shell} data-cio-version="35.2" data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION">
+  return <section className={styles.shell} data-cio-version="35.2" data-research-scan-version="32.1" data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION">
     <header className={styles.hero}>
       <div>
         <span className={styles.eyebrow}>SENTINEL INVESTMENT OS · CIO MARKET BRIEF · V35.2</span>
@@ -313,10 +344,20 @@ function StatusStep({ lang, meeting, capital, actionCount, blockerCount, highRis
 }
 
 function OpportunityStep({ lang, meeting, proposals, market, onNavigate, onNext }: { lang: AppLang; meeting: Meeting; proposals: Proposal[]; market: Record<string, MarketItem>; onNavigate: (id: string) => void; onNext: () => void }) {
+  const research = meeting.scan?.researchOS;
+  const fast = research?.fastScan;
+  const universe = research?.universeSize ?? meeting.scan?.universeSize ?? 0;
+  const screened = fast?.scanned ?? research?.screenedUniverseSize ?? meeting.scan?.screenedUniverseSize ?? 0;
+  const requested = fast?.requested ?? research?.screenRequestedSize ?? meeting.scan?.screenRequestedSize ?? universe;
+  const coverage = fast?.coveragePct ?? research?.screenCoveragePct ?? meeting.scan?.screenCoveragePct ?? null;
+  const minimumCoverage = fast?.minimumCoveragePct ?? research?.minimumScreenCoveragePct ?? meeting.scan?.minimumScreenCoveragePct ?? 80;
+  const deepResearch = research?.deepResearchSize ?? meeting.scan?.deepResearchSize ?? research?.analyzed ?? 0;
+  const dataBlocked = meeting.scan?.status === "DATA_BLOCKED";
   return <div className={styles.content}>
     <div className={styles.sectionHead}><div><span>02 · INV</span><h2>{tr(lang, "Investment Opportunities", "โอกาสลงทุน")}</h2><p>{tr(lang, "Research candidates are not funded orders. Approval state is shown in the portfolio queue.", "Candidate จาก Research ยังไม่ใช่คำสั่งซื้อ สถานะอนุมัติดูต่อใน Portfolio Queue")}</p></div><div className={styles.headButtons}><button className="btn ghost" onClick={() => onNavigate("research")}>{tr(lang, "Open Research", "เปิด Research")}</button><button className="btn" onClick={onNext}>{tr(lang, "Portfolio actions →", "จัดการพอร์ต →")}</button></div></div>
-    <div className={styles.pipelineBar}><strong>{meeting.scan?.status ?? (proposals.length ? "QUALIFIED" : "NO BUY")}</strong><span>{meeting.scan?.researchOS?.universeSize ?? meeting.scan?.universeSize ?? 0} universe</span><span>{meeting.scan?.researchOS?.analyzed ?? 0} analyzed</span><span>{proposals.length} research candidates</span></div>
-    {proposals.length ? <div className={styles.opportunityList}>{proposals.slice(0, 8).map((row, index) => { const item = market[clean(row.ticker)], forecast = item?.momentumForecast; const forecastReturn = forecast?.expectedReturnPct == null ? null : safe(forecast.expectedReturnPct); const confidence = forecast?.confidence == null ? null : safe(forecast.confidence); return <article key={row.ticker} className={styles.opportunityCard}><div className={styles.rank}>#{index + 1}</div><div className={styles.opMain}><div className={styles.opTitle}><strong>{row.ticker}</strong><span>RESEARCH CANDIDATE · NOT FUNDED</span></div><div className={styles.opMetrics}><Metric label="Research upside" value={pct(row.expectedReturnPct)} good={row.expectedReturnPct >= 12}/><Metric label="Forecast 20–60D" value={forecastReturn == null ? "—" : pct(forecastReturn)} good={forecastReturn != null && forecastReturn >= 6}/><Metric label="Confidence" value={confidence == null ? "—" : `${Math.round(confidence)}/100`} good={confidence != null && confidence >= 62}/><Metric label="R:R" value={`${row.riskReward.toFixed(1)}R`} good={row.riskReward >= 1.5}/></div><p>{row.thesis}</p><small>{row.catalyst}</small></div><details><summary>{tr(lang, "Evidence", "หลักฐาน")}</summary><div className={styles.detailBody}><p>Price {usd(item?.price ?? row.price, 2)} · Entry {usd(row.entryLow, 2)}–{usd(row.entryHigh, 2)} · Stop {usd(row.stop, 2)} · Target {usd(row.target, 2)}</p><p>Coverage {row.coveragePct}% · Score {row.score}/100 · Lifecycle {forecast?.lifecycleStage ?? "—"}</p></div></details></article>; })}</div> : <div className={styles.emptyState}><strong>NO QUALIFIED BUY</strong><p>{meeting.scan?.note ?? tr(lang, "INV found no opportunity worth deploying new capital into yet.", "INV ยังไม่พบหุ้นที่คุ้มกับการใช้เงินใหม่")}</p></div>}
+    <div className={styles.pipelineBar}><strong>{meeting.scan?.status ?? (proposals.length ? "QUALIFIED" : "NO BUY")}</strong><span>{universe} universe</span><span>{screened}/{requested} screened</span><span>{coverage == null ? "coverage —" : `${coverage.toFixed(1)}% coverage`}</span><span>{deepResearch} deep research</span><span>{proposals.length} candidates</span></div>
+    <div className={styles.capitalFooter}><span>STAGE A <strong>FULL-UNIVERSE FAST SCREEN</strong></span><span>STAGE B <strong>BOUNDED DEEP RESEARCH</strong></span><span>NO_BUY GATE <strong>≥ {minimumCoverage}% SCREEN COVERAGE</strong></span></div>
+    {proposals.length ? <div className={styles.opportunityList}>{proposals.slice(0, 8).map((row, index) => { const item = market[clean(row.ticker)], forecast = item?.momentumForecast; const forecastReturn = forecast?.expectedReturnPct == null ? null : safe(forecast.expectedReturnPct); const confidence = forecast?.confidence == null ? null : safe(forecast.confidence); return <article key={row.ticker} className={styles.opportunityCard}><div className={styles.rank}>#{index + 1}</div><div className={styles.opMain}><div className={styles.opTitle}><strong>{row.ticker}</strong><span>RESEARCH CANDIDATE · NOT FUNDED</span></div><div className={styles.opMetrics}><Metric label="Research upside" value={pct(row.expectedReturnPct)} good={row.expectedReturnPct >= 12}/><Metric label="Forecast 20–60D" value={forecastReturn == null ? "—" : pct(forecastReturn)} good={forecastReturn != null && forecastReturn >= 6}/><Metric label="Confidence" value={confidence == null ? "—" : `${Math.round(confidence)}/100`} good={confidence != null && confidence >= 62}/><Metric label="R:R" value={`${row.riskReward.toFixed(1)}R`} good={row.riskReward >= 1.5}/></div><p>{row.thesis}</p><small>{row.catalyst}</small></div><details><summary>{tr(lang, "Evidence", "หลักฐาน")}</summary><div className={styles.detailBody}><p>Price {usd(item?.price ?? row.price, 2)} · Entry {usd(row.entryLow, 2)}–{usd(row.entryHigh, 2)} · Stop {usd(row.stop, 2)} · Target {usd(row.target, 2)}</p><p>Coverage {row.coveragePct}% · Score {row.score}/100 · Lifecycle {forecast?.lifecycleStage ?? "—"}</p></div></details></article>; })}</div> : <div className={styles.emptyState}><strong>{dataBlocked ? "SCAN INCOMPLETE · NO_BUY CONCLUSION BLOCKED" : "NO QUALIFIED BUY"}</strong><p>{meeting.scan?.note ?? tr(lang, "INV found no opportunity worth deploying new capital into yet.", "INV ยังไม่พบหุ้นที่คุ้มกับการใช้เงินใหม่")}</p></div>}
   </div>;
 }
 

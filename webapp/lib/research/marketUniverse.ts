@@ -46,7 +46,10 @@ const CADENCE: Array<{ cadence: ResearchRotationCadence; days: number; weight: n
 const TICKER = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 const INDEX_CACHE_MS = 6 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 7_000;
-const MIN_FAST_SCAN_COVERAGE_PCT = 35;
+// A NO_BUY conclusion is only defensible when the broad price/volume screen
+// covers most of the approved three-index universe. Lower coverage may still
+// seed a fallback deep-research queue, but it must be reported as DATA_BLOCKED.
+export const MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT = 80;
 
 const INDEX_SOURCES = {
   SP500: "https://www.ishares.com/us/products/239726/ishares-core-s-p-500-etf/latest-holdings.csv",
@@ -249,8 +252,8 @@ export async function buildRotatingMarketUniverse(options: { exclude?: Iterable<
   try {
     fastScan = await fastScanApprovedUniverse(eligibleMaster);
     warnings.push(...fastScan.warnings.map(warning => `Fast scan: ${warning}`));
-    if (fastScan.coveragePct >= MIN_FAST_SCAN_COVERAGE_PCT) selectedRows = chooseDeepResearchQueue(fastScan, desired);
-    else warnings.push(`Fast scan coverage ${fastScan.coveragePct}% was below the ${MIN_FAST_SCAN_COVERAGE_PCT}% institutional minimum; deterministic approved-index fallback queue used for this cycle.`);
+    if (fastScan.coveragePct >= MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT) selectedRows = chooseDeepResearchQueue(fastScan, desired);
+    else warnings.push(`Fast scan coverage ${fastScan.coveragePct}% was below the ${MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT}% institutional minimum; deterministic approved-index fallback queue used for this cycle and NO_BUY must remain blocked.`);
   } catch (error: any) {
     warnings.push(`Full-universe fast scan unavailable: ${error?.message ?? "unknown error"}. Deterministic approved-index fallback queue used; automatic discovery did not widen beyond the three approved indexes.`);
   }
@@ -296,6 +299,8 @@ export async function buildRotatingMarketUniverse(options: { exclude?: Iterable<
       scanned: fastScan.scanned,
       failed: fastScan.failed,
       coveragePct: fastScan.coveragePct,
+      minimumCoveragePct: MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT,
+      coverageReady: fastScan.coveragePct >= MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT,
       asOf: fastScan.asOf,
       deepQueueFromFastScan: selectedRows.length,
       primaryLifecycleFastCandidates: fastScan.rows.filter(row => ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(row.stage)).length,
