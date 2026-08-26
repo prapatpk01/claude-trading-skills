@@ -63,9 +63,13 @@ type CapitalSnapshot = {
 };
 type MarketItem = { price?: number | null; momentumForecast?: any; technicalOverlay?: any };
 type LoadPack = { meeting: Meeting; capital: CapitalSnapshot | null; market: Record<string, MarketItem> };
+type MarketBrief = {
+  stance: string; breadth: string; momentum: string; regime: string; narrative: string; evidence: string;
+};
 
 const FROZEN_KEY = "sentinel:cio:frozen-meeting:v35";
 const PLAN_KEY = (meetingId: string) => `sentinel:cio:plan-approval:${meetingId}`;
+const MARKET_BENCHMARKS = ["SPY", "QQQ", "IWM", "HYG"] as const;
 const tr = (lang: AppLang, en: string, th: string) => lang === "th" ? th : en;
 const safe = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? n : 0; };
 const clean = (value: unknown) => String(value ?? "").trim().toUpperCase();
@@ -81,20 +85,20 @@ const STEPS: { id: StepId; n: string; en: string; th: string; owner: string }[] 
 ];
 
 async function loadMeeting(): Promise<Meeting> {
-  const response = await fetch(`/api/committee/meeting?v351=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(45_000) });
+  const response = await fetch(`/api/committee/meeting?v352=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(45_000) });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error ?? `Committee meeting failed (${response.status})`);
   return payload as Meeting;
 }
 async function loadIdentity() {
-  const response = await fetch(`/api/portfolio/cash-buffer?v351identity=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
+  const response = await fetch(`/api/portfolio/cash-buffer?v352identity=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error ?? "Portfolio identity unavailable");
   return { snapshotId: payload?.snapshotId ?? null };
 }
 async function loadCapital(): Promise<CapitalSnapshot | null> {
   try {
-    const response = await fetch(`/api/capital-recycling?v351=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(`/api/capital-recycling?v352=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
     const payload = await response.json().catch(() => ({}));
     return response.ok ? payload as CapitalSnapshot : null;
   } catch { return null; }
@@ -104,7 +108,7 @@ async function marketBatch(tickers: string[]) {
   for (let index = 0; index < tickers.length; index += 25) {
     const chunk = tickers.slice(index, index + 25);
     if (!chunk.length) continue;
-    const response = await fetch(`/api/holding-market?tickers=${encodeURIComponent(chunk.join(","))}&v351=${Date.now()}`, { cache: "no-store" });
+    const response = await fetch(`/api/holding-market?tickers=${encodeURIComponent(chunk.join(","))}&v352=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) continue;
     const payload = await response.json().catch(() => ({ items: {} }));
     Object.assign(items, payload.items ?? {});
@@ -127,6 +131,52 @@ function motionTitle(row: Motion) {
   if (row.kind === "NEW BUY") return "APPROVED BUY";
   if (row.kind === "RAISE CASH" && row.outcome !== "CARRIED") return "LIQUIDITY REPAIR CANDIDATE";
   return row.kind;
+}
+function benchmarkTrend(item: MarketItem | undefined) {
+  const label = clean(item?.technicalOverlay?.decision?.trendLabel ?? item?.technicalOverlay?.sentinel?.coreState);
+  if (label.includes("BULL")) return 1;
+  if (label.includes("BEAR")) return -1;
+  return 0;
+}
+function buildMarketBrief(lang: AppLang, meeting: Meeting, capital: CapitalSnapshot | null, market: Record<string, MarketItem>, proposals: Proposal[], highRisks: Meeting["riskRegister"]): MarketBrief {
+  const reads = MARKET_BENCHMARKS.map(ticker => ({ ticker, item: market[ticker] })).filter(row => row.item?.price != null || row.item?.technicalOverlay || row.item?.momentumForecast);
+  const bullCount = reads.filter(row => benchmarkTrend(row.item) > 0).length;
+  const bearCount = reads.filter(row => benchmarkTrend(row.item) < 0).length;
+  const forecastReads = reads.map(row => row.item?.momentumForecast?.expectedReturnPct).filter(value => value != null && Number.isFinite(Number(value))).map(Number);
+  const avgForecast = forecastReads.length ? forecastReads.reduce((sum, value) => sum + value, 0) / forecastReads.length : null;
+  const enoughMarketData = reads.length >= 3 && meeting.regime != null;
+  const breadth = !enoughMarketData ? "DATA LIMITED" : bullCount >= 3 ? "BROAD POSITIVE" : bullCount >= 2 ? "MIXED POSITIVE" : bearCount >= 3 ? "DEFENSIVE" : "MIXED";
+  const momentum = avgForecast == null ? (bullCount >= 2 ? "POSITIVE" : "UNCONFIRMED") : avgForecast >= 3 ? "POSITIVE" : avgForecast > 0 ? "MIXED POSITIVE" : avgForecast <= -2 ? "WEAK" : "MIXED";
+  const regimeLabel = meeting.regime ? `${meeting.regime.icon} ${meeting.regime.regime} ${meeting.regime.score}/100` : "DATA UNAVAILABLE";
+  const bufferPct = capital?.currentBufferPct ?? meeting.cashBuffer?.pct ?? null;
+  const floorPct = capital?.cashFloorPct ?? meeting.cashBuffer?.targetPct ?? meeting.regime?.cashMinPct ?? null;
+  const liquidityRepair = bufferPct != null && floorPct != null && bufferPct + 0.05 < floorPct;
+  const score = meeting.regime?.score ?? null;
+  const stance = !enoughMarketData ? "DATA LIMITED" : score != null && (score <= 45 || bearCount >= 3) ? "DEFENSIVE" : score != null && score >= 70 && bullCount >= 2 ? "SELECTIVE RISK-ON" : score != null && score >= 58 ? "SELECTIVE" : "BALANCED / WAIT";
+  const opportunityText = meeting.scan?.status === "DATA_BLOCKED"
+    ? tr(lang, "Research is data-blocked, so no new-risk conclusion is allowed.", "Research มีข้อมูลไม่พอ จึงยังไม่อนุญาตให้สรุปเพื่อเพิ่มความเสี่ยงใหม่")
+    : proposals.length
+      ? tr(lang, `${proposals.length} research candidate(s) are live, but funding still depends on technical, risk and capital gates.`, `มี Research Candidate ${proposals.length} ตัว แต่การใช้เงินจริงยังต้องผ่าน Technical, Risk และ Capital gate`)
+      : tr(lang, "INV has no decision-ready opportunity worth new capital yet.", "INV ยังไม่มีโอกาสที่คุ้มกับการใช้เงินใหม่ในรอบนี้");
+  const liquidityText = liquidityRepair
+    ? tr(lang, `The fund is below its ${floorPct?.toFixed(1)}% liquidity floor, so buffer repair takes priority over new risk.`, `Liquidity Buffer ต่ำกว่า floor ${floorPct?.toFixed(1)}% จึงต้องซ่อม Buffer ก่อนเพิ่มความเสี่ยงใหม่`)
+    : tr(lang, "Liquidity is inside policy; only deployable excess may fund new risk.", "สภาพคล่องอยู่ในกรอบนโยบาย เงินลงทุนใหม่ใช้ได้เฉพาะส่วนเกินที่ Deployable เท่านั้น");
+  const marketText = !enoughMarketData
+    ? tr(lang, `Only ${reads.length}/4 benchmark reads are measurable. Keep the market stance provisional until SPY/QQQ/IWM/HYG evidence is complete.`, `อ่าน Benchmark ได้เพียง ${reads.length}/4 ตัว จึงให้ Market Stance เป็นแบบชั่วคราวจน SPY/QQQ/IWM/HYG ครบ`)
+    : tr(lang,
+      `The market regime is ${meeting.regime?.regime} at ${meeting.regime?.score}/100. Breadth is ${breadth.toLowerCase()} across SPY, QQQ, IWM and HYG, while cross-benchmark momentum is ${momentum.toLowerCase()}.`,
+      `ตลาดอยู่ในสภาวะ ${meeting.regime?.regime} ที่ ${meeting.regime?.score}/100 โดย Breadth ของ SPY, QQQ, IWM และ HYG อยู่ในภาวะ ${breadth} และ Momentum รวมเป็น ${momentum}`);
+  const riskText = highRisks.length
+    ? tr(lang, `${highRisks.length} high-severity portfolio risk item(s) remain open; they override an otherwise favorable market tape for execution.`, `ยังมี High-severity portfolio risk ${highRisks.length} รายการ จึงมีสิทธิ์บล็อกการดำเนินการแม้ภาพตลาดจะเป็นบวก`)
+    : tr(lang, "No high-severity portfolio risk is currently overriding the market stance.", "ขณะนี้ไม่มี High-severity portfolio risk มาหักล้าง Market Stance");
+  return {
+    stance,
+    breadth,
+    momentum,
+    regime: regimeLabel,
+    narrative: `${marketText} ${liquidityText} ${opportunityText} ${riskText}`,
+    evidence: `As of ${meeting.asOf} · Benchmarks ${reads.length}/4 · Data Health ${meeting.sources?.priced ?? 0}/${meeting.sources?.positions ?? 0} · Research ${meeting.scan?.status ?? "—"}`,
+  };
 }
 
 export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLang; onNavigate: (id: string) => void }) {
@@ -155,7 +205,11 @@ export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLa
         }
       }
       const [meeting, capital] = await Promise.all([loadMeeting(), loadCapital()]);
-      const tickers = Array.from(new Set([...(meeting.proposals ?? []).map(row => clean(row.ticker)), ...(meeting.motions ?? []).map(row => clean(row.ticker))].filter(Boolean)));
+      const tickers = Array.from(new Set([
+        ...MARKET_BENCHMARKS,
+        ...(meeting.proposals ?? []).map(row => clean(row.ticker)),
+        ...(meeting.motions ?? []).map(row => clean(row.ticker)),
+      ].filter(Boolean)));
       const market = await marketBatch(tickers);
       setPack({ meeting, capital, market }); setFrozen(false);
     } catch (cause) {
@@ -179,7 +233,7 @@ export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLa
   const newMeeting = () => { window.localStorage.removeItem(FROZEN_KEY); setFrozen(false); setExecutionAuthorized(false); setStep("status"); setRefreshKey(value => value + 1); };
 
   if (loading && !pack) return <section className="card"><span className="spinner" /> {tr(lang, "Building the CIO decision package…", "กำลังจัดทำชุดตัดสินใจ CIO…")}</section>;
-  if (error || !pack) return <section className="card"><span className="tag">CIO V35.1</span><h2>{tr(lang, "Command package unavailable", "ยังสร้างชุด Command ไม่ได้")}</h2><div className="err">⚠ {error}</div><button className="btn" onClick={() => setRefreshKey(value => value + 1)}>↻ Retry</button></section>;
+  if (error || !pack) return <section className="card"><span className="tag">CIO V35.2</span><h2>{tr(lang, "Command package unavailable", "ยังสร้างชุด Command ไม่ได้")}</h2><div className="err">⚠ {error}</div><button className="btn" onClick={() => setRefreshKey(value => value + 1)}>↻ Retry</button></section>;
 
   const { meeting, capital, market } = pack;
   const proposals = [...(meeting.proposals ?? [])].sort((a, b) => b.score - a.score || b.expectedReturnPct - a.expectedReturnPct);
@@ -188,6 +242,7 @@ export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLa
   const deferredBuys = motions.filter(row => row.kind === "NEW BUY" && row.outcome !== "CARRIED");
   const blockedMotions = motions.filter(row => row.outcome === "DEFERRED" || row.veto);
   const highRisks = (meeting.riskRegister ?? []).filter(row => row.severity === "high");
+  const marketBrief = buildMarketBrief(lang, meeting, capital, market, proposals, highRisks);
   const planApprovalReady = Boolean(meeting.capitalPlan?.approvalReady && meeting.capitalPlan?.funded && !highRisks.length && meeting.quorum?.met);
   const approvalBlockReason = !meeting.quorum?.met ? "Committee quorum is not met."
     : highRisks.length ? `${highRisks.length} high-severity risk item(s) remain open.`
@@ -205,8 +260,26 @@ export default function CIOCommandCenterV351({ lang, onNavigate }: { lang: AppLa
   const noSaleRequired = buyNeed > 0 && saleGap < 1;
   const currentStepIndex = STEPS.findIndex(row => row.id === step);
 
-  return <section className={styles.shell} data-cio-version="35.1" data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION">
-    <header className={styles.hero}><div><span className={styles.eyebrow}>SENTINEL INVESTMENT OS · CIO COMMAND V35.1 · CAPITAL CLARITY</span><h1>{tr(lang, "Every dollar has a source, destination and approval state.", "ทุกดอลลาร์ต้องมีแหล่งที่มา ปลายทาง และสถานะอนุมัติ")}</h1><p>{tr(lang, "Cash, reserve assets, liquidity repair and investment funding are separated so a candidate can never look like a funded order.", "แยกเงินสด Reserve การซ่อม Cash Buffer และเงินลงทุนออกจากกัน เพื่อไม่ให้ Candidate ดูเหมือนคำสั่งซื้อที่มีเงินแล้ว")}</p></div><div className={styles.heroActions}><span className={`${styles.liveBadge} ${frozen ? styles.audit : ""}`}>{frozen ? "AUDIT SNAPSHOT" : "LIVE PACKAGE"}</span><button className="btn ghost sm" type="button" onClick={frozen ? newMeeting : freeze}>{frozen ? "↻ New meeting" : "▣ Freeze audit"}</button></div></header>
+  return <section className={styles.shell} data-cio-version="35.2" data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION">
+    <header className={styles.hero}>
+      <div>
+        <span className={styles.eyebrow}>SENTINEL INVESTMENT OS · CIO MARKET BRIEF · V35.2</span>
+        <h1>{tr(lang, "Executive Market Brief", "บทวิเคราะห์สภาวะตลาด")} · {marketBrief.stance}</h1>
+        <p>{marketBrief.narrative}</p>
+        <div className={styles.capitalFooter}>
+          <span>REGIME <strong>{marketBrief.regime}</strong></span>
+          <span>BREADTH <strong>{marketBrief.breadth}</strong></span>
+          <span>MOMENTUM <strong>{marketBrief.momentum}</strong></span>
+          <span>CIO STANCE <strong>{marketBrief.stance}</strong></span>
+        </div>
+        <small className={styles.neutral}>{marketBrief.evidence}</small>
+      </div>
+      <div className={styles.heroActions}>
+        <span className={`${styles.liveBadge} ${frozen ? styles.audit : ""}`}>{frozen ? "AUDIT SNAPSHOT" : "LIVE PACKAGE"}</span>
+        <button className="btn ghost sm" type="button" onClick={frozen ? newMeeting : freeze}>{frozen ? "↻ New meeting" : "▣ Freeze audit"}</button>
+      </div>
+    </header>
+    <div className={styles.pipelineBar}><strong>CAPITAL CLARITY</strong><span>{tr(lang, "Capital Governance · every dollar requires source → destination → approval", "Capital Governance · ทุกดอลลาร์ต้องมี source → destination → approval")}</span><span>{tr(lang, "No automatic execution", "ไม่มีการดำเนินการอัตโนมัติ")}</span></div>
     <nav className={styles.stepper} aria-label="CIO decision workflow">{STEPS.map((row, index) => <button key={row.id} className={`${styles.step} ${step === row.id ? styles.active : ""} ${index < currentStepIndex ? styles.done : ""}`} onClick={() => setStep(row.id)}><span>{row.n}</span><div><strong>{tr(lang, row.en, row.th)}</strong><small>{row.owner}</small></div></button>)}</nav>
     {step === "status" && <StatusStep lang={lang} meeting={meeting} capital={capital} actionCount={actionMotions.length} blockerCount={blockedMotions.length} highRiskCount={highRisks.length} onNext={() => setStep("opportunities")} />}
     {step === "opportunities" && <OpportunityStep lang={lang} meeting={meeting} proposals={proposals} market={market} onNavigate={onNavigate} onNext={() => setStep("portfolio")} />}
