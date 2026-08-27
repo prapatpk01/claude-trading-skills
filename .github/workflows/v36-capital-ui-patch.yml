@@ -1,0 +1,54 @@
+name: One-shot V36 Capital Clarity Patch
+
+on:
+  push:
+    branches: [fix/v36-capital-allocation-clarity]
+    paths:
+      - ".github/v36-capital-ui.trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v36-capital-allocation-clarity
+          fetch-depth: 0
+      - name: Patch capital allocation semantics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('webapp/app/components/CIOCommandCenterV351.tsx')
+          s = p.read_text()
+
+          old = '''  const liquidityDestinations = destinations.filter(row => row.category === "CASH_RESERVE" || row.category === "TEMPORARY_PARKING");\n  const investmentDestinations = destinations.filter(row => row.category === "NEW_INVESTMENT" || row.category === "ADD_HOLDING");'''
+          new = '''  const liquidityDestinations = destinations.filter(row => row.category === "CASH_RESERVE");\n  const investmentDestinations = destinations.filter(row => row.category === "NEW_INVESTMENT" || row.category === "ADD_HOLDING");\n  const waitingDestinations = destinations.filter(row => row.category === "TEMPORARY_PARKING");\n  const capitalWaiting = buyNeed <= 0 && cashExcess > 0;'''
+          if old not in s: raise SystemExit('destination classification anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''<article><span className={styles.label}>LANE B · INVESTMENT FUNDING</span><strong>{buyNeed > 0 ? `APPROVED NEED ${usd(buyNeed)}` : "NO APPROVED BUY/ADD"}</strong><p>Cash Buffer Excess {usd(cashExcess)} → Approved TRIM {usd(trimNeeded)} → Executed SELL only</p><p>{investmentDestinations.length ? investmentDestinations.map(row => `${row.label} ${usd(row.amountUsd)}`).join(" · ") : deferredBuys.length ? `${deferredBuys.length} BUY candidate(s) remain NOT FUNDED.` : "No investment destination."}</p></article>'''
+          new = '''<article><span className={styles.label}>LANE B · INVESTMENT ALLOCATION</span><strong>{buyNeed > 0 ? `APPROVED NEED ${usd(buyNeed)}` : capitalWaiting ? `CAPITAL WAITING ${usd(cashExcess)}` : "NO DEPLOYABLE EXCESS"}</strong><p>Cash Buffer Excess {usd(cashExcess)} → V36 ranked BUY / STARTER BUY / ADD → Human Approval</p><p>{investmentDestinations.length ? investmentDestinations.map(row => `${row.label} ${usd(row.amountUsd)}`).join(" · ") : waitingDestinations.length ? `${waitingDestinations.map(row => `${row.label} ${usd(row.amountUsd)}`).join(" · ")} · waiting for the next qualified V36 allocation, not a permanent reserve target.` : deferredBuys.length ? `${deferredBuys.length} BUY candidate(s) remain NOT FUNDED until their V36 trigger clears.` : "No approved investment destination yet."}</p></article>'''
+          if old not in s: raise SystemExit('Lane B anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''<div className={`${styles.fundingVerdict} ${noSaleRequired ? styles.ok : saleGap > 0 ? styles.warn : ""}`}><strong>{buyNeed <= 0 ? "NO NEW CAPITAL REQUIRED" : noSaleRequired ? "NO SALE REQUIRED" : `FUNDING GAP ${usd(saleGap)}`}</strong><p>{buyNeed <= 0 ? tr(lang, "Deferred BUY candidates do not create a funding need. Approved Funding remains $0 until every gate clears.", "BUY Candidate ที่ Deferred จะไม่สร้างความต้องการเงิน Approved Funding ยังคง $0 จนผ่านทุก gate") : noSaleRequired ? tr(lang, "Deployable excess fully covers the approved BUY/ADD plan. Do not sell holdings just to raise cash.", "เงินส่วนเกินเพียงพอกับ BUY/ADD ที่อนุมัติแล้ว ไม่ต้องขายหุ้นเพิ่ม") : tr(lang, "Use only approved trim or executed sell proceeds for the residual gap; never spend liquidity-repair proceeds on risk assets.", "ใช้เฉพาะ TRIM ที่อนุมัติหรือ SELL ที่เกิดจริงสำหรับส่วนขาด และห้ามใช้เงินซ่อม Buffer ไปซื้อสินทรัพย์เสี่ยง")}</p></div>'''
+          new = '''<div className={`${styles.fundingVerdict} ${noSaleRequired ? styles.ok : saleGap > 0 ? styles.warn : ""}`}><strong>{capitalWaiting ? `CAPITAL WAITING FOR ALLOCATION · ${usd(cashExcess)}` : buyNeed <= 0 ? "NO DEPLOYABLE EXCESS" : noSaleRequired ? "NO SALE REQUIRED" : `FUNDING GAP ${usd(saleGap)}`}</strong><p>{capitalWaiting ? tr(lang, `${usd(cashExcess)} is above the protected Cash Floor and is available for investment. It stays liquid only until INV produces a qualified V36 BUY / STARTER BUY or Asset Management approves an ADD; temporary parking is a waiting state, not the investment objective.`, `${usd(cashExcess)} เป็นเงินส่วนเกินเหนือ Cash Floor และพร้อมลงทุน เงินนี้จะพักสภาพคล่องไว้เพียงชั่วคราวจน INV พบ V36 BUY / STARTER BUY ที่ผ่านเกณฑ์ หรือ Asset Management อนุมัติ ADD — Temporary Parking เป็นสถานะรอจัดสรร ไม่ใช่เป้าหมายการลงทุน`) : buyNeed <= 0 ? tr(lang, "There is no deployable excess above the protected Cash Floor on this snapshot.", "รอบนี้ไม่มีเงินส่วนเกินเหนือ Cash Floor ที่พร้อมลงทุน") : noSaleRequired ? tr(lang, "Deployable excess fully covers the approved BUY/ADD plan. Do not sell holdings just to raise cash.", "เงินส่วนเกินเพียงพอกับ BUY/ADD ที่อนุมัติแล้ว ไม่ต้องขายหุ้นเพิ่ม") : tr(lang, "Use only approved trim or executed sell proceeds for the residual gap; never spend liquidity-repair proceeds on risk assets.", "ใช้เฉพาะ TRIM ที่อนุมัติหรือ SELL ที่เกิดจริงสำหรับส่วนขาด และห้ามใช้เงินซ่อม Buffer ไปซื้อสินทรัพย์เสี่ยง")}</p></div>'''
+          if old not in s: raise SystemExit('funding verdict anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''<div className={styles.finalPlan}>{actionMotions.length ? actionMotions.map(row => <div key={row.id}><span className={`${styles.actionChip} ${actionTone(row.kind)}`}>{row.kind}</span><strong>{row.ticker}</strong><span>{usd(Math.abs(row.sizeUsd))}</span><small>≈ {row.approxShares ?? "—"} shares</small></div>) : <div className={styles.noAction}>NO ACTION · HOLD CAPITAL / PORTFOLIO</div>}</div>'''
+          new = '''<div className={styles.finalPlan}>{actionMotions.length ? actionMotions.map(row => <div key={row.id}><span className={`${styles.actionChip} ${actionTone(row.kind)}`}>{row.kind}</span><strong>{row.ticker}</strong><span>{usd(Math.abs(row.sizeUsd))}</span><small>≈ {row.approxShares ?? "—"} shares</small></div>) : safe(meeting.capitalPlan?.temporaryParkingUsd) > 0 ? <div className={styles.noAction}>CAPITAL WAITING FOR QUALIFIED ALLOCATION · {usd(meeting.capitalPlan.temporaryParkingUsd)}</div> : <div className={styles.noAction}>NO EXECUTABLE ACTION · HOLD PORTFOLIO</div>}</div>'''
+          if old not in s: raise SystemExit('final plan anchor missing')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+          rm -f .github/v36-capital-ui.trigger .github/workflows/v36-capital-ui-patch.yml
+          git config user.name "sentinel-ci"
+          git config user.email "sentinel-ci@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(v36): distinguish deployable capital from temporary parking"
+          git push origin HEAD:fix/v36-capital-allocation-clarity
