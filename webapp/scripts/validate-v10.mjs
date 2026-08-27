@@ -86,9 +86,9 @@ for (const component of ["PortfolioTruthSummary", "PortfolioTransactionOverride"
   if (!liveNames.includes(component)) failures.push(`${component} is not reachable from app/page.tsx`);
 }
 
-// Every workspace section must render something. CIO is V35; portfolio and
+// Every workspace section must render something. CIO is V36; portfolio and
 // research retain their current workspace markers.
-for (const workspace of ["cio-v35", "portfolio-v13", "research-v14"]) {
+for (const workspace of ["cio-v36", "portfolio-v13", "research-v14"]) {
   if (!liveSource.includes(`data-workspace="${workspace}"`)) failures.push(`workspace marker missing: ${workspace}`);
 }
 
@@ -117,7 +117,7 @@ requireAll("app/components/ExecutiveDashboard.tsx", [
   "function WorkspaceCard",
 ]);
 
-// Governance is now surfaced by CIOCommandCenterV35; legacy committee files
+// Governance is surfaced by the live CIO command path; legacy committee files
 // remain on disk for audit/rollback but no longer define the primary workspace.
 const approvalPath = read("app/components/MeetingApprovalPanel.tsx") + read("app/api/committee/minutes/route.ts");
 for (const contract of ["humanApproved: true", "humanApproved !== true", "approvedBy is required", '"APPROVED"', '"AMENDED"', '"REJECTED"']) {
@@ -133,9 +133,6 @@ requireAll("app/components/HoldingTransactionForm.tsx", [
 ]);
 
 requireAll("app/components/PortfolioTransactionOverride.tsx", ["HoldingTransactionForm", "Buy / Sell Transaction"]);
-// The operating UI intentionally shows a compact recent-history window. Keep
-// the validator aligned with that product contract rather than pinning the old
-// 100-row request forever.
 requireAll("app/components/PortfolioLedgerPanel.tsx", ["/api/portfolio/transactions?limit=20", "Ledger & Portfolio Integrity", "Realized P/L"]);
 requireAll("app/api/portfolio/rebalance-execution/route.ts", ["humanApproved", "reserveTicker", "packageId"]);
 
@@ -153,4 +150,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log("Sentinel workspace architecture, holdings operations and governed execution: PASS");
+console.log("Sentinel V36 workspace architecture, holdings operations and governed execution: PASS");
