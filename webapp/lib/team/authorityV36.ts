@@ -60,6 +60,7 @@ export type AuthorityV36Summary = {
 const MIN_EVIDENCE = 80;
 const MIN_OWNERSHIP = 55;
 const MIN_CONVICTION_FOR_EXECUTION = 65;
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
 const asTechnical = (motion: Motion, input: CommitteeInput): V36Technical | null => {
   const idea = input.ideas.find(row => row.ticker === motion.ticker);
@@ -170,6 +171,87 @@ function jamesDecision(
   return { status: "DEFER", action: "WAIT FOR TRIGGER", finding: "No veto remains, but the legacy funding package did not carry on this snapshot.", trigger: "Complete the remaining funding/evidence requirement and rerun." };
 }
 
+/**
+ * V36.4 allocates deployable excess before the final V36 authority pass so a
+ * genuinely qualified NEW BUY can become CARRIED and reach Stage 06. If the
+ * final risk/CIO read then downgrades that line to WAIT FOR TRIGGER, the capital
+ * reservation must be undone as one atomic decision package. Otherwise the UI
+ * can show a DEFERRED candidate while Capital Plan and the blotter still claim
+ * that money is invested.
+ */
+function reconcileAuthorityFundingV36(meeting: CommitteeMeeting, input: CommitteeInput) {
+  const plan = meeting.capitalPlan;
+  const rolledBack: Array<{ ticker: string; kind: Motion["kind"]; amountUsd: number }> = [];
+
+  for (const motion of meeting.motions) {
+    if ((motion.kind !== "NEW BUY" && motion.kind !== "ADD") || motion.outcome === "CARRIED") continue;
+    const key = motion.ticker.trim().toUpperCase();
+    const matched = plan.destinationLines.filter((line) => {
+      const categoryMatches = motion.kind === "NEW BUY" ? line.category === "NEW_INVESTMENT" : line.category === "ADD_HOLDING";
+      return categoryMatches && /V36\.4 qualified deployable-excess allocation/i.test(line.label) && line.label.toUpperCase().includes(key);
+    });
+    const amountUsd = round2(matched.reduce((sum, line) => sum + line.amountUsd, 0));
+    if (amountUsd <= 0) continue;
+
+    plan.destinationLines = plan.destinationLines.filter((line) => !matched.includes(line));
+    plan.usesUsd = round2(Math.max(0, plan.usesUsd - amountUsd));
+
+    let removeAmount = amountUsd;
+    plan.useLines = plan.useLines.filter((line) => {
+      if (removeAmount <= 0.01) return true;
+      const labelMatches = line.label.trim().toUpperCase() === `${motion.kind} ${key}`;
+      if (!labelMatches) return true;
+      if (Math.abs(line.amountUsd - removeAmount) <= 0.02) {
+        removeAmount = 0;
+        return false;
+      }
+      return true;
+    });
+
+    plan.temporaryParkingUsd = round2(plan.temporaryParkingUsd + amountUsd);
+    const parking = plan.destinationLines.find((line) => line.category === "TEMPORARY_PARKING");
+    if (parking) {
+      parking.amountUsd = round2(parking.amountUsd + amountUsd);
+    } else {
+      plan.destinationLines.push({
+        category: "TEMPORARY_PARKING",
+        label: "Temporary reserve pending next qualified allocation",
+        amountUsd,
+        owner: plan.reviewOwner,
+        reviewBy: plan.reviewBy,
+      });
+    }
+
+    if (plan.cashAfterPct != null && input.nav > 0) {
+      plan.cashAfterPct = round2(Math.min(100, plan.cashAfterPct + (amountUsd / input.nav) * 100));
+    }
+    meeting.blotter = meeting.blotter.filter((line) => !(line.side === "BUY" && line.ticker.trim().toUpperCase() === key && Math.abs(line.approxUsd - amountUsd) <= 0.02));
+
+    const resolution = meeting.resolutions.find((row) => row.text.startsWith(`${motion.kind} ${motion.ticker} —`) || row.text.startsWith(`${motion.kind} ${motion.ticker} deferred.`));
+    if (resolution) {
+      resolution.status = "DEFERRED";
+      resolution.text = `${motion.kind} ${motion.ticker} deferred. ${motion.outcomeReason}`;
+    }
+    const cut = plan.cutForFunding.find((row) => row.ticker.trim().toUpperCase() === key);
+    if (cut) cut.reason = `V36.5 authority reconciliation: reserved funding was returned to Temporary Parking because the final ${motion.kind} decision is ${motion.outcome}. ${motion.outcomeReason}`;
+    rolledBack.push({ ticker: motion.ticker, kind: motion.kind, amountUsd });
+  }
+
+  if (!rolledBack.length) return;
+
+  const destinationTotal = round2(plan.destinationLines.reduce((sum, line) => sum + line.amountUsd, 0));
+  plan.unallocatedUsd = round2(Math.max(0, plan.sourcesUsd - destinationTotal));
+  plan.balanceUsd = plan.unallocatedUsd;
+  plan.allocationComplete = plan.unallocatedUsd <= 0.01 && plan.destinationLines.every((line) => Boolean(line.owner) && (line.category !== "TEMPORARY_PARKING" || Boolean(line.reviewBy)));
+  plan.funded = plan.usesUsd <= plan.deployableSourcesUsd + 0.01 && plan.allocationComplete;
+  plan.approvalReady = meeting.quorum.met && plan.allocationComplete;
+  plan.allocationStatus = plan.allocationComplete ? "READY" : "INCOMPLETE";
+  if (!plan.fallbackOptions.some((row) => row.ticker === "CASH / SGOV")) {
+    plan.fallbackOptions.push({ ticker: "CASH / SGOV", reason: "Temporary parking remains available while the next qualified momentum trigger develops." });
+  }
+  meeting.minutes.push(`V36.5 authority reconciliation returned ${rolledBack.map((row) => `$${row.amountUsd.toFixed(2)} from ${row.kind} ${row.ticker}`).join("; ")} to Temporary Parking because the final authority gate did not authorize execution.`);
+}
+
 export function applyDecisionAuthorityV36(meeting: CommitteeMeeting, input: CommitteeInput): CommitteeMeeting & { authorityV36: AuthorityV36Summary } {
   const rows: AuthorityV36Row[] = [];
   for (const motion of meeting.motions) {
@@ -197,6 +279,8 @@ export function applyDecisionAuthorityV36(meeting: CommitteeMeeting, input: Comm
 
     rows.push({ ticker: motion.ticker, kind: motion.kind, sofia, lena, miriam, james, score: scoreRow(technical) });
   }
+
+  reconcileAuthorityFundingV36(meeting, input);
 
   const finalPlan = {
     buyNow: rows.filter(row => row.james.action === "BUY NOW").map(row => row.ticker),
