@@ -85,16 +85,10 @@ export type NewIdeaScoreV36 = {
 };
 
 const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
-const round1 = (value: number) => Math.round(value * 10) / 10;
 const finite = (value: unknown): number | null => {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : null;
 };
-
-function slopePct(current: number | null, previous: number | null): number | null {
-  if (current == null || previous == null || previous === 0) return null;
-  return ((current - previous) / Math.abs(previous)) * 100;
-}
 
 function scoreBand(value: number, bands: Array<[number, number]>): number {
   for (let i = 0; i < bands.length; i += 1) if (value >= bands[i][0]) return bands[i][1];
@@ -193,7 +187,6 @@ function momentumPillars(candles: Candle[], benchmark: Candle[]) {
   const soft: BlockV36[] = [];
   const closes = candles.map(row => row.close).filter(value => Number.isFinite(value) && value > 0);
   const price = closes.at(-1) ?? 0;
-  const pricePrev5 = closes.at(-6) ?? null;
   const ema20 = ema(closes, 20);
   const ema20Prev5 = ema(closes.slice(0, -5), 20);
   const ema50 = ema(closes, 50);
@@ -332,11 +325,14 @@ export function scoreNewIdeaV36(input: {
 }): NewIdeaScoreV36 {
   const momentum = momentumPillars(input.candles, input.benchmark);
   const ownership = scoreOwnershipV36(input.ownership ?? {});
+  // Entry Quality is a 0–10 pillar. Its full value is already the 10-point
+  // contribution to a /100 score; multiplying it by 0.10 again accidentally
+  // made Entry worth only 1% and depressed every candidate by up to 9 points.
   const convictionScore = Math.round(clamp(
     input.market.score * 0.25 +
     momentum.momentumScore * 0.45 +
     ownership.score * 0.20 +
-    momentum.entryScore * 0.10,
+    momentum.entryScore,
   ));
 
   const hard = [...momentum.hard];
