@@ -1,0 +1,78 @@
+name: Sentinel Production Research Smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sentinel-production-research-smoke
+  cancel-in-progress: true
+
+jobs:
+  railway-research-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for Railway and verify Stage A providers
+        env:
+          HEALTH_URL: https://claude-trading-skills-production.up.railway.app/api/system/research-health
+        shell: bash
+        run: |
+          set -uo pipefail
+          for attempt in $(seq 1 32); do
+            echo "Attempt ${attempt}/32 — ${HEALTH_URL}"
+            code=$(curl -sS -L --connect-timeout 10 --max-time 75 -o /tmp/research-health.json -w '%{http_code}' "$HEALTH_URL" || true)
+            echo "HTTP ${code}"
+            cat /tmp/research-health.json 2>/dev/null || true
+            echo
+
+            if [[ "$code" == "200" || "$code" == "206" || "$code" == "503" ]]; then
+              if python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          path = Path('/tmp/research-health.json')
+          try:
+              payload = json.loads(path.read_text())
+          except Exception as exc:
+              print(f'Not JSON yet: {exc}')
+              sys.exit(1)
+
+          required = {'provider', 'sampleRequested', 'sampleScanned', 'coveragePct', 'policy'}
+          if not required.issubset(payload):
+              print(f'Old/non-health response; missing {sorted(required - set(payload))}')
+              sys.exit(1)
+
+          print('Research runtime provider:', payload.get('provider'))
+          print('Research runtime coverage:', f"{payload.get('sampleScanned')}/{payload.get('sampleRequested')} ({payload.get('coveragePct')}%)")
+          print('Warnings:', payload.get('warnings', []))
+
+          coverage = float(payload.get('coveragePct') or 0)
+          scanned = int(payload.get('sampleScanned') or 0)
+          requested = int(payload.get('sampleRequested') or 0)
+          policy = str(payload.get('policy') or '')
+          if scanned <= 0 or requested <= 0:
+              print('FAIL: Stage A returned no measured market data.')
+              sys.exit(2)
+          if coverage < 80:
+              print('FAIL: Production Stage A coverage is below the 80% evidence floor.')
+              sys.exit(3)
+          if 'no fabricated market data' not in policy:
+              print('FAIL: DATA_LIMITED/no-fabrication policy marker is missing.')
+              sys.exit(4)
+          print('PASS: Railway Stage A provider chain is live with >=80% measured coverage.')
+          PY
+              then
+                exit 0
+              fi
+            fi
+
+            if [[ "$attempt" -lt 32 ]]; then sleep 15; fi
+          done
+
+          echo 'FAIL: Railway research-health did not reach a valid >=80% Stage A response within the deployment window.' >&2
+          exit 1
