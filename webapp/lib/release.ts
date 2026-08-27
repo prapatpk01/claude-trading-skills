@@ -2,7 +2,7 @@ export const SENTINEL_RELEASE = {
   appVersion: "36.0",
   investmentVersion: "36.0",
   capitalClarityVersion: "35.1",
-  researchVersion: "32.1",
+  researchVersion: "32.2",
   technicalVersion: "34.1",
   forecastVersion: "26.1",
   healthRelease: "Sentinel-Investment-OS-v36.0",
