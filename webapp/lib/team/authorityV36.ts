@@ -171,14 +171,6 @@ function jamesDecision(
   return { status: "DEFER", action: "WAIT FOR TRIGGER", finding: "No veto remains, but the legacy funding package did not carry on this snapshot.", trigger: "Complete the remaining funding/evidence requirement and rerun." };
 }
 
-/**
- * V36.4 allocates deployable excess before the final V36 authority pass so a
- * genuinely qualified NEW BUY can become CARRIED and reach Stage 06. If the
- * final risk/CIO read then downgrades that line to WAIT FOR TRIGGER, the capital
- * reservation must be undone as one atomic decision package. Otherwise the UI
- * can show a DEFERRED candidate while Capital Plan and the blotter still claim
- * that money is invested.
- */
 function reconcileAuthorityFundingV36(meeting: CommitteeMeeting, input: CommitteeInput) {
   const plan = meeting.capitalPlan;
   const rolledBack: Array<{ ticker: string; kind: Motion["kind"]; amountUsd: number }> = [];
@@ -222,9 +214,7 @@ function reconcileAuthorityFundingV36(meeting: CommitteeMeeting, input: Committe
       });
     }
 
-    if (plan.cashAfterPct != null && input.nav > 0) {
-      plan.cashAfterPct = round2(Math.min(100, plan.cashAfterPct + (amountUsd / input.nav) * 100));
-    }
+    if (plan.cashAfterPct != null && input.nav > 0) plan.cashAfterPct = round2(Math.min(100, plan.cashAfterPct + (amountUsd / input.nav) * 100));
     meeting.blotter = meeting.blotter.filter((line) => !(line.side === "BUY" && line.ticker.trim().toUpperCase() === key && Math.abs(line.approxUsd - amountUsd) <= 0.02));
 
     const resolution = meeting.resolutions.find((row) => row.text.startsWith(`${motion.kind} ${motion.ticker} —`) || row.text.startsWith(`${motion.kind} ${motion.ticker} deferred.`));
@@ -247,7 +237,12 @@ function reconcileAuthorityFundingV36(meeting: CommitteeMeeting, input: Committe
   plan.approvalReady = meeting.quorum.met && plan.allocationComplete;
   plan.allocationStatus = plan.allocationComplete ? "READY" : "INCOMPLETE";
   if (!plan.fallbackOptions.some((row) => row.ticker === "CASH / SGOV")) {
-    plan.fallbackOptions.push({ ticker: "CASH / SGOV", reason: "Temporary parking remains available while the next qualified momentum trigger develops." });
+    plan.fallbackOptions.push({
+      ticker: "CASH / SGOV",
+      action: "KEEP RESERVE",
+      maxUsd: plan.temporaryParkingUsd,
+      rationale: "Temporary parking remains available while the next qualified momentum trigger develops.",
+    });
   }
   meeting.minutes.push(`V36.5 authority reconciliation returned ${rolledBack.map((row) => `$${row.amountUsd.toFixed(2)} from ${row.kind} ${row.ticker}`).join("; ")} to Temporary Parking because the final authority gate did not authorize execution.`);
 }
