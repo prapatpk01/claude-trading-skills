@@ -28,9 +28,28 @@ export type FastUniverseScan = {
   asOf: string;
 };
 
-// Yahoo's query1 and query2 hosts do not fail in the same way from cloud
-// infrastructure. Query2 is tried first because production has historically
-// seen fewer spark throttles there; query1 remains a transparent fallback.
+// Stage A must not depend on one market-data route. Railway has repeatedly
+// returned 0 rows from Yahoo's multi-symbol Spark endpoint even while the
+// per-symbol chart endpoint remained healthy. V36.2 therefore uses the
+// TradingView America screener for the broad, keyless snapshot and keeps Yahoo
+// Spark only as a rescue path for names that TradingView did not return.
+const TV_SCANNER_URL = "https://scanner.tradingview.com/america/scan";
+const TV_COLUMNS = [
+  "name",
+  "close",
+  "Perf.W",
+  "Perf.1M",
+  "Perf.3M",
+  "relative_volume_10d_calc",
+  "EMA20",
+  "EMA50",
+  "volume",
+  "average_volume_30d_calc",
+] as const;
+const TV_PAGE_SIZE = 5_000;
+const TV_MAX_ROWS = 15_000;
+const TV_TIMEOUT_MS = 12_000;
+
 const SPARK_HOSTS = ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"] as const;
 const SPARK_PATH = "/v7/finance/spark";
 const CACHE_MS = 15 * 60 * 1000;
@@ -55,6 +74,7 @@ const finite = (value: unknown): number | null => {
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 const avg = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 const pct = (now: number, prior: number) => prior > 0 ? (now / prior - 1) * 100 : 0;
+const round1 = (value: number) => Math.round(value * 10) / 10;
 
 function ema(values: number[], length: number) {
   if (!values.length) return 0;
@@ -62,6 +82,10 @@ function ema(values: number[], length: number) {
   let current = values[0];
   for (let index = 1; index < values.length; index += 1) current = values[index] * alpha + current * (1 - alpha);
   return current;
+}
+
+function normalizeTickerKey(value: string) {
+  return String(value).trim().toUpperCase().replace(/[-/]/g, ".");
 }
 
 function parseSeries(entry: any): { closes: number[]; volumes: number[] } | null {
@@ -100,28 +124,26 @@ function classifyStage(input: {
   return "UNCONFIRMED";
 }
 
-function scoreSeries(ticker: string, series: { closes: number[]; volumes: number[] }, benchmarkReturn3m: number): FastUniverseRow | null {
-  const closes = series.closes;
-  const volumes = series.volumes;
-  const price = closes.at(-1) ?? 0;
-  if (!(price > 0)) return null;
-  const oneWeekIndex = Math.max(0, closes.length - 6);
-  const oneMonthIndex = Math.max(0, closes.length - 22);
-  const threeMonthIndex = Math.max(0, closes.length - 64);
-  const return1w = pct(price, closes[oneWeekIndex] ?? price);
-  const return1m = pct(price, closes[oneMonthIndex] ?? price);
-  const return3m = pct(price, closes[threeMonthIndex] ?? price);
+function scoreSnapshot(input: {
+  ticker: string;
+  price: number;
+  return1w: number;
+  return1m: number;
+  return3m: number;
+  benchmarkReturn3m: number;
+  ema20: number;
+  ema50: number;
+  volumeRatio: number | null;
+  averageVolume: number | null;
+}): FastUniverseRow | null {
+  const { ticker, price, return1w, return1m, return3m, benchmarkReturn3m, ema20, ema50, volumeRatio, averageVolume } = input;
+  if (!(price > 0) || !(ema20 > 0) || !(ema50 > 0)) return null;
   const rs3m = return3m - benchmarkReturn3m;
-  const ema20 = ema(closes.slice(-80), 20);
-  const ema50 = ema(closes.slice(-120), 50);
   const aboveEma20 = price >= ema20;
   const aboveEma50 = price >= ema50;
   const ema20Above50 = ema20 >= ema50;
-  const distanceEma20Pct = ema20 > 0 ? (price / ema20 - 1) * 100 : 0;
-  const recentVolume = volumes.slice(-5).filter(value => value > 0);
-  const baseVolume = volumes.slice(-25, -5).filter(value => value > 0);
-  const volumeRatio = recentVolume.length >= 3 && baseVolume.length >= 10 && avg(baseVolume) > 0 ? avg(recentVolume) / avg(baseVolume) : null;
-  const liquidityScore = clamp(Math.log10(Math.max(1, avg(volumes.slice(-20)))) * 10, 0, 100);
+  const distanceEma20Pct = (price / ema20 - 1) * 100;
+  const liquidityScore = clamp(Math.log10(Math.max(1, averageVolume ?? 1)) * 10, 0, 100);
   const stage = classifyStage({ ret1m: return1m, ret3m: return3m, rs3m, above20: aboveEma20, above50: aboveEma50, ema20Above50, distance20: distanceEma20Pct, volumeRatio });
 
   let score = 35;
@@ -144,18 +166,160 @@ function scoreSeries(ticker: string, series: { closes: number[]; volumes: number
     score: Math.round(clamp(score, 0, 100)),
     stage,
     price,
-    return1w: Math.round(return1w * 10) / 10,
-    return1m: Math.round(return1m * 10) / 10,
-    return3m: Math.round(return3m * 10) / 10,
-    rs3m: Math.round(rs3m * 10) / 10,
+    return1w: round1(return1w),
+    return1m: round1(return1m),
+    return3m: round1(return3m),
+    rs3m: round1(rs3m),
     aboveEma20,
     aboveEma50,
     ema20Above50,
-    distanceEma20Pct: Math.round(distanceEma20Pct * 10) / 10,
+    distanceEma20Pct: round1(distanceEma20Pct),
     volumeRatio: volumeRatio == null ? null : Math.round(volumeRatio * 100) / 100,
     liquidityScore: Math.round(liquidityScore),
   };
 }
+
+function scoreSeries(ticker: string, series: { closes: number[]; volumes: number[] }, benchmarkReturn3m: number): FastUniverseRow | null {
+  const closes = series.closes;
+  const volumes = series.volumes;
+  const price = closes.at(-1) ?? 0;
+  if (!(price > 0)) return null;
+  const oneWeekIndex = Math.max(0, closes.length - 6);
+  const oneMonthIndex = Math.max(0, closes.length - 22);
+  const threeMonthIndex = Math.max(0, closes.length - 64);
+  const recentVolume = volumes.slice(-5).filter(value => value > 0);
+  const baseVolume = volumes.slice(-25, -5).filter(value => value > 0);
+  return scoreSnapshot({
+    ticker,
+    price,
+    return1w: pct(price, closes[oneWeekIndex] ?? price),
+    return1m: pct(price, closes[oneMonthIndex] ?? price),
+    return3m: pct(price, closes[threeMonthIndex] ?? price),
+    benchmarkReturn3m,
+    ema20: ema(closes.slice(-80), 20),
+    ema50: ema(closes.slice(-120), 50),
+    volumeRatio: recentVolume.length >= 3 && baseVolume.length >= 10 && avg(baseVolume) > 0 ? avg(recentVolume) / avg(baseVolume) : null,
+    averageVolume: avg(volumes.slice(-20)),
+  });
+}
+
+/* ───────────────────── TradingView broad provider ───────────────────── */
+
+type TradingViewPayload = { totalCount?: number; data?: Array<{ s?: string; d?: unknown[] }> };
+
+async function fetchTradingViewPage(start: number, end: number): Promise<TradingViewPayload> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TV_TIMEOUT_MS);
+  try {
+    const response = await fetch(TV_SCANNER_URL, {
+      method: "POST",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
+        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.2",
+        referer: "https://www.tradingview.com/",
+      },
+      body: JSON.stringify({
+        filter: [
+          { left: "exchange", operation: "in_range", right: ["NYSE", "NASDAQ", "AMEX"] },
+        ],
+        options: { lang: "en" },
+        markets: ["america"],
+        symbols: { query: { types: [] }, tickers: [] },
+        columns: TV_COLUMNS,
+        sort: { sortBy: "volume", sortOrder: "desc" },
+        range: [start, end],
+      }),
+    });
+    if (!response.ok) throw new Error(`TradingView scanner ${response.status}`);
+    const payload = await response.json() as TradingViewPayload;
+    if (!Array.isArray(payload?.data)) throw new Error("TradingView scanner returned no data array");
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Pure parser exported so CI can prove the bulk-provider mapping without network. */
+export function parseTradingViewFastPayloads(payloads: TradingViewPayload[], requestedTickers: string[]): FastUniverseRow[] {
+  const originals = new Map<string, string>();
+  for (const ticker of requestedTickers) originals.set(normalizeTickerKey(ticker), String(ticker).trim().toUpperCase());
+  originals.set("SPY", "SPY");
+
+  type Snapshot = {
+    ticker: string;
+    price: number;
+    return1w: number;
+    return1m: number;
+    return3m: number;
+    volumeRatio: number | null;
+    ema20: number;
+    ema50: number;
+    averageVolume: number | null;
+  };
+  const snapshots = new Map<string, Snapshot>();
+
+  for (const payload of payloads) {
+    for (const item of payload.data ?? []) {
+      const d = Array.isArray(item?.d) ? item.d : [];
+      const rawTicker = String(d[0] ?? item?.s?.split(":").at(-1) ?? "").trim().toUpperCase();
+      const key = normalizeTickerKey(rawTicker);
+      const ticker = originals.get(key);
+      if (!ticker) continue;
+      const price = finite(d[1]);
+      const return1w = finite(d[2]);
+      const return1m = finite(d[3]);
+      const return3m = finite(d[4]);
+      const volumeRatio = finite(d[5]);
+      const ema20 = finite(d[6]);
+      const ema50 = finite(d[7]);
+      const volume = finite(d[8]);
+      const averageVolume = finite(d[9]) ?? volume;
+      if (price == null || price <= 0 || return1w == null || return1m == null || return3m == null || ema20 == null || ema20 <= 0 || ema50 == null || ema50 <= 0) continue;
+      snapshots.set(ticker, { ticker, price, return1w, return1m, return3m, volumeRatio, ema20, ema50, averageVolume });
+    }
+  }
+
+  const benchmarkReturn3m = snapshots.get("SPY")?.return3m ?? 0;
+  const rows: FastUniverseRow[] = [];
+  for (const ticker of requestedTickers) {
+    const snapshot = snapshots.get(String(ticker).trim().toUpperCase());
+    if (!snapshot) continue;
+    const scored = scoreSnapshot({ ...snapshot, benchmarkReturn3m });
+    if (scored) rows.push(scored);
+  }
+  rows.sort((left, right) => right.score - left.score || right.rs3m - left.rs3m || right.return3m - left.return3m || left.ticker.localeCompare(right.ticker));
+  return rows;
+}
+
+async function scanTradingView(tickers: string[]): Promise<FastUniverseScan> {
+  const starts: number[] = [];
+  for (let start = 0; start < TV_MAX_ROWS; start += TV_PAGE_SIZE) starts.push(start);
+  const settled = await Promise.allSettled(starts.map(start => fetchTradingViewPage(start, start + TV_PAGE_SIZE)));
+  const payloads: TradingViewPayload[] = [];
+  const warnings: string[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") payloads.push(result.value);
+    else warnings.push(result.reason instanceof Error ? result.reason.message : "TradingView scanner page failed");
+  }
+  if (!payloads.length) throw new Error(warnings.join(" | ") || "TradingView scanner unavailable");
+  const rows = parseTradingViewFastPayloads(payloads, tickers);
+  const scanned = rows.length;
+  return {
+    provider: "TradingView America bulk screener · Perf.W/1M/3M + EMA20/50 + relative volume",
+    requested: tickers.length,
+    scanned,
+    failed: Math.max(0, tickers.length - scanned),
+    coveragePct: tickers.length > 0 ? Math.round(scanned / tickers.length * 1000) / 10 : 0,
+    rows,
+    warnings: Array.from(new Set(warnings)).slice(0, 8),
+    asOf: new Date().toISOString(),
+  };
+}
+
+/* ───────────────────── Yahoo Spark rescue provider ─────────────────── */
 
 function parseSparkPayload(payload: any) {
   const rows = payload?.spark?.result ?? payload?.result ?? [];
@@ -180,7 +344,7 @@ async function fetchChunkFromHost(host: string, tickers: string[]) {
       signal: controller.signal,
       headers: {
         accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
-        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.0",
+        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.2",
         referer: "https://finance.yahoo.com/",
       },
     });
@@ -200,9 +364,6 @@ async function fetchChunk(tickers: string[]): Promise<Map<string, { closes: numb
     catch (error: any) { errors.push(error?.message ?? `${host} failed`); }
   }
 
-  // Some Yahoo edge nodes reject large symbol lists but accept smaller ones.
-  // Split only after both hosts fail. This prevents a single 50-symbol reject
-  // from becoming 0/2400 coverage while keeping request volume bounded.
   if (tickers.length > MIN_SPLIT_CHUNK) {
     const midpoint = Math.ceil(tickers.length / 2);
     const halves = [tickers.slice(0, midpoint), tickers.slice(midpoint)].filter(chunk => chunk.length);
@@ -234,27 +395,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return output;
 }
 
-function stableHash(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
-  return (hash >>> 0).toString(36);
-}
-
-export function fastScanRequestKey(tickers: string[]) {
-  return `${tickers.length}:${stableHash(tickers.join(","))}`;
-}
-
-function pruneCache() {
-  const now = Date.now();
-  for (const [key, row] of cache) if (row.expiresAt <= now) cache.delete(key);
-  while (cache.size > MAX_CACHE_KEYS) {
-    const oldest = cache.keys().next().value as string | undefined;
-    if (!oldest) break;
-    cache.delete(oldest);
-  }
-}
-
-async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
+async function scanYahooSpark(tickers: string[]): Promise<FastUniverseScan> {
   const warnings: string[] = [];
   const requested = tickers.length;
   const withBenchmark = Array.from(new Set([...tickers, "SPY"]));
@@ -281,13 +422,81 @@ async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
   rows.sort((left, right) => right.score - left.score || right.rs3m - left.rs3m || right.return3m - left.return3m || left.ticker.localeCompare(right.ticker));
   const scanned = rows.length;
   return {
-    provider: "Yahoo Finance multi-symbol spark · query2 → query1 → split-chunk rescue",
+    provider: "Yahoo Finance multi-symbol Spark rescue · query2 → query1 → split-chunk",
     requested,
     scanned,
     failed: Math.max(0, requested - scanned),
     coveragePct: requested > 0 ? Math.round(scanned / requested * 1000) / 10 : 0,
     rows,
     warnings: Array.from(new Set(warnings)).slice(0, 8),
+    asOf: new Date().toISOString(),
+  };
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  return (hash >>> 0).toString(36);
+}
+
+export function fastScanRequestKey(tickers: string[]) {
+  return `${tickers.length}:${stableHash(tickers.join(","))}`;
+}
+
+function pruneCache() {
+  const now = Date.now();
+  for (const [key, row] of cache) if (row.expiresAt <= now) cache.delete(key);
+  while (cache.size > MAX_CACHE_KEYS) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+}
+
+async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
+  const requested = tickers.length;
+  const warnings: string[] = [];
+  let broad: FastUniverseScan | null = null;
+  try {
+    broad = await scanTradingView(tickers);
+  } catch (error) {
+    warnings.push(error instanceof Error ? error.message : "TradingView broad scan failed");
+  }
+
+  const broadRows = broad?.rows ?? [];
+  const broadByTicker = new Map(broadRows.map(row => [row.ticker, row]));
+  const missing = tickers.filter(ticker => !broadByTicker.has(ticker));
+
+  // 80% is the same evidence floor used by the NO_BUY gate. Do not spend
+  // extra provider calls when the broad scan already has sufficient coverage.
+  if (broad && broad.coveragePct >= 80) {
+    return { ...broad, warnings: Array.from(new Set([...warnings, ...broad.warnings])).slice(0, 8) };
+  }
+
+  let rescue: FastUniverseScan | null = null;
+  if (missing.length) {
+    try { rescue = await scanYahooSpark(missing); }
+    catch (error) { warnings.push(error instanceof Error ? error.message : "Yahoo Spark rescue failed"); }
+  }
+
+  const merged = new Map<string, FastUniverseRow>();
+  for (const row of broadRows) merged.set(row.ticker, row);
+  for (const row of rescue?.rows ?? []) if (!merged.has(row.ticker)) merged.set(row.ticker, row);
+  const rows = tickers.map(ticker => merged.get(ticker)).filter((row): row is FastUniverseRow => Boolean(row));
+  rows.sort((left, right) => right.score - left.score || right.rs3m - left.rs3m || right.return3m - left.return3m || left.ticker.localeCompare(right.ticker));
+  const scanned = rows.length;
+  return {
+    provider: broadRows.length && rescue?.rows.length
+      ? `${broad?.provider} + ${rescue.provider}`
+      : broadRows.length
+        ? broad?.provider ?? "TradingView America bulk screener"
+        : rescue?.provider ?? "TradingView + Yahoo market-data providers unavailable",
+    requested,
+    scanned,
+    failed: Math.max(0, requested - scanned),
+    coveragePct: requested > 0 ? Math.round(scanned / requested * 1000) / 10 : 0,
+    rows,
+    warnings: Array.from(new Set([...warnings, ...(broad?.warnings ?? []), ...(rescue?.warnings ?? [])])).slice(0, 8),
     asOf: new Date().toISOString(),
   };
 }
