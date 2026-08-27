@@ -35,10 +35,14 @@ export async function GET(req:NextRequest){
   const tickers=uniqueMarketTickers(raw.split(","),30);
   if(!tickers.length)return NextResponse.json({items:{},failed:[],partial:[]});
 
-  // One batch request gives a second independent price path when per-ticker
-  // Yahoo chart calls are throttled. It is price fallback only; a batch price
-  // never fabricates a technical overlay or Momentum Forecast without history.
-  const fast=await fastScanApprovedUniverse(tickers).catch(()=>null);
+  // V37 uses SPY as an independent benchmark for relative-alpha and market-fit.
+  // If SPY history is temporarily unavailable, the stock forecast still works;
+  // benchmark-relative fields are simply withheld instead of neutral-filled.
+  const [fast, benchmarkHistory] = await Promise.all([
+    fastScanApprovedUniverse(tickers).catch(()=>null),
+    dailyCandlesWithFallback("SPY",460).catch(()=>null),
+  ]);
+  const benchmarkCandles = benchmarkHistory?.candles ?? [];
   const fastByTicker=new Map((fast?.rows??[]).map(row=>[row.ticker,row]));
 
   const rows=await mapLimit(tickers,3,async ticker=>{
@@ -51,14 +55,15 @@ export async function GET(req:NextRequest){
         quote=quoteFromFastRow(ticker,fastByTicker.get(ticker),fast?.asOf??null);
         if(quote){
           source=`${fast?.provider??"multi-symbol batch"} · price fallback`;
-          warnings.push("Full daily history is unavailable; current price recovered from the multi-symbol batch. Technical overlay and Momentum Forecast remain withheld until history recovers.");
+          warnings.push("Full daily history is unavailable; current price recovered from the multi-symbol batch. Technical overlay and Forecast V37 remain withheld until history recovers.");
         }
       }
-      return {ticker,data:buildHoldingMarketItem(history.candles,quote,source,warnings)};
+      const benchmark = ticker === "SPY" && history.candles.length ? history.candles : benchmarkCandles;
+      return {ticker,data:buildHoldingMarketItem(history.candles,quote,source,warnings,benchmark)};
     }catch(error){
       const warning=error instanceof Error?error.message:"Market intelligence failed";
       const quote=quoteFromFastRow(ticker,fastByTicker.get(ticker),fast?.asOf??null);
-      return {ticker,data:buildHoldingMarketItem([],quote,quote?`${fast?.provider??"multi-symbol batch"} · price fallback`:null,[warning])};
+      return {ticker,data:buildHoldingMarketItem([],quote,quote?`${fast?.provider??"multi-symbol batch"} · price fallback`:null,[warning],benchmarkCandles)};
     }
   });
   const items=Object.fromEntries(rows.map(row=>[row.ticker,row.data]));
@@ -67,5 +72,6 @@ export async function GET(req:NextRequest){
   return NextResponse.json({
     items,failed,partial,requested:tickers.length,complete:tickers.length-failed.length-partial.length,
     batchFallback:{provider:fast?.provider??null,coveragePct:fast?.coveragePct??0,scanned:fast?.scanned??0},
+    forecastBenchmark:{ticker:"SPY",historyBars:benchmarkCandles.length,available:benchmarkCandles.length>=60},
   },{headers:{"Cache-Control":"no-store, max-age=0"}});
 }

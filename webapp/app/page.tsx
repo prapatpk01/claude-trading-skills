@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import CIOCommandCenterV35 from "./components/CIOCommandCenterV351";
+import CIOCommandCenterV35 from "./components/CIOCommandCenterV37";
 import ResearchWorkspaceV12 from "./components/ResearchWorkspaceV12";
 import WatchlistIntelligenceV14 from "./components/WatchlistIntelligenceV14";
 import StockAnalysisDashboardV12 from "./components/StockAnalysisDashboardV12";

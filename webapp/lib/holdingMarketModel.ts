@@ -1,5 +1,5 @@
 import { computePortfolioTechnicalOverlay } from "./portfolioTechnicalOverlay";
-import { buildMomentumForecast } from "./research/momentumForecast";
+import { buildMomentumForecastV37 } from "./research/momentumForecastV37";
 import type { Candle, Quote } from "./types";
 
 export type ChartRange = "1M" | "3M" | "6M" | "YTD" | "1Y";
@@ -43,6 +43,7 @@ export function buildHoldingMarketItem(
   quote: Quote | null,
   source: string | null,
   warnings: string[] = [],
+  benchmarkCandles: Candle[] = [],
 ) {
   const clean = candles.filter(candle => Number.isFinite(candle.close) && candle.close > 0).sort((left, right) => left.date.localeCompare(right.date));
   const price = quote?.price ?? clean.at(-1)?.close ?? null;
@@ -66,19 +67,21 @@ export function buildHoldingMarketItem(
     ? Math.max(0, Math.min(100, (price - low52) / (high52 - low52) * 100))
     : null;
   const technicalOverlay = computePortfolioTechnicalOverlay(clean);
-  // 60+ bars can still support a deliberately low-confidence probability
-  // forecast. A true provider outage (0–59 bars) is an evidence gap and must
-  // never be translated into BROKEN/WEAKENING momentum output.
-  const momentumForecast = clean.length >= 60 ? buildMomentumForecast(clean, { technicalOverlay }) : null;
+  // 60+ bars can support a deliberately low-confidence probabilistic forecast.
+  // A true provider outage (0–59 bars) remains an evidence gap and must never
+  // be translated into a directional forecast.
+  const momentumForecast = clean.length >= 60
+    ? buildMomentumForecastV37(clean, { technicalOverlay, benchmarkCandles, benchmarkTicker: "SPY" })
+    : null;
   const status: MarketDataStatus = technicalOverlay ? "COMPLETE" : price != null || clean.length ? "PARTIAL" : "UNAVAILABLE";
   const reason = status === "COMPLETE"
-    ? `Technical overlay and Momentum Forecast calculated from ${clean.length} trading days.`
+    ? `Technical overlay and Forecast V37 calculated from ${clean.length} trading days.`
     : clean.length >= 60
-      ? `Only ${clean.length}/220 trading days are available; the institutional technical overlay is withheld and Momentum Forecast confidence is reduced.`
+      ? `Only ${clean.length}/220 trading days are available; the institutional technical overlay is withheld and Forecast V37 confidence is reduced.`
       : clean.length > 0
-        ? `Only ${clean.length}/220 trading days are available; both the institutional technical overlay and Momentum Forecast are withheld.`
+        ? `Only ${clean.length}/220 trading days are available; both the institutional technical overlay and Forecast V37 are withheld.`
         : price != null
-          ? "Current price is available, but price history is unavailable; the technical overlay and Momentum Forecast are withheld."
+          ? "Current price is available, but price history is unavailable; the technical overlay and Forecast V37 are withheld."
           : warnings[0] ?? "The market-data provider returned no price or history.";
 
   return {
