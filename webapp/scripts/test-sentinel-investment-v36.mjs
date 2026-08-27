@@ -1,5 +1,6 @@
 // Sentinel Investment V36 deterministic regression suite.
-// Covers the new-idea score, rising-momentum starter path and true-risk veto.
+// Covers the new-idea score, rising-momentum starter path, true-risk veto,
+// and deployable-excess reinvestment before temporary parking.
 
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -55,9 +56,13 @@ console.log("\nV36 Score — architecture and momentum-rising behavior");
   ok("score exposes all seven pillars", score.pillars.length === 7, String(score.pillars.length));
   ok("momentum acceleration has 25-point weight", score.pillars.find(row => row.key === "acceleration")?.max === 25);
   ok("relative strength has 20-point weight", score.pillars.find(row => row.key === "relativeStrength")?.max === 20);
+  ok("entry is a 10-point pillar", score.pillars.find(row => row.key === "entry")?.max === 10);
   ok("no high-beta pillar exists", !score.pillars.some(row => /beta/i.test(row.label)));
   ok("conviction uses separate market/momentum/ownership/entry scores", [score.marketScore, score.momentumScore, score.ownershipScore, score.entryScore].every(Number.isFinite));
-  const expected = Math.round(score.marketScore * .25 + score.momentumScore * .45 + score.ownershipScore * .20 + score.entryScore * .10);
+  // Entry is already 0..10, therefore its raw value is the 10-point / 10%
+  // contribution to a /100 conviction score. Multiplying it by .10 again would
+  // reduce Entry to only one point and silently suppress candidates.
+  const expected = Math.round(score.marketScore * .25 + score.momentumScore * .45 + score.ownershipScore * .20 + score.entryScore);
   ok("conviction weighting is 25/45/20/10", score.convictionScore === expected, `${score.convictionScore} vs ${expected}`);
   ok("old ADX_LOW hard veto is absent", !score.hardBlockCodes.includes("ADX_LOW"), score.hardBlockCodes.join(","));
   ok("new idea never emits HOLDINGS gate language", !/HOLDINGS GATE/i.test(JSON.stringify(score)));
@@ -226,6 +231,51 @@ console.log("\nV36 Committee — true hard block remains non-executable");
   ok("hard block is a VETO at the risk gate", gate(row, "RISK")?.status === "VETO", gate(row, "RISK")?.status);
   ok("hard-blocked buy is not carried", row?.outcome !== "CARRIED", row?.outcome);
   ok("hard-blocked name never reaches BUY blotter", !meeting.blotter.some(line => line.ticker === "BLOCK" && line.side === "BUY"));
+}
+
+console.log("\nV36 Committee — deployable excess reinvests before temporary parking");
+{
+  const smallNav = 1_000;
+  const reinvestPosition = {
+    ...basePosition,
+    shares: 1,
+    avgCost: 90,
+    price: 100,
+    marketValue: 100,
+    weightPct: 10,
+    pnlPct: 11.1,
+    momentum: { total: 60, signal: "WATCH", hardBlocks: ["ADX_LOW: ADX 18.5 < 20"], dataQualityPct: 95 },
+    valuation: { verdict: "DISCOUNT", deviationPct: -16.7, confidence: "high", fairValue: 120 },
+    trend: { aboveSma50: true, aboveSma200: true, return1m: 6, return3m: 12 },
+  };
+  const reinvestBook = {
+    ...input([]).book,
+    nav: smallNav,
+    cashPct: 20,
+    cashRequiredPct: 10,
+    sleeves: [
+      { sleeve: "Growth/Momentum", value: 100, actualPct: 10, targetPct: 55, driftPct: -45, alert: true, tickers: ["AAA"] },
+      { sleeve: "Income/Dividend", value: 0, actualPct: 0, targetPct: 35, driftPct: -35, alert: true, tickers: [] },
+      { sleeve: "Cash/Defensive", value: 200, actualPct: 20, targetPct: 10, driftPct: 10, alert: true, tickers: [] },
+    ],
+    riskRegister: [],
+  };
+  const meeting = runCommitteeMeeting(input([], {
+    nav: smallNav,
+    cashBalance: 200,
+    deployableCash: 148,
+    cashBufferPct: 20,
+    targetCashPct: 10,
+    positions: [reinvestPosition],
+    book: reinvestBook,
+    portfolioRevision: "SIM-V36-REINVEST",
+  }));
+  const add = meeting.motions.find(row => row.ticker === "AAA" && row.kind === "ADD");
+  ok("reinvestment ladder creates an ADD motion", Boolean(add));
+  ok("timing-only ADX block becomes soft for rising reinvestment", gate(add, "RISK")?.status === "PASS", gate(add, "RISK")?.status);
+  ok("qualified reinvestment can carry", add?.outcome === "CARRIED", add?.outcomeReason);
+  ok("capital destination names ADD_HOLDING", meeting.capitalPlan.destinationLines.some(line => line.category === "ADD_HOLDING" && /AAA/.test(line.label)));
+  ok("deployable excess is not entirely temporary parking", meeting.capitalPlan.temporaryParkingUsd < 148, String(meeting.capitalPlan.temporaryParkingUsd));
 }
 
 console.log(`\nSentinel Investment V36 simulation: ${passed} passed, ${failed} failed`);
