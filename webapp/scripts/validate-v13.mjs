@@ -11,10 +11,12 @@ const requireTokens = (file, tokens) => {
   for (const token of tokens) if (!source.includes(token)) failures.push(`${file}: missing ${token}`);
 };
 
-// V13 introduced the feedback loop. The live Watchlist is V14.2 and CIO is V35.
-// Validate the current workflow, not superseded component/version names.
+// V13 introduced the governed feedback loop. Validate its live integrations
+// without pinning the root shell to an obsolete hard-coded release number.
 requireTokens("app/page.tsx", [
-  'data-sentinel-version="35.0"',
+  "data-sentinel-version={SENTINEL_RELEASE.appVersion}",
+  "data-investment-version={SENTINEL_RELEASE.investmentVersion}",
+  'data-workspace="cio-v36"',
   "PortfolioPerformanceV13",
   "WatchlistIntelligenceV14",
   "CIOCommandCenterV35",
@@ -62,4 +64,4 @@ if (failures.length) {
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("Sentinel V35 feedback loop and governed execution validation PASSED");
+console.log("Sentinel V36 release + V13 feedback loop and governed execution validation PASSED");
