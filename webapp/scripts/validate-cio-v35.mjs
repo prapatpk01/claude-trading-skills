@@ -65,7 +65,8 @@ requireTokens("lib/team/sentinelInvestmentV36.ts", [
   "input.market.score * 0.25",
   "momentum.momentumScore * 0.45",
   "ownership.score * 0.20",
-  "momentum.entryScore * 0.10",
+  "Entry Quality is a 0–10 pillar",
+  "momentum.entryScore,",
   'action = "STARTER BUY"',
   'code: "CRISIS_REGIME"',
   'code: "PERSISTENT_DISTRIBUTION"',
@@ -76,6 +77,8 @@ requireTokens("lib/team/committee.ts", [
   "allocationFor",
   "Authoritative Total Liquidity Buffer below Cash Floor",
   "sleeve drift as a regime-aware sizing/rebalance input",
+  "addDeployableExcessReinvestmentV36",
+  "V36 Deployable Excess Reinvestment Ladder",
 ]);
 requireTokens("lib/team/authorityV36.ts", [
   'version: "36.0"',
@@ -131,6 +134,7 @@ requireTokens("scripts/test-sentinel-investment-v36.mjs", [
   "conviction weighting is 25/45/20/10",
   "soft block is not a CRO veto",
   "true hard block remains non-executable",
+  "deployable excess reinvests before temporary parking",
 ]);
 
 if (failures.length) {

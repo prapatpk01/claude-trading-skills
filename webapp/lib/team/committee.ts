@@ -8,11 +8,141 @@
 export * from "./committeeLegacy";
 
 import { runCommitteeMeeting as runLegacyCommitteeMeeting } from "./committeeLegacy";
-import type { CommitteeInput, CommitteeMeeting, Motion } from "./committeeLegacy";
+import type { CommitteeInput, CommitteeMeeting, IdeaEvidence, Motion, PositionEvidence } from "./committeeLegacy";
 import { applyDecisionAuthorityV36 } from "./authorityV36";
 import { allocationFor, DRIFT_ALERT_PCT } from "./portfolio";
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
+const REVIEW_WEIGHT_PCT = 15;
+
+/**
+ * New capital should not sit in TEMPORARY_PARKING simply because the new-name
+ * scanner has no executable idea on this refresh. When the Cash Floor is met,
+ * V36 gets one second job: rank existing positions for a measured ADD.
+ *
+ * This is deliberately stricter than an ordinary HOLD. We require positive
+ * trend acceleration, valuation room, good data quality, no genuine hard risk,
+ * room below the review weight and no very recent buy. Legacy ADX/RSI timing
+ * blocks are treated as soft only when price momentum is demonstrably rising.
+ */
+function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInput {
+  if (input.deployableCash <= 0 || input.nav <= 0) return input;
+  const regimeScore = input.regime?.score ?? 50;
+  if (String(input.regime?.regime ?? "").toUpperCase() === "CRISIS" || regimeScore < 50) return input;
+  const floorPct = input.targetCashPct ?? input.regime?.cashMinPct ?? null;
+  if (floorPct != null && input.cashBufferPct != null && input.cashBufferPct + 0.05 < floorPct) return input;
+
+  // A qualified external research idea keeps first claim on new capital. The
+  // reinvestment ladder exists to prevent idle excess when NEW BUY has no live
+  // executable trigger; it does not crowd out the Investment Team's best idea.
+  const externalExecutable = input.ideas.some((idea) => {
+    const technical: any = idea.technical ?? null;
+    const action = String(technical?.action ?? technical?.signal ?? "").toUpperCase();
+    return (action === "BUY" || action === "STARTER BUY") && (technical?.hardBlocks?.length ?? 0) === 0;
+  });
+  if (externalExecutable) return input;
+
+  const existingIdeaTickers = new Set(input.ideas.map((idea) => idea.ticker));
+  const candidates: Array<{ idea: IdeaEvidence; conviction: number }> = [];
+
+  for (const position of input.positions) {
+    if (position.isReserve || existingIdeaTickers.has(position.ticker)) continue;
+    if (!position.price || position.price <= 0 || !position.momentum || !position.trend) continue;
+    if ((position.weightPct ?? REVIEW_WEIGHT_PCT) >= REVIEW_WEIGHT_PCT) continue;
+    if (position.momentum.dataQualityPct < 75 || position.momentum.total < 55) continue;
+    if (position.recentTrade?.daysSinceBuy != null && position.recentTrade.daysSinceBuy < 7) continue;
+    if (position.recentTrade?.daysSinceSell != null && position.recentTrade.daysSinceSell < 30) continue;
+    if (position.trend.aboveSma50 === false || position.trend.aboveSma200 === false) continue;
+
+    const return1m = position.trend.return1m ?? 0;
+    const return3m = position.trend.return3m ?? 0;
+    const rising = return1m > 0 && return3m > 0 && return1m > return3m / 3;
+    if (!rising) continue;
+
+    const valuation = position.valuation;
+    if (!valuation || /PREMIUM|EXPENSIVE|OVERVALUED/i.test(valuation.verdict)) continue;
+    const denominator = valuation.deviationPct == null ? null : 1 + valuation.deviationPct / 100;
+    const fairValue = valuation.fairValue ?? (denominator != null && denominator > 0 ? position.price / denominator : null);
+    if (fairValue == null || fairValue <= position.price) continue;
+    const upsidePct = (fairValue / position.price - 1) * 100;
+    if (upsidePct < 5) continue;
+
+    const legacyBlocks = position.momentum.hardBlocks ?? [];
+    const softTiming = legacyBlocks.filter((block) => /ADX|RSI/i.test(block));
+    const trueHardBlocks = legacyBlocks.filter((block) => !/ADX|RSI/i.test(block));
+    if (trueHardBlocks.length) continue;
+
+    let ownershipScore = 55 + Math.min(30, upsidePct * 1.8);
+    if (/DISCOUNT|CHEAP|UNDERVALUED/i.test(valuation.verdict)) ownershipScore += 5;
+    if (/high/i.test(valuation.confidence)) ownershipScore += 5;
+    ownershipScore = Math.round(clamp(ownershipScore));
+
+    let entryScore = 0;
+    if (position.trend.aboveSma50 === true) entryScore += 4;
+    if (position.trend.aboveSma200 === true) entryScore += 3;
+    if (return1m > 0) entryScore += 2;
+    if (return1m > return3m / 3) entryScore += 1;
+    entryScore = Math.min(10, entryScore);
+
+    // Entry is a 0-10 pillar, so its 10% contribution is entryScore itself.
+    const conviction = Math.round(clamp(
+      regimeScore * 0.25 +
+      position.momentum.total * 0.45 +
+      ownershipScore * 0.20 +
+      entryScore,
+    ));
+    if (conviction < 65) continue;
+
+    const action = conviction >= 75 && position.momentum.total >= 65 ? "BUY" : "STARTER BUY";
+    const technical: any = {
+      total: conviction,
+      convictionScore: conviction,
+      marketScore: Math.round(regimeScore),
+      momentumScore: position.momentum.total,
+      ownershipScore,
+      entryScore,
+      signal: action,
+      action,
+      momentumState: "RISING",
+      rising: true,
+      hardBlocks: [],
+      softBlocks: softTiming,
+      dataQualityPct: position.momentum.dataQualityPct,
+      sizingMultiplier: action === "BUY" ? 1 : 0.5,
+      note: `Deployable-excess reinvestment: Market ${Math.round(regimeScore)} + Momentum ${position.momentum.total} + Ownership ${ownershipScore} + Entry ${entryScore}/10 = Conviction ${conviction}/100. Existing holding remains below the ${REVIEW_WEIGHT_PCT}% review weight and fair-value room is ${upsidePct.toFixed(1)}%.`,
+    };
+
+    const idea: IdeaEvidence = {
+      ticker: position.ticker,
+      rating: action === "BUY" ? "ADD" : "STARTER ADD",
+      // Legacy sizing bands are intentionally conservative for this fallback:
+      // a full ADD uses the 6% band; a starter uses the 4% band. The capital
+      // plan can still reduce either to the actual deployable excess.
+      conviction: action === "BUY" ? Math.max(65, conviction) : 50,
+      source: "V36 Deployable Excess Reinvestment Ladder",
+      price: position.price,
+      target: fairValue,
+      upsidePct: round2(upsidePct),
+      submittedAt: input.asOf.slice(0, 10),
+      note: technical.note,
+      alreadyHeld: true,
+      sleeve: position.sleeve,
+      ageDays: 0,
+      referencePrice: position.price,
+      priceDriftPct: 0,
+      dataQuality: `${position.momentum.dataQualityPct}% Holdings evidence · V36 reinvestment overlay`,
+      technical,
+      recentTrade: position.recentTrade ?? null,
+    };
+    candidates.push({ idea, conviction });
+  }
+
+  if (!candidates.length) return input;
+  candidates.sort((left, right) => right.conviction - left.conviction || (right.idea.upsidePct ?? 0) - (left.idea.upsidePct ?? 0));
+  const reinvestmentIdeas = candidates.slice(0, 2).map((row) => row.idea);
+  return { ...input, ideas: [...input.ideas, ...reinvestmentIdeas] };
+}
 
 /**
  * V36 policy normalization.
@@ -188,7 +318,7 @@ function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, in
 }
 
 export function runCommitteeMeeting(input: CommitteeInput) {
-  const normalized = normalizeInputV36(input);
+  const normalized = addDeployableExcessReinvestmentV36(normalizeInputV36(input));
   const meeting = runLegacyCommitteeMeeting(normalized);
   const governed = applyDecisionAuthorityV36(meeting, normalized);
   return exposePendingCashFloorRepair(governed, normalized);
