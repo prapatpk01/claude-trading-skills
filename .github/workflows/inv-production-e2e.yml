@@ -1,0 +1,97 @@
+name: Sentinel INV Production E2E
+
+on:
+  push:
+    branches: ['test/inv-production-e2e']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inv-production-meeting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Run real INV meeting scan on Railway
+        env:
+          URL: https://claude-trading-skills-production.up.railway.app/api/committee/meeting
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Calling production INV meeting: $URL"
+          code=$(curl -sS -L --connect-timeout 10 --max-time 100 -o /tmp/meeting.json -w '%{http_code}' "$URL")
+          echo "HTTP $code"
+          test "$code" = "200"
+          python - <<'PY'
+          import json, re, sys
+          from pathlib import Path
+
+          p = Path('/tmp/meeting.json')
+          data = json.loads(p.read_text())
+          print('TOP_LEVEL_KEYS', sorted(data.keys()) if isinstance(data, dict) else type(data).__name__)
+
+          interesting = []
+          arrays = []
+          messages = []
+          tickers = set()
+
+          def walk(x, path='$'):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      kp = f'{path}.{k}'
+                      lk = k.lower()
+                      if any(term in lk for term in ['screen', 'coverage', 'universe', 'research', 'candidate', 'proposal', 'queue', 'finalist', 'deep', 'provider', 'warning', 'status']):
+                          if isinstance(v, (str, int, float, bool)) or v is None:
+                              interesting.append((kp, v))
+                          elif isinstance(v, list):
+                              arrays.append((kp, len(v), v[:6]))
+                      if lk == 'ticker' and isinstance(v, str) and re.fullmatch(r'[A-Z.\-]{1,10}', v):
+                          tickers.add(v)
+                      if isinstance(v, str) and any(term in v.lower() for term in ['screened', 'coverage', 'data_blocked', 'no_buy', 'research', 'candidate']):
+                          messages.append((kp, v[:500]))
+                      walk(v, kp)
+              elif isinstance(x, list):
+                  for i, v in enumerate(x[:200]):
+                      walk(v, f'{path}[{i}]')
+
+          walk(data)
+
+          print('\n=== INV SCAN METRICS ===')
+          for path, value in interesting[:160]:
+              print(path, '=', value)
+          print('\n=== PIPELINE ARRAYS ===')
+          for path, n, sample in arrays[:80]:
+              sample_tickers=[]
+              for row in sample:
+                  if isinstance(row, dict) and isinstance(row.get('ticker'), str): sample_tickers.append(row['ticker'])
+              print(path, 'count=', n, 'sample_tickers=', sample_tickers)
+          print('\n=== RESEARCH MESSAGES ===')
+          for path, value in messages[:40]: print(path, '=', value.replace('\n',' '))
+          print('\nUNIQUE_TICKERS_IN_RESPONSE', len(tickers), sorted(tickers)[:80])
+
+          # Functional pass: a real meeting must expose non-zero measured scan evidence,
+          # or at minimum a non-empty deep-research/candidate pipeline sourced by INV.
+          scan_numbers=[]
+          coverages=[]
+          pipeline_counts=[]
+          def collect(x, key=''):
+              if isinstance(x, dict):
+                  for k,v in x.items():
+                      lk=k.lower()
+                      if isinstance(v,(int,float)):
+                          if 'screen' in lk and ('count' in lk or 'scanned' in lk or lk == 'screened'): scan_numbers.append(float(v))
+                          if 'coverage' in lk: coverages.append(float(v))
+                      if isinstance(v,list) and any(t in lk for t in ['candidate','proposal','queue','finalist','deepresearch','deep_research']): pipeline_counts.append(len(v))
+                      collect(v,k)
+              elif isinstance(x,list):
+                  for v in x: collect(v,key)
+          collect(data)
+          print('SCAN_NUMBERS', scan_numbers)
+          print('COVERAGES', coverages)
+          print('PIPELINE_COUNTS', pipeline_counts)
+          if not any(n > 0 for n in scan_numbers) and not any(n > 0 for n in pipeline_counts):
+              print('FAIL: no non-zero INV scan or research pipeline evidence found in production meeting JSON')
+              sys.exit(2)
+          print('PASS: production committee meeting contains non-zero INV scan/research evidence')
+          PY
