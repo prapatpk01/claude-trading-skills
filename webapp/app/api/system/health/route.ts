@@ -67,11 +67,13 @@ export async function GET(req: NextRequest) {
       release: SENTINEL_RELEASE.healthRelease,
       versions: {
         app: SENTINEL_RELEASE.appVersion,
+        investment: SENTINEL_RELEASE.investmentVersion,
         capitalClarity: SENTINEL_RELEASE.capitalClarityVersion,
         research: SENTINEL_RELEASE.researchVersion,
-        technical: SENTINEL_RELEASE.technicalVersion,
+        holdingsTechnical: SENTINEL_RELEASE.technicalVersion,
         forecast: SENTINEL_RELEASE.forecastVersion,
       },
+      decisionArchitecture: "MARKET_SENTIMENT_REGIME -> MOMENTUM_RISING -> OWNERSHIP -> ENTRY -> TRUE_RISK -> SIZE -> HUMAN_APPROVAL",
       checkedAt: new Date().toISOString(),
       checks: { ...checks, databaseReachable, holdingsCount, watchlistCount },
       failures: [
