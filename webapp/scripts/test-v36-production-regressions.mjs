@@ -7,8 +7,10 @@ if (!buildDir) throw new Error("usage: node scripts/test-v36-production-regressi
 
 const committeePath = path.join(process.cwd(), buildDir, "team", "committee.js");
 const fastPath = path.join(process.cwd(), buildDir, "research", "universeFastScan.js");
+const yf2Path = path.join(process.cwd(), buildDir, "research", "yahooFinance2Fallback.js");
 const { canonicalizeMotionsV36, partiallyFundDeployableExcessAddsV36 } = await import(pathToFileURL(committeePath).href);
 const { parseTradingViewFastPayloads } = await import(pathToFileURL(fastPath).href);
+const { parseYahooFinance2Chart } = await import(pathToFileURL(yf2Path).href);
 
 console.log("\nV36.2 production regression — one authoritative motion per ticker");
 {
@@ -145,4 +147,21 @@ console.log("V36.2 production regression — class-share ticker normalization");
   assert.equal(rows[0].ticker, "BRK-B", "provider dot notation must map back to the approved-universe ticker spelling");
 }
 
-console.log("\nSentinel V36.2 production regressions passed");
+console.log("V36.3 production regression — yahoo-finance2 chart parser");
+{
+  const quotes = Array.from({ length: 70 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 4, 1 + index)),
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100 + index,
+    volume: 1_000_000 + index * 10_000,
+  }));
+  const series = parseYahooFinance2Chart({ quotes, meta: { symbol: "MSFT" } });
+  assert.ok(series, "yahoo-finance2 chart output must map to a usable Stage A series");
+  assert.equal(series.closes.length, 70);
+  assert.equal(series.closes.at(-1), 169);
+  assert.equal(series.volumes.at(-1), 1_690_000);
+}
+
+console.log("\nSentinel V36.3 production regressions passed");
