@@ -8,23 +8,21 @@
 export * from "./committeeLegacy";
 
 import { runCommitteeMeeting as runLegacyCommitteeMeeting } from "./committeeLegacy";
-import type { CommitteeInput, CommitteeMeeting, IdeaEvidence, Motion, PositionEvidence } from "./committeeLegacy";
+import type { CommitteeInput, CommitteeMeeting, IdeaEvidence, Motion } from "./committeeLegacy";
 import { applyDecisionAuthorityV36 } from "./authorityV36";
 import { allocationFor, DRIFT_ALERT_PCT } from "./portfolio";
+import { ROSTER } from "./roster";
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
 const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
 const REVIEW_WEIGHT_PCT = 15;
+const MIN_PARTIAL_REINVESTMENT_USD = 25;
 
 /**
  * New capital should not sit in TEMPORARY_PARKING simply because the new-name
  * scanner has no executable idea on this refresh. When the Cash Floor is met,
  * V36 gets one second job: rank existing positions for a measured ADD.
- *
- * This is deliberately stricter than an ordinary HOLD. We require positive
- * trend acceleration, valuation room, good data quality, no genuine hard risk,
- * room below the review weight and no very recent buy. Legacy ADX/RSI timing
- * blocks are treated as soft only when price momentum is demonstrably rising.
  */
 function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInput {
   if (input.deployableCash <= 0 || input.nav <= 0) return input;
@@ -138,16 +136,128 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
 }
 
 /**
- * Legacy creates one HOLD motion per position and one extra motion per idea.
- * A reinvestment idea for an existing holding therefore used to produce two
- * cards for the same ticker (for example HOLD MSFT + ADD MSFT). V36.2 makes
- * the meeting itself authoritative: one ticker can expose only one motion.
+ * Legacy capital planning requires at least 50% of the originally proposed
+ * position size before it will partially fund a motion. That rule is useful for
+ * a normal portfolio proposal, but it defeated the V36 excess-cash ladder:
+ * e.g. a $360 starter ADD with $148 of deployable excess (41.1%) was deferred in
+ * full and the $148 was parked even though all four authority gates passed.
  *
- * Risk-reduction always wins over adding risk. Otherwise an explicit ADD/NEW
- * BUY wins over the zero-dollar HOLD status card. This changes presentation
- * and authority identity only; HOLD is zero dollars, so the already-built
- * capital plan does not lose a source or use when the duplicate HOLD is hidden.
+ * V36.2 treats the deployable-excess ladder differently. If the only reason a
+ * ladder ADD was deferred is funding, resize it to the actually available
+ * temporary-parking dollars (minimum $25), preserve all authority gates, and
+ * carry the fractional-share-sized ADD. No other deferred motion is changed.
  */
+export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>(meeting: T, input: CommitteeInput): T {
+  const ladderIdeas = new Map(
+    input.ideas
+      .filter((idea) => idea.source === "V36 Deployable Excess Reinvestment Ladder")
+      .map((idea) => [idea.ticker.trim().toUpperCase(), idea]),
+  );
+  if (!ladderIdeas.size) return meeting;
+
+  let available = round2(Math.max(0, meeting.capitalPlan.temporaryParkingUsd));
+  if (available < MIN_PARTIAL_REINVESTMENT_USD) return meeting;
+
+  const allocations: Array<{ motion: Motion; requested: number; granted: number; price: number | null }> = [];
+  for (const motion of meeting.motions) {
+    if (available < MIN_PARTIAL_REINVESTMENT_USD) break;
+    if (motion.kind !== "ADD" || motion.outcome !== "DEFERRED") continue;
+    const idea = ladderIdeas.get(motion.ticker.trim().toUpperCase());
+    if (!idea) continue;
+    if (!motion.decisionGates.length || motion.decisionGates.some((gate) => gate.status !== "PASS")) continue;
+    if (!/funding plan ran out of sources|not funded|funding/i.test(motion.outcomeReason)) continue;
+
+    const requested = round2(Math.max(0, motion.sizeUsd));
+    const granted = round2(Math.min(requested, available));
+    if (granted < MIN_PARTIAL_REINVESTMENT_USD) continue;
+    const price = idea.price && idea.price > 0 ? idea.price : input.positions.find((row) => row.ticker === motion.ticker)?.price ?? null;
+
+    motion.sizeUsd = granted;
+    motion.approxShares = price && price > 0 ? round4(granted / price) : motion.approxShares;
+    motion.outcome = "CARRIED";
+    motion.veto = null;
+    motion.outcomeReason = `All four authority gates passed. V36.2 resized the deployable-excess ADD from $${requested.toFixed(2)} to the $${granted.toFixed(2)} actually available above the Cash Floor instead of deferring the whole motion.`;
+    allocations.push({ motion, requested, granted, price });
+    available = round2(available - granted);
+  }
+
+  if (!allocations.length) return meeting;
+  const allocated = round2(allocations.reduce((sum, row) => sum + row.granted, 0));
+  const plan = meeting.capitalPlan;
+  plan.usesUsd = round2(plan.usesUsd + allocated);
+  plan.useLines = [
+    ...plan.useLines,
+    ...allocations.map(({ motion, granted }) => ({ label: `ADD ${motion.ticker}`, amountUsd: granted })),
+  ];
+  plan.temporaryParkingUsd = available;
+  plan.cutForFunding = plan.cutForFunding.map((row) => {
+    const allocation = allocations.find((item) => item.motion.ticker === row.ticker);
+    return allocation
+      ? { ...row, reason: `V36.2 partial funding: reduced from $${allocation.requested.toFixed(2)} to $${allocation.granted.toFixed(2)}, exactly matching deployable excess available after higher-priority uses.` }
+      : row;
+  });
+
+  const destinations = plan.destinationLines
+    .map((line) => line.category === "TEMPORARY_PARKING" ? { ...line, amountUsd: available } : line)
+    .filter((line) => line.category !== "TEMPORARY_PARKING" || line.amountUsd > 0.01);
+  for (const { motion, granted } of allocations) {
+    destinations.push({
+      category: "ADD_HOLDING",
+      label: `ADD ${motion.ticker} · V36 deployable-excess allocation`,
+      amountUsd: granted,
+      owner: ROSTER.sofia.name,
+      reviewBy: null,
+    });
+  }
+  plan.destinationLines = destinations;
+  plan.unallocatedUsd = round2(Math.max(0, plan.sourcesUsd - destinations.reduce((sum, line) => sum + line.amountUsd, 0)));
+  plan.balanceUsd = plan.unallocatedUsd;
+  plan.allocationComplete = plan.unallocatedUsd <= 0.01 && destinations.every((line) => Boolean(line.owner) && (line.category !== "TEMPORARY_PARKING" || Boolean(line.reviewBy)));
+  plan.funded = plan.usesUsd <= plan.deployableSourcesUsd + 0.01 && plan.allocationComplete;
+  plan.approvalReady = meeting.quorum.met && plan.allocationComplete;
+  plan.allocationStatus = plan.allocationComplete ? "READY" : "INCOMPLETE";
+  if (plan.cashAfterPct != null && input.nav > 0) plan.cashAfterPct = round2(Math.max(0, plan.cashAfterPct - (allocated / input.nav) * 100));
+  if (available <= 0.01) plan.fallbackOptions = plan.fallbackOptions.filter((row) => row.ticker !== "CASH / SGOV");
+  plan.note = `${allocated.toLocaleString("en-US", { style: "currency", currency: "USD" })} of deployable excess is assigned to ${allocations.map((row) => `ADD ${row.motion.ticker}`).join(", ")} after every authority gate passed. V36.2 allows a measured fractional starter below the legacy 50%-of-proposal threshold so usable capital does not remain parked solely because the model's standard position band is larger than the available excess.${available > 0.01 ? ` ${available.toLocaleString("en-US", { style: "currency", currency: "USD" })} remains in temporary parking for the next qualified allocation.` : " No deployable excess remains unassigned."}`;
+
+  for (const { motion, granted, price } of allocations) {
+    if (!meeting.blotter.some((line) => line.side === "BUY" && line.ticker === motion.ticker)) {
+      meeting.blotter.push({
+        side: "BUY",
+        ticker: motion.ticker,
+        approxShares: motion.approxShares,
+        approxUsd: granted,
+        referencePrice: price,
+        reason: `ADD — ${motion.outcomeReason}`,
+      });
+    }
+    const resolution = meeting.resolutions.find((row) => row.text.startsWith(`ADD ${motion.ticker} deferred.`));
+    if (resolution) {
+      resolution.status = "APPROVED";
+      resolution.owner = ROSTER.ryan.name;
+      resolution.text = `ADD ${motion.ticker} — $${granted.toFixed(2)}${motion.approxShares != null ? ` (~${motion.approxShares} shares)` : ""}. V36.2 partial-funded the qualified deployable-excess ADD; record the transaction manually after human plan approval.`;
+    }
+    for (const vote of motion.votes.filter((vote) => vote.ballot === "AGAINST")) {
+      if (!meeting.dissent.some((row) => row.ticker === motion.ticker && row.member === vote.member)) {
+        meeting.dissent.push({ ticker: motion.ticker, member: vote.member, rationale: vote.rationale });
+      }
+    }
+  }
+  meeting.blotter.sort((a, b) => (a.side === b.side ? b.approxUsd - a.approxUsd : a.side === "SELL" ? -1 : 1));
+  const capitalAgenda = meeting.agenda.find((row) => row.n === 6);
+  if (capitalAgenda) capitalAgenda.summary = plan.note;
+  const authorityAgenda = meeting.agenda.find((row) => row.n === 7);
+  if (authorityAgenda) authorityAgenda.summary = `${meeting.motions.filter((m) => m.outcome === "CARRIED").length} carried and ${meeting.motions.filter((m) => m.outcome === "DEFERRED").length} deferred through Investment Head → Asset Management Head → CRO → CIO.`;
+  const handoffAgenda = meeting.agenda.find((row) => row.n === 8);
+  if (handoffAgenda) {
+    handoffAgenda.covered = meeting.blotter.length > 0;
+    handoffAgenda.summary = meeting.blotter.length ? `${meeting.blotter.length} line(s) handed to Portfolio Operations for manual entry. The committee approves; a person executes.` : handoffAgenda.summary;
+  }
+  meeting.minutes.push(`V36.2 deployable-excess sizing: ${allocations.map((row) => `ADD ${row.motion.ticker} $${row.granted.toFixed(2)}${row.granted < row.requested ? ` (reduced from $${row.requested.toFixed(2)})` : ""}`).join("; ")}.`);
+  return meeting;
+}
+
+/** One ticker must expose one authoritative motion/card per meeting. */
 export function canonicalizeMotionsV36<T extends CommitteeMeeting>(meeting: T): T {
   const priority: Record<Motion["kind"], number> = {
     EXIT: 60,
@@ -157,8 +267,9 @@ export function canonicalizeMotionsV36<T extends CommitteeMeeting>(meeting: T): 
     "NEW BUY": 35,
     HOLD: 10,
   };
+  const originalMotions = [...meeting.motions];
   const chosen = new Map<string, Motion>();
-  for (const motion of meeting.motions) {
+  for (const motion of originalMotions) {
     const key = motion.ticker.trim().toUpperCase();
     const current = chosen.get(key);
     if (!current) {
@@ -174,21 +285,16 @@ export function canonicalizeMotionsV36<T extends CommitteeMeeting>(meeting: T): 
     }
   }
   const keepIds = new Set(Array.from(chosen.values()).map((motion) => motion.id));
-  meeting.motions = meeting.motions.filter((motion) => keepIds.has(motion.id));
+  meeting.motions = originalMotions.filter((motion) => keepIds.has(motion.id));
+  // Legacy resolutions are positional: exactly one was created for each motion.
+  // Remove the paired HOLD resolution when its duplicate HOLD motion is hidden.
+  if (Array.isArray(meeting.resolutions) && meeting.resolutions.length === originalMotions.length) {
+    meeting.resolutions = meeting.resolutions.filter((_, index) => keepIds.has(originalMotions[index].id));
+  }
   return meeting;
 }
 
-/**
- * V36 policy normalization.
- *
- * 1. Sleeve targets follow the current regime instead of the static 55/35/10
- *    strategic mix.
- * 2. The book's cash read is replaced with the same authoritative Total
- *    Liquidity Buffer used by the Cash Buffer / CIO deployment engine.
- * 3. A sleeve drift, beta warning or trend warning remains visible, but no
- *    longer globally vetoes an unrelated qualifying new idea. Only genuinely
- *    execution-blocking risks remain HIGH.
- */
+/** Regime-aware portfolio-policy normalization. */
 function normalizeInputV36(input: CommitteeInput): CommitteeInput {
   if (!input.book) return input;
 
@@ -222,9 +328,7 @@ function normalizeInputV36(input: CommitteeInput): CommitteeInput {
           suggestedAction: `${row.suggestedAction} V36 treats sleeve drift as a regime-aware sizing/rebalance input, not a global veto on an unrelated qualified momentum entry.`,
         };
       }
-      if (row.severity === "high" && !genuineBlocking) {
-        return { ...row, severity: "medium" as const };
-      }
+      if (row.severity === "high" && !genuineBlocking) return { ...row, severity: "medium" as const };
       return row;
     });
 
@@ -262,12 +366,7 @@ function normalizeInputV36(input: CommitteeInput): CommitteeInput {
   };
 }
 
-/**
- * A policy shortfall must never disappear merely because the sale motions are
- * still waiting for human approval. The legacy capital plan intentionally uses
- * CARRIED motions only, which is correct for executable capital, but it made a
- * below-floor meeting look "READY" with $0 sources and $0 destinations.
- */
+/** Expose pending Cash-Floor repairs without turning proposals into orders. */
 function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, input: CommitteeInput): T {
   const targetPct = input.targetCashPct ?? input.regime?.cashMinPct ?? null;
   const currentPct = input.cashBufferPct;
@@ -283,7 +382,6 @@ function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, in
   const pendingMotions = repairMotions.filter((motion: Motion) => motion.outcome !== "CARRIED");
   const carriedUsd = round2(carriedMotions.reduce((sum: number, motion: Motion) => sum + Math.abs(motion.sizeUsd), 0));
   const remainingUsd = round2(Math.max(0, shortfallUsd - carriedUsd));
-
   if (remainingUsd <= 0.01) return meeting;
 
   let pendingNeeded = remainingUsd;
@@ -339,7 +437,9 @@ function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, in
 
 export function runCommitteeMeeting(input: CommitteeInput) {
   const normalized = addDeployableExcessReinvestmentV36(normalizeInputV36(input));
-  const meeting = canonicalizeMotionsV36(runLegacyCommitteeMeeting(normalized));
+  const legacyMeeting = runLegacyCommitteeMeeting(normalized);
+  const partiallyFunded = partiallyFundDeployableExcessAddsV36(legacyMeeting, normalized);
+  const meeting = canonicalizeMotionsV36(partiallyFunded);
   const governed = applyDecisionAuthorityV36(meeting, normalized);
   return exposePendingCashFloorRepair(governed, normalized);
 }
