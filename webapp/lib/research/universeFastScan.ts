@@ -1,3 +1,5 @@
+import { fetchYahooFinance2Fallback } from "./yahooFinance2Fallback";
+
 export type FastMomentumStage = "ACCUMULATION" | "EARLY_MARKUP" | "MOMENTUM_EXPANSION" | "MATURE" | "WEAKENING" | "UNCONFIRMED";
 
 export type FastUniverseRow = {
@@ -30,9 +32,11 @@ export type FastUniverseScan = {
 
 // Stage A must not depend on one market-data route. Railway has repeatedly
 // returned 0 rows from Yahoo's multi-symbol Spark endpoint even while the
-// per-symbol chart endpoint remained healthy. V36.2 therefore uses the
-// TradingView America screener for the broad, keyless snapshot and keeps Yahoo
-// Spark only as a rescue path for names that TradingView did not return.
+// per-symbol chart endpoint remained healthy. V36.3 therefore uses the
+// TradingView America screener for the broad snapshot, Yahoo Spark as the first
+// rescue path, and yahoo-finance2's per-symbol chart route as a bounded final
+// rescue. yahoo-finance2 is the Node production equivalent of the Python
+// yfinance role; both ultimately consume Yahoo Finance market-data endpoints.
 const TV_SCANNER_URL = "https://scanner.tradingview.com/america/scan";
 const TV_COLUMNS = [
   "name",
@@ -59,6 +63,8 @@ const CONCURRENCY = 8;
 const TIMEOUT_MS = 5_500;
 const MIN_BARS = 55;
 const MIN_SPLIT_CHUNK = 12;
+const YF2_MAX_RESCUE_SYMBOLS = 600;
+const NO_BUY_COVERAGE_FLOOR = 80;
 
 // Different pages can request the 2,000+ stock master universe, sector ETFs and
 // a 10–30 name portfolio at the same time. Cache/in-flight work must therefore
@@ -218,7 +224,7 @@ async function fetchTradingViewPage(start: number, end: number): Promise<Trading
       headers: {
         "content-type": "application/json",
         accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
-        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.2",
+        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.3",
         referer: "https://www.tradingview.com/",
       },
       body: JSON.stringify({
@@ -344,7 +350,7 @@ async function fetchChunkFromHost(host: string, tickers: string[]) {
       signal: controller.signal,
       headers: {
         accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
-        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.2",
+        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.3",
         referer: "https://finance.yahoo.com/",
       },
     });
@@ -453,50 +459,92 @@ function pruneCache() {
   }
 }
 
+function mergeFastRows(target: Map<string, FastUniverseRow>, rows: FastUniverseRow[]) {
+  for (const row of rows) if (!target.has(row.ticker)) target.set(row.ticker, row);
+}
+
 async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
   const requested = tickers.length;
   const warnings: string[] = [];
+  const providers: string[] = [];
   let broad: FastUniverseScan | null = null;
   try {
     broad = await scanTradingView(tickers);
+    providers.push(broad.provider);
   } catch (error) {
     warnings.push(error instanceof Error ? error.message : "TradingView broad scan failed");
   }
 
-  const broadRows = broad?.rows ?? [];
-  const broadByTicker = new Map(broadRows.map(row => [row.ticker, row]));
-  const missing = tickers.filter(ticker => !broadByTicker.has(ticker));
-
-  // 80% is the same evidence floor used by the NO_BUY gate. Do not spend
-  // extra provider calls when the broad scan already has sufficient coverage.
-  if (broad && broad.coveragePct >= 80) {
-    return { ...broad, warnings: Array.from(new Set([...warnings, ...broad.warnings])).slice(0, 8) };
-  }
-
-  let rescue: FastUniverseScan | null = null;
-  if (missing.length) {
-    try { rescue = await scanYahooSpark(missing); }
-    catch (error) { warnings.push(error instanceof Error ? error.message : "Yahoo Spark rescue failed"); }
-  }
-
   const merged = new Map<string, FastUniverseRow>();
-  for (const row of broadRows) merged.set(row.ticker, row);
-  for (const row of rescue?.rows ?? []) if (!merged.has(row.ticker)) merged.set(row.ticker, row);
+  mergeFastRows(merged, broad?.rows ?? []);
+
+  // 80% is the evidence floor used by the NO_BUY gate. Do not spend rescue
+  // provider calls when the broad TradingView scan already has sufficient
+  // coverage.
+  if (broad && broad.coveragePct >= NO_BUY_COVERAGE_FLOOR) {
+    return { ...broad, warnings: Array.from(new Set([...warnings, ...broad.warnings])).slice(0, 12) };
+  }
+
+  let missing = tickers.filter(ticker => !merged.has(ticker));
+  let spark: FastUniverseScan | null = null;
+  if (missing.length) {
+    try {
+      spark = await scanYahooSpark(missing);
+      providers.push(spark.provider);
+      mergeFastRows(merged, spark.rows);
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : "Yahoo Spark rescue failed");
+    }
+  }
+
+  let currentCoverage = requested > 0 ? merged.size / requested * 100 : 0;
+  missing = tickers.filter(ticker => !merged.has(ticker));
+
+  // Final bounded rescue: yahoo-finance2 uses the per-symbol Yahoo chart route,
+  // which is intentionally different from Spark. It is equivalent to the role
+  // Python yfinance would play, but keeps this Next.js/Railway app on one Node
+  // runtime. The 600-symbol cap prevents a total provider outage from creating
+  // thousands of slow/rate-limited Yahoo requests in a single meeting.
+  let yf2Warnings: string[] = [];
+  if (currentCoverage < NO_BUY_COVERAGE_FLOOR && missing.length) {
+    const neededForFloor = Math.max(0, Math.ceil(requested * NO_BUY_COVERAGE_FLOOR / 100) - merged.size);
+    const rescueBudget = Math.min(YF2_MAX_RESCUE_SYMBOLS, Math.max(neededForFloor, Math.min(120, missing.length)));
+    try {
+      const yf2 = await fetchYahooFinance2Fallback(["SPY", ...missing], { maxSymbols: rescueBudget + 1, concurrency: 12 });
+      providers.push(yf2.provider);
+      yf2Warnings = yf2.warnings;
+      const spy = yf2.series.get("SPY");
+      const spyReturn3m = spy && spy.closes.length >= MIN_BARS
+        ? pct(spy.closes.at(-1) ?? 0, spy.closes[Math.max(0, spy.closes.length - 64)] ?? 0)
+        : 0;
+      for (const ticker of missing) {
+        const series = yf2.series.get(ticker);
+        if (!series) continue;
+        const scored = scoreSeries(ticker, series, spyReturn3m);
+        if (scored && !merged.has(ticker)) merged.set(ticker, scored);
+      }
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : "yahoo-finance2 chart rescue failed");
+    }
+  }
+
   const rows = tickers.map(ticker => merged.get(ticker)).filter((row): row is FastUniverseRow => Boolean(row));
   rows.sort((left, right) => right.score - left.score || right.rs3m - left.rs3m || right.return3m - left.return3m || left.ticker.localeCompare(right.ticker));
   const scanned = rows.length;
+  currentCoverage = requested > 0 ? Math.round(scanned / requested * 1000) / 10 : 0;
   return {
-    provider: broadRows.length && rescue?.rows.length
-      ? `${broad?.provider} + ${rescue.provider}`
-      : broadRows.length
-        ? broad?.provider ?? "TradingView America bulk screener"
-        : rescue?.provider ?? "TradingView + Yahoo market-data providers unavailable",
+    provider: providers.length ? Array.from(new Set(providers)).join(" + ") : "TradingView + Yahoo market-data providers unavailable",
     requested,
     scanned,
     failed: Math.max(0, requested - scanned),
-    coveragePct: requested > 0 ? Math.round(scanned / requested * 1000) / 10 : 0,
+    coveragePct: currentCoverage,
     rows,
-    warnings: Array.from(new Set([...warnings, ...(broad?.warnings ?? []), ...(rescue?.warnings ?? [])])).slice(0, 8),
+    warnings: Array.from(new Set([
+      ...warnings,
+      ...(broad?.warnings ?? []),
+      ...(spark?.warnings ?? []),
+      ...yf2Warnings,
+    ])).slice(0, 12),
     asOf: new Date().toISOString(),
   };
 }
