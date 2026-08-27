@@ -28,13 +28,18 @@ export type FastUniverseScan = {
   asOf: string;
 };
 
-const ENDPOINT = "https://query1.finance.yahoo.com/v7/finance/spark";
+// Yahoo's query1 and query2 hosts do not fail in the same way from cloud
+// infrastructure. Query2 is tried first because production has historically
+// seen fewer spark throttles there; query1 remains a transparent fallback.
+const SPARK_HOSTS = ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"] as const;
+const SPARK_PATH = "/v7/finance/spark";
 const CACHE_MS = 15 * 60 * 1000;
 const MAX_CACHE_KEYS = 12;
-const CHUNK_SIZE = 60;
-const CONCURRENCY = 6;
-const TIMEOUT_MS = 8_000;
+const CHUNK_SIZE = 50;
+const CONCURRENCY = 8;
+const TIMEOUT_MS = 5_500;
 const MIN_BARS = 55;
+const MIN_SPLIT_CHUNK = 12;
 
 // Different pages can request the 2,000+ stock master universe, sector ETFs and
 // a 10–30 name portfolio at the same time. Cache/in-flight work must therefore
@@ -152,36 +157,68 @@ function scoreSeries(ticker: string, series: { closes: number[]; volumes: number
   };
 }
 
-async function fetchChunk(tickers: string[]) {
+function parseSparkPayload(payload: any) {
+  const rows = payload?.spark?.result ?? payload?.result ?? [];
+  const out = new Map<string, { closes: number[]; volumes: number[] }>();
+  if (!Array.isArray(rows)) return out;
+  for (const row of rows) {
+    const ticker = String(row?.symbol ?? row?.meta?.symbol ?? "").trim().toUpperCase();
+    if (!ticker) continue;
+    const series = parseSeries(row);
+    if (series) out.set(ticker, series);
+  }
+  return out;
+}
+
+async function fetchChunkFromHost(host: string, tickers: string[]) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const url = `${ENDPOINT}?symbols=${encodeURIComponent(tickers.join(","))}&range=6mo&interval=1d&indicators=close%2Cvolume`;
+    const url = `${host}${SPARK_PATH}?symbols=${encodeURIComponent(tickers.join(","))}&range=6mo&interval=1d&indicators=close%2Cvolume`;
     const response = await fetch(url, {
       cache: "no-store",
       signal: controller.signal,
       headers: {
         accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
-        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/2.0",
+        "user-agent": "Mozilla/5.0 SentinelInvestmentResearch/36.0",
         referer: "https://finance.yahoo.com/",
       },
     });
-    if (!response.ok) throw new Error(`Yahoo spark ${response.status}`);
-    const payload = await response.json();
-    const rows = payload?.spark?.result ?? payload?.result ?? [];
-    const out = new Map<string, { closes: number[]; volumes: number[] }>();
-    if (Array.isArray(rows)) {
-      for (const row of rows) {
-        const ticker = String(row?.symbol ?? row?.meta?.symbol ?? "").trim().toUpperCase();
-        if (!ticker) continue;
-        const series = parseSeries(row);
-        if (series) out.set(ticker, series);
-      }
-    }
+    if (!response.ok) throw new Error(`${host.includes("query2") ? "Yahoo query2" : "Yahoo query1"} spark ${response.status}`);
+    const out = parseSparkPayload(await response.json());
+    if (!out.size) throw new Error(`${host.includes("query2") ? "Yahoo query2" : "Yahoo query1"} spark returned no usable series`);
     return out;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchChunk(tickers: string[]): Promise<Map<string, { closes: number[]; volumes: number[] }>> {
+  const errors: string[] = [];
+  for (const host of SPARK_HOSTS) {
+    try { return await fetchChunkFromHost(host, tickers); }
+    catch (error: any) { errors.push(error?.message ?? `${host} failed`); }
+  }
+
+  // Some Yahoo edge nodes reject large symbol lists but accept smaller ones.
+  // Split only after both hosts fail. This prevents a single 50-symbol reject
+  // from becoming 0/2400 coverage while keeping request volume bounded.
+  if (tickers.length > MIN_SPLIT_CHUNK) {
+    const midpoint = Math.ceil(tickers.length / 2);
+    const halves = [tickers.slice(0, midpoint), tickers.slice(midpoint)].filter(chunk => chunk.length);
+    const rescued = await Promise.all(halves.map(async chunk => {
+      for (const host of SPARK_HOSTS) {
+        try { return await fetchChunkFromHost(host, chunk); }
+        catch { /* continue to the second host */ }
+      }
+      return new Map<string, { closes: number[]; volumes: number[] }>();
+    }));
+    const merged = new Map<string, { closes: number[]; volumes: number[] }>();
+    for (const map of rescued) for (const [ticker, row] of map) merged.set(ticker, row);
+    if (merged.size) return merged;
+  }
+
+  throw new Error(errors.join(" | ") || "Yahoo spark chunk failed");
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -244,7 +281,7 @@ async function scanFresh(tickers: string[]): Promise<FastUniverseScan> {
   rows.sort((left, right) => right.score - left.score || right.rs3m - left.rs3m || right.return3m - left.return3m || left.ticker.localeCompare(right.ticker));
   const scanned = rows.length;
   return {
-    provider: "Yahoo Finance multi-symbol spark · price/volume fast screen",
+    provider: "Yahoo Finance multi-symbol spark · query2 → query1 → split-chunk rescue",
     requested,
     scanned,
     failed: Math.max(0, requested - scanned),
@@ -276,10 +313,10 @@ export async function fastScanApprovedUniverse(tickers: string[]): Promise<FastU
   return request;
 }
 
-// V32 Momentum Hunt score. Fast Scan cannot know fundamental Fair Value yet,
+// V36 Momentum Hunt score. Fast Scan cannot know fundamental Fair Value yet,
 // so its job is to spend scarce deep-research slots on the strongest technical
 // leaders that are not already excessively mature. Deep Research then supplies
-// the independent valuation/upside gate.
+// the independent valuation/upside gate and Sentinel V36 makes the final entry decision.
 export function highOpportunityFastScore(row: FastUniverseRow) {
   const stageBonus = row.stage === "EARLY_MARKUP" ? 18
     : row.stage === "MOMENTUM_EXPANSION" ? 16
@@ -301,9 +338,9 @@ export function highOpportunityFastScore(row: FastUniverseRow) {
 }
 
 function fastPrimaryEligible(row: FastUniverseRow) {
-  if (row.stage === "MOMENTUM_EXPANSION") return row.score >= 62 && row.rs3m >= 3 && row.return1m >= 3;
-  if (row.stage === "EARLY_MARKUP") return row.score >= 60 && row.rs3m >= 1 && row.return1m >= 1;
-  if (row.stage === "ACCUMULATION") return row.score >= 58 && row.rs3m >= 0 && row.return1m >= -1 && (row.volumeRatio ?? 0) >= 1.1;
+  if (row.stage === "MOMENTUM_EXPANSION") return row.score >= 60 && row.rs3m >= 2 && row.return1m >= 2;
+  if (row.stage === "EARLY_MARKUP") return row.score >= 57 && row.rs3m >= 0 && row.return1m >= 0;
+  if (row.stage === "ACCUMULATION") return row.score >= 55 && row.rs3m >= -1 && row.return1m >= -2 && (row.volumeRatio ?? 0) >= 1.0;
   return false;
 }
 
@@ -317,15 +354,13 @@ export function chooseDeepResearchQueue(scan: FastUniverseScan, limit: number) {
 
   const primary = scan.rows.filter(fastPrimaryEligible).sort(byOpportunity);
   const mature = scan.rows
-    .filter(row => row.stage === "MATURE" && row.score >= 66 && row.rs3m >= 4 && row.return1m >= 4 && row.distanceEma20Pct < 16)
+    .filter(row => row.stage === "MATURE" && row.score >= 64 && row.rs3m >= 3 && row.return1m >= 3 && row.distanceEma20Pct < 16)
     .sort(byOpportunity);
   const other = scan.rows
-    .filter(row => row.stage === "UNCONFIRMED" && row.score >= 68 && row.rs3m >= 4 && row.return1m >= 3)
+    .filter(row => row.stage === "UNCONFIRMED" && row.score >= 64 && row.rs3m >= 2 && row.return1m >= 1)
     .sort(byOpportunity);
 
-  // Keep at least ~90% of the first queue for primary lifecycle candidates.
-  // MATURE becomes true fallback capacity rather than a routine allocation.
-  const primaryLimit = Math.max(1, Math.round(desired * .92));
+  const primaryLimit = Math.max(1, Math.round(desired * .90));
   const matureLimit = Math.max(0, desired - primaryLimit);
   const selected = [...primary.slice(0, primaryLimit), ...mature.slice(0, matureLimit)];
   const used = new Set(selected.map(row => row.ticker));
