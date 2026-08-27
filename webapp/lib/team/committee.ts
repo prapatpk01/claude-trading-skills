@@ -136,47 +136,71 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
 }
 
 /**
- * Legacy capital planning requires at least 50% of the originally proposed
- * position size before it will partially fund a motion. That rule is useful for
- * a normal portfolio proposal, but it defeated the V36 excess-cash ladder:
- * e.g. a $360 starter ADD with $148 of deployable excess (41.1%) was deferred in
- * full and the $148 was parked even though all four authority gates passed.
+ * The legacy allocator requires at least 50% of a proposed position before it
+ * will partially fund it. That made sense for the old fixed-size portfolio,
+ * but it created a broken V36 handoff: a qualified NEW BUY could pass all four
+ * authority gates, show up as a BUY candidate, leave deployable excess parked,
+ * and then disappear from Stage 06 because its outcome was still DEFERRED.
  *
- * V36.2 treats the deployable-excess ladder differently. If the only reason a
- * ladder ADD was deferred is funding, resize it to the actually available
- * temporary-parking dollars (minimum $25), preserve all authority gates, and
- * carry the fractional-share-sized ADD. No other deferred motion is changed.
+ * V36.4 gives qualified risk purchases one final allocation pass before Human
+ * Plan Approval. Deferred NEW BUYs and V36 deployable-excess ADDs may consume
+ * actual TEMPORARY_PARKING dollars when every authority gate is already PASS.
+ * The amount is capped by the original proposal and available excess, with a
+ * $25 minimum. This changes sizing/funding only; it never overrides a gate and
+ * never places a broker order.
  */
 export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>(meeting: T, input: CommitteeInput): T {
-  const ladderIdeas = new Map(
+  const ideaByTicker = new Map(input.ideas.map((idea) => [idea.ticker.trim().toUpperCase(), idea]));
+  const ladderTickers = new Set(
     input.ideas
       .filter((idea) => idea.source === "V36 Deployable Excess Reinvestment Ladder")
-      .map((idea) => [idea.ticker.trim().toUpperCase(), idea]),
+      .map((idea) => idea.ticker.trim().toUpperCase()),
   );
-  if (!ladderIdeas.size) return meeting;
 
   let available = round2(Math.max(0, meeting.capitalPlan.temporaryParkingUsd));
   if (available < MIN_PARTIAL_REINVESTMENT_USD) return meeting;
 
-  const allocations: Array<{ motion: Motion; requested: number; granted: number; price: number | null }> = [];
-  for (const motion of meeting.motions) {
-    if (available < MIN_PARTIAL_REINVESTMENT_USD) break;
-    if (motion.kind !== "ADD" || motion.outcome !== "DEFERRED") continue;
-    const idea = ladderIdeas.get(motion.ticker.trim().toUpperCase());
-    if (!idea) continue;
-    if (!motion.decisionGates.length || motion.decisionGates.some((gate) => gate.status !== "PASS")) continue;
-    if (!/funding plan ran out of sources|not funded|funding/i.test(motion.outcomeReason)) continue;
+  const eligible = meeting.motions
+    .filter((motion) => {
+      if (motion.outcome !== "DEFERRED") return false;
+      const key = motion.ticker.trim().toUpperCase();
+      const isQualifiedNewBuy = motion.kind === "NEW BUY" && ideaByTicker.has(key);
+      const isLadderAdd = motion.kind === "ADD" && ladderTickers.has(key);
+      if (!isQualifiedNewBuy && !isLadderAdd) return false;
+      if (!motion.decisionGates.length || motion.decisionGates.some((gate) => gate.status !== "PASS")) return false;
+      return /funding plan ran out of sources|not funded|funding/i.test(motion.outcomeReason);
+    })
+    .sort((left, right) => {
+      const leftIdea: any = ideaByTicker.get(left.ticker.trim().toUpperCase()) ?? null;
+      const rightIdea: any = ideaByTicker.get(right.ticker.trim().toUpperCase()) ?? null;
+      const leftTech: any = leftIdea?.technical ?? null;
+      const rightTech: any = rightIdea?.technical ?? null;
+      const leftScore = Number(leftTech?.convictionScore ?? leftTech?.total ?? leftIdea?.conviction ?? 0);
+      const rightScore = Number(rightTech?.convictionScore ?? rightTech?.total ?? rightIdea?.conviction ?? 0);
+      if (rightScore !== leftScore) return rightScore - leftScore;
+      const leftVote = left.tally.for - left.tally.against;
+      const rightVote = right.tally.for - right.tally.against;
+      if (rightVote !== leftVote) return rightVote - leftVote;
+      return right.evidenceCoveragePct - left.evidenceCoveragePct;
+    });
 
+  const allocations: Array<{ motion: Motion; requested: number; granted: number; price: number | null }> = [];
+  for (const motion of eligible) {
+    if (available < MIN_PARTIAL_REINVESTMENT_USD) break;
+    const key = motion.ticker.trim().toUpperCase();
+    const idea = ideaByTicker.get(key) ?? null;
     const requested = round2(Math.max(0, motion.sizeUsd));
     const granted = round2(Math.min(requested, available));
     if (granted < MIN_PARTIAL_REINVESTMENT_USD) continue;
-    const price = idea.price && idea.price > 0 ? idea.price : input.positions.find((row) => row.ticker === motion.ticker)?.price ?? null;
+    const price = idea?.price && idea.price > 0
+      ? idea.price
+      : input.positions.find((row) => row.ticker.trim().toUpperCase() === key)?.price ?? null;
 
     motion.sizeUsd = granted;
     motion.approxShares = price && price > 0 ? round4(granted / price) : motion.approxShares;
     motion.outcome = "CARRIED";
     motion.veto = null;
-    motion.outcomeReason = `All four authority gates passed. V36.2 resized the deployable-excess ADD from $${requested.toFixed(2)} to the $${granted.toFixed(2)} actually available above the Cash Floor instead of deferring the whole motion.`;
+    motion.outcomeReason = `All four authority gates passed. V36.4 funded ${motion.kind} ${motion.ticker} with $${granted.toFixed(2)} of deployable excess above the Cash Floor${granted < requested ? `, reduced from the $${requested.toFixed(2)} standard proposal` : ""}. Human Plan Approval is still required before any broker action.`;
     allocations.push({ motion, requested, granted, price });
     available = round2(available - granted);
   }
@@ -187,13 +211,13 @@ export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>
   plan.usesUsd = round2(plan.usesUsd + allocated);
   plan.useLines = [
     ...plan.useLines,
-    ...allocations.map(({ motion, granted }) => ({ label: `ADD ${motion.ticker}`, amountUsd: granted })),
+    ...allocations.map(({ motion, granted }) => ({ label: `${motion.kind} ${motion.ticker}`, amountUsd: granted })),
   ];
   plan.temporaryParkingUsd = available;
   plan.cutForFunding = plan.cutForFunding.map((row) => {
     const allocation = allocations.find((item) => item.motion.ticker === row.ticker);
     return allocation
-      ? { ...row, reason: `V36.2 partial funding: reduced from $${allocation.requested.toFixed(2)} to $${allocation.granted.toFixed(2)}, exactly matching deployable excess available after higher-priority uses.` }
+      ? { ...row, reason: `V36.4 funding: ${allocation.motion.kind} ${allocation.motion.ticker} received $${allocation.granted.toFixed(2)} of the $${allocation.requested.toFixed(2)} requested from deployable excess before Human Plan Approval.` }
       : row;
   });
 
@@ -202,8 +226,8 @@ export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>
     .filter((line) => line.category !== "TEMPORARY_PARKING" || line.amountUsd > 0.01);
   for (const { motion, granted } of allocations) {
     destinations.push({
-      category: "ADD_HOLDING",
-      label: `ADD ${motion.ticker} · V36 deployable-excess allocation`,
+      category: motion.kind === "NEW BUY" ? "NEW_INVESTMENT" : "ADD_HOLDING",
+      label: `${motion.kind} ${motion.ticker} · V36.4 qualified deployable-excess allocation`,
       amountUsd: granted,
       owner: ROSTER.sofia.name,
       reviewBy: null,
@@ -218,7 +242,7 @@ export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>
   plan.allocationStatus = plan.allocationComplete ? "READY" : "INCOMPLETE";
   if (plan.cashAfterPct != null && input.nav > 0) plan.cashAfterPct = round2(Math.max(0, plan.cashAfterPct - (allocated / input.nav) * 100));
   if (available <= 0.01) plan.fallbackOptions = plan.fallbackOptions.filter((row) => row.ticker !== "CASH / SGOV");
-  plan.note = `${allocated.toLocaleString("en-US", { style: "currency", currency: "USD" })} of deployable excess is assigned to ${allocations.map((row) => `ADD ${row.motion.ticker}`).join(", ")} after every authority gate passed. V36.2 allows a measured fractional starter below the legacy 50%-of-proposal threshold so usable capital does not remain parked solely because the model's standard position band is larger than the available excess.${available > 0.01 ? ` ${available.toLocaleString("en-US", { style: "currency", currency: "USD" })} remains in temporary parking for the next qualified allocation.` : " No deployable excess remains unassigned."}`;
+  plan.note = `${allocated.toLocaleString("en-US", { style: "currency", currency: "USD" })} of deployable excess is assigned to ${allocations.map((row) => `${row.motion.kind} ${row.motion.ticker}`).join(", ")} after every authority gate passed. These funded lines now proceed to Stage 06 Human Plan Approval; Sentinel still does not execute broker orders.${available > 0.01 ? ` ${available.toLocaleString("en-US", { style: "currency", currency: "USD" })} remains in temporary parking for the next qualified allocation.` : " No deployable excess remains unassigned."}`;
 
   for (const { motion, granted, price } of allocations) {
     if (!meeting.blotter.some((line) => line.side === "BUY" && line.ticker === motion.ticker)) {
@@ -228,14 +252,14 @@ export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>
         approxShares: motion.approxShares,
         approxUsd: granted,
         referencePrice: price,
-        reason: `ADD — ${motion.outcomeReason}`,
+        reason: `${motion.kind} — ${motion.outcomeReason}`,
       });
     }
-    const resolution = meeting.resolutions.find((row) => row.text.startsWith(`ADD ${motion.ticker} deferred.`));
+    const resolution = meeting.resolutions.find((row) => row.text.startsWith(`${motion.kind} ${motion.ticker} deferred.`));
     if (resolution) {
       resolution.status = "APPROVED";
       resolution.owner = ROSTER.ryan.name;
-      resolution.text = `ADD ${motion.ticker} — $${granted.toFixed(2)}${motion.approxShares != null ? ` (~${motion.approxShares} shares)` : ""}. V36.2 partial-funded the qualified deployable-excess ADD; record the transaction manually after human plan approval.`;
+      resolution.text = `${motion.kind} ${motion.ticker} — $${granted.toFixed(2)}${motion.approxShares != null ? ` (~${motion.approxShares} shares)` : ""}. V36.4 funded the qualified line from deployable excess; record the transaction manually only after Human Plan Approval.`;
     }
     for (const vote of motion.votes.filter((vote) => vote.ballot === "AGAINST")) {
       if (!meeting.dissent.some((row) => row.ticker === motion.ticker && row.member === vote.member)) {
@@ -253,7 +277,7 @@ export function partiallyFundDeployableExcessAddsV36<T extends CommitteeMeeting>
     handoffAgenda.covered = meeting.blotter.length > 0;
     handoffAgenda.summary = meeting.blotter.length ? `${meeting.blotter.length} line(s) handed to Portfolio Operations for manual entry. The committee approves; a person executes.` : handoffAgenda.summary;
   }
-  meeting.minutes.push(`V36.2 deployable-excess sizing: ${allocations.map((row) => `ADD ${row.motion.ticker} $${row.granted.toFixed(2)}${row.granted < row.requested ? ` (reduced from $${row.requested.toFixed(2)})` : ""}`).join("; ")}.`);
+  meeting.minutes.push(`V36.4 Human Plan funding handoff: ${allocations.map((row) => `${row.motion.kind} ${row.motion.ticker} $${row.granted.toFixed(2)}${row.granted < row.requested ? ` (reduced from $${row.requested.toFixed(2)})` : ""}`).join("; ")}.`);
   return meeting;
 }
 
