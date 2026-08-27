@@ -33,9 +33,6 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
   const floorPct = input.targetCashPct ?? input.regime?.cashMinPct ?? null;
   if (floorPct != null && input.cashBufferPct != null && input.cashBufferPct + 0.05 < floorPct) return input;
 
-  // A qualified external research idea keeps first claim on new capital. The
-  // reinvestment ladder exists to prevent idle excess when NEW BUY has no live
-  // executable trigger; it does not crowd out the Investment Team's best idea.
   const externalExecutable = input.ideas.some((idea) => {
     const technical: any = idea.technical ?? null;
     const action = String(technical?.action ?? technical?.signal ?? "").toUpperCase();
@@ -85,7 +82,6 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
     if (return1m > return3m / 3) entryScore += 1;
     entryScore = Math.min(10, entryScore);
 
-    // Entry is a 0-10 pillar, so its 10% contribution is entryScore itself.
     const conviction = Math.round(clamp(
       regimeScore * 0.25 +
       position.momentum.total * 0.45 +
@@ -116,9 +112,6 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
     const idea: IdeaEvidence = {
       ticker: position.ticker,
       rating: action === "BUY" ? "ADD" : "STARTER ADD",
-      // Legacy sizing bands are intentionally conservative for this fallback:
-      // a full ADD uses the 6% band; a starter uses the 4% band. The capital
-      // plan can still reduce either to the actual deployable excess.
       conviction: action === "BUY" ? Math.max(65, conviction) : 50,
       source: "V36 Deployable Excess Reinvestment Ladder",
       price: position.price,
@@ -142,6 +135,47 @@ function addDeployableExcessReinvestmentV36(input: CommitteeInput): CommitteeInp
   candidates.sort((left, right) => right.conviction - left.conviction || (right.idea.upsidePct ?? 0) - (left.idea.upsidePct ?? 0));
   const reinvestmentIdeas = candidates.slice(0, 2).map((row) => row.idea);
   return { ...input, ideas: [...input.ideas, ...reinvestmentIdeas] };
+}
+
+/**
+ * Legacy creates one HOLD motion per position and one extra motion per idea.
+ * A reinvestment idea for an existing holding therefore used to produce two
+ * cards for the same ticker (for example HOLD MSFT + ADD MSFT). V36.2 makes
+ * the meeting itself authoritative: one ticker can expose only one motion.
+ *
+ * Risk-reduction always wins over adding risk. Otherwise an explicit ADD/NEW
+ * BUY wins over the zero-dollar HOLD status card. This changes presentation
+ * and authority identity only; HOLD is zero dollars, so the already-built
+ * capital plan does not lose a source or use when the duplicate HOLD is hidden.
+ */
+export function canonicalizeMotionsV36<T extends CommitteeMeeting>(meeting: T): T {
+  const priority: Record<Motion["kind"], number> = {
+    EXIT: 60,
+    "RAISE CASH": 55,
+    TRIM: 50,
+    ADD: 40,
+    "NEW BUY": 35,
+    HOLD: 10,
+  };
+  const chosen = new Map<string, Motion>();
+  for (const motion of meeting.motions) {
+    const key = motion.ticker.trim().toUpperCase();
+    const current = chosen.get(key);
+    if (!current) {
+      chosen.set(key, motion);
+      continue;
+    }
+    const motionPriority = priority[motion.kind] ?? 0;
+    const currentPriority = priority[current.kind] ?? 0;
+    if (motionPriority > currentPriority) chosen.set(key, motion);
+    else if (motionPriority === currentPriority) {
+      const outcomeRank = { CARRIED: 3, DEFERRED: 2, FAILED: 1 } as const;
+      if (outcomeRank[motion.outcome] > outcomeRank[current.outcome]) chosen.set(key, motion);
+    }
+  }
+  const keepIds = new Set(Array.from(chosen.values()).map((motion) => motion.id));
+  meeting.motions = meeting.motions.filter((motion) => keepIds.has(motion.id));
+  return meeting;
 }
 
 /**
@@ -174,8 +208,6 @@ function normalizeInputV36(input: CommitteeInput): CommitteeInput {
   const currentPct = input.cashBufferPct ?? input.book.cashPct;
 
   const riskRegister = input.book.riskRegister
-    // Remove the legacy Holdings-only cash-floor read. A fresh authoritative
-    // Total Liquidity Buffer item is added below only when it is truly short.
     .filter((row) => !/cash below the regime floor|cash below.*floor/i.test(row.item))
     .map((row) => {
       const evidence = `${row.item} ${row.evidence}`;
@@ -190,9 +222,6 @@ function normalizeInputV36(input: CommitteeInput): CommitteeInput {
           suggestedAction: `${row.suggestedAction} V36 treats sleeve drift as a regime-aware sizing/rebalance input, not a global veto on an unrelated qualified momentum entry.`,
         };
       }
-      // Trend damage, beta concentration and exit-liquidity warnings still
-      // matter, but they are portfolio-management evidence unless they map to
-      // an explicit per-security hard block / emergency boundary.
       if (row.severity === "high" && !genuineBlocking) {
         return { ...row, severity: "medium" as const };
       }
@@ -238,13 +267,6 @@ function normalizeInputV36(input: CommitteeInput): CommitteeInput {
  * still waiting for human approval. The legacy capital plan intentionally uses
  * CARRIED motions only, which is correct for executable capital, but it made a
  * below-floor meeting look "READY" with $0 sources and $0 destinations.
- *
- * Keep approved/executable accounting untouched. When the Cash Buffer is below
- * its authoritative floor, append the pending RAISE CASH motions as clearly
- * labelled PROPOSED source lines, show their ring-fenced Cash Buffer
- * destination, and lock approval until enough repair capital is actually
- * carried. This tells the fund owner exactly what would be sold and how much
- * without turning a proposal into an automatic broker instruction.
  */
 function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, input: CommitteeInput): T {
   const targetPct = input.targetCashPct ?? input.regime?.cashMinPct ?? null;
@@ -262,8 +284,6 @@ function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, in
   const carriedUsd = round2(carriedMotions.reduce((sum: number, motion: Motion) => sum + Math.abs(motion.sizeUsd), 0));
   const remainingUsd = round2(Math.max(0, shortfallUsd - carriedUsd));
 
-  // If approved repairs already cover the floor, the legacy capital plan is
-  // complete and remains the source of truth without any projection overlay.
   if (remainingUsd <= 0.01) return meeting;
 
   let pendingNeeded = remainingUsd;
@@ -319,7 +339,7 @@ function exposePendingCashFloorRepair<T extends CommitteeMeeting>(meeting: T, in
 
 export function runCommitteeMeeting(input: CommitteeInput) {
   const normalized = addDeployableExcessReinvestmentV36(normalizeInputV36(input));
-  const meeting = runLegacyCommitteeMeeting(normalized);
+  const meeting = canonicalizeMotionsV36(runLegacyCommitteeMeeting(normalized));
   const governed = applyDecisionAuthorityV36(meeting, normalized);
   return exposePendingCashFloorRepair(governed, normalized);
 }
