@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Run real INV meeting scan on Railway
+      - name: Run real INV meeting and Stage 06 smoke test on Railway
         env:
           URL: https://claude-trading-skills-production.up.railway.app/api/committee/meeting
         shell: bash
@@ -25,52 +25,98 @@ jobs:
           python - <<'PY'
           import json, sys
           from pathlib import Path
+
           data=json.loads(Path('/tmp/meeting.json').read_text())
           scan=data.get('scan') or {}
           research=scan.get('researchOS') or {}
           sentinel=data.get('sentinelV36') or {}
           proposals=data.get('proposals') or []
-          print('SCAN_OBJECT=', json.dumps(scan, ensure_ascii=False, indent=2)[:16000])
+          motions=data.get('motions') or []
+          capital=data.get('capitalPlan') or {}
+          blotter=data.get('blotter') or []
+
+          print('MEETING_ID=', data.get('meetingId'))
+          print('SCAN_STATUS=', scan.get('status'))
+          print('RESEARCH_FAST_SCAN=', json.dumps(research.get('fastScan') or {}, ensure_ascii=False))
           print('SENTINEL_CANDIDATES=', [(x.get('ticker'), x.get('action'), x.get('score')) for x in (sentinel.get('candidates') or [])])
-          print('PROPOSALS=', [(x.get('ticker'), x.get('expectedReturnPct'), x.get('researchStatus'), x.get('lifecycleStage')) for x in proposals])
+          print('PROPOSALS=', [(x.get('ticker'), x.get('expectedReturnPct')) for x in proposals])
 
-          # Normalize the fields used by the UI across V32.x payload revisions.
-          def first_num(obj, names):
-              for n in names:
-                  v=obj.get(n) if isinstance(obj,dict) else None
-                  if isinstance(v,(int,float)): return float(v)
-              return None
-          universe=first_num(research,['masterUniverse','universe','universeSize','approvedUniverse','requested'])
-          screened=first_num(research,['screened','fastScreened','stageAScreened','scanned'])
-          coverage=first_num(research,['coveragePct','screenCoveragePct','stageACoveragePct','fastScreenCoveragePct'])
-          deep=first_num(research,['deepResearch','deepResearched','deepResearchCount','stageBDeepResearch'])
-          candidates=first_num(research,['candidates','candidateCount','qualifiedCandidates'])
-          print('NORMALIZED_RESEARCH', {'universe':universe,'screened':screened,'coverage':coverage,'deepResearch':deep,'candidates':candidates})
+          def all_pass(m):
+              gates=m.get('decisionGates') or []
+              return len(gates) >= 4 and all(g.get('status') == 'PASS' for g in gates)
 
-          # If summary fields move, recursively find Stage A/B numeric evidence.
-          numeric=[]
-          def walk(x,path='scan'):
-              if isinstance(x,dict):
-                  for k,v in x.items():
-                      p=f'{path}.{k}'
-                      if isinstance(v,(int,float)) and any(t in k.lower() for t in ['screen','coverage','universe','research','candidate','scanned','requested']): numeric.append((p,float(v)))
-                      walk(v,p)
-              elif isinstance(x,list):
-                  for i,v in enumerate(x): walk(v,f'{path}[{i}]')
-          walk(scan)
-          print('SCAN_NUMERIC_EVIDENCE=', numeric)
+          new_buys=[]
+          for m in motions:
+              if m.get('kind') == 'NEW BUY':
+                  row={
+                    'ticker':m.get('ticker'),
+                    'outcome':m.get('outcome'),
+                    'sizeUsd':m.get('sizeUsd'),
+                    'approxShares':m.get('approxShares'),
+                    'allPass':all_pass(m),
+                    'gates':[(g.get('stage'),g.get('status')) for g in (m.get('decisionGates') or [])],
+                    'reason':m.get('outcomeReason'),
+                  }
+                  new_buys.append(row)
+          print('NEW_BUY_MOTIONS=', json.dumps(new_buys, ensure_ascii=False))
 
-          positive_pipeline=len(sentinel.get('candidates') or [])>0 and len(proposals)>0
-          full_scan=any(('screen' in p.lower() or 'scanned' in p.lower()) and v>0 for p,v in numeric)
-          good_coverage=any('coverage' in p.lower() and v>=80 for p,v in numeric)
-          if not positive_pipeline:
-              print('FAIL: INV produced no candidates/proposals')
+          temporary=float(capital.get('temporaryParkingUsd') or 0)
+          deployable=float(capital.get('deployableSourcesUsd') or 0)
+          print('CAPITAL=', {
+            'deployableSourcesUsd':deployable,
+            'usesUsd':capital.get('usesUsd'),
+            'temporaryParkingUsd':temporary,
+            'funded':capital.get('funded'),
+            'allocationComplete':capital.get('allocationComplete'),
+            'approvalReady':capital.get('approvalReady'),
+          })
+          print('DESTINATIONS=', [(x.get('category'),x.get('label'),x.get('amountUsd')) for x in (capital.get('destinationLines') or [])])
+          print('BLOTTER=', [(x.get('side'),x.get('ticker'),x.get('approxUsd'),x.get('approxShares')) for x in blotter])
+
+          # Mirrors CIOCommandCenterV351 carriedAction()/approvalMotions exactly.
+          approval_motions=[m for m in motions if m.get('outcome')=='CARRIED' and m.get('kind')!='HOLD' and abs(float(m.get('sizeUsd') or 0))>0]
+          print('STAGE06_APPROVAL_MOTIONS=', [(m.get('kind'),m.get('ticker'),m.get('sizeUsd'),m.get('approxShares')) for m in approval_motions])
+
+          # INV full-universe proof remains mandatory.
+          fast=research.get('fastScan') or {}
+          screened=float(fast.get('scanned') or research.get('screenedUniverseSize') or scan.get('screenedUniverseSize') or 0)
+          coverage=float(fast.get('coveragePct') or research.get('screenCoveragePct') or scan.get('screenCoveragePct') or 0)
+          if screened <= 0 or coverage < 80:
+              print(f'FAIL: INV Stage A unhealthy: screened={screened}, coverage={coverage}')
               sys.exit(2)
-          if not full_scan:
-              print('FAIL: no non-zero Stage A scan count in meeting diagnostics')
+          if not proposals:
+              print('FAIL: this production meeting produced no INV proposals, so Stage 06 NEW BUY handoff cannot be exercised')
               sys.exit(3)
-          if not good_coverage:
-              print('FAIL: no >=80% Stage A coverage evidence in meeting diagnostics')
+
+          # V36.4 invariant: never park usable dollars while a NEW BUY is deferred
+          # solely for funding after every authority gate already passed.
+          funding_only_deferred=[m for m in new_buys if m['allPass'] and m['outcome']=='DEFERRED' and 'fund' in str(m['reason'] or '').lower()]
+          if funding_only_deferred and temporary >= 25:
+              print('FAIL: qualified NEW BUY remains funding-deferred while deployable dollars are parked', funding_only_deferred, temporary)
               sys.exit(4)
-          print('PASS: INV full-universe Stage A -> deep research -> candidate proposal pipeline works in Railway production')
+
+          # Every carried NEW BUY must be represented consistently all the way to Stage 06.
+          carried_new=[m for m in new_buys if m['outcome']=='CARRIED' and float(m['sizeUsd'] or 0)>0]
+          destinations=capital.get('destinationLines') or []
+          for m in carried_new:
+              t=m['ticker']
+              amount=float(m['sizeUsd'] or 0)
+              if not any(d.get('category')=='NEW_INVESTMENT' and t in str(d.get('label') or '') and abs(float(d.get('amountUsd') or 0)-amount)<0.02 for d in destinations):
+                  print('FAIL: carried NEW BUY missing NEW_INVESTMENT destination', t, amount)
+                  sys.exit(5)
+              if not any(b.get('side')=='BUY' and b.get('ticker')==t and abs(float(b.get('approxUsd') or 0)-amount)<0.02 for b in blotter):
+                  print('FAIL: carried NEW BUY missing BUY blotter line', t, amount)
+                  sys.exit(6)
+              if not any(a.get('ticker')==t and a.get('kind')=='NEW BUY' for a in approval_motions):
+                  print('FAIL: carried NEW BUY missing from Stage 06 approval motions', t)
+                  sys.exit(7)
+
+          # When the current cycle has at least one all-PASS NEW BUY and deployable
+          # capital exists, Stage 06 must expose at least one actionable line.
+          qualified=[m for m in new_buys if m['allPass']]
+          if qualified and deployable >= 25 and not approval_motions:
+              print('FAIL: qualified NEW BUY + deployable capital exists but Stage 06 has zero approval lines')
+              sys.exit(8)
+
+          print('PASS: Production INV scan and Stage 06 Human Plan Approval funding handoff are coherent')
           PY
