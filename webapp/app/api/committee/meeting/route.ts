@@ -13,6 +13,7 @@ import { pctReturn } from "@/lib/indicators";
 import { sma } from "@/lib/indicators";
 import { scoreMomentumV3 } from "@/lib/team/scoring";
 import { computePortfolioTechnicalOverlay } from "@/lib/portfolioTechnicalOverlay";
+import { buildSentinelMarketScoreV36, scoreNewIdeaV36, type MarketScoreV36, type OwnershipInputV36 } from "@/lib/team/sentinelInvestmentV36";
 import { governThomasSnapshot, loadThomasValuationLedger, resolveThomasValuation, saveThomasValuationLedger, type ThomasValuationSnapshot } from "@/lib/thomasValuation";
 import { assessPositionZone } from "@/lib/team/risk";
 import { classifySleeve } from "@/lib/team/portfolio";
@@ -157,7 +158,8 @@ function portfolioRevision(holdings: { ticker: string; shares: number; avg_cost:
   return (hash >>> 0).toString(36).toUpperCase();
 }
 
-function technicalEvidence(candles: Candle[], benchmark: Candle[]) {
+/** Existing holdings keep the governed V34 portfolio overlay. */
+function holdingTechnicalEvidence(candles: Candle[], benchmark: Candle[]) {
   if (candles.length < 60 || benchmark.length < 60) return null;
   const beta = computeBeta(candles, benchmark);
   const score = scoreMomentumV3({ candles, benchmark, beta });
@@ -173,6 +175,17 @@ function technicalEvidence(candles: Candle[], benchmark: Candle[]) {
     hardBlocks: score.hardBlocks.map((block: any) => block.reason ?? String(block)),
     dataQualityPct: Math.round(score.dataQualityScore),
   };
+}
+
+/** New ideas never inherit the Holdings ADD/trim overlay. They use V36. */
+function newIdeaTechnicalEvidence(
+  candles: Candle[],
+  benchmark: Candle[],
+  market: MarketScoreV36,
+  ownership: OwnershipInputV36,
+) {
+  if (candles.length < 60 || benchmark.length < 60) return null;
+  return scoreNewIdeaV36({ candles, benchmark, market, ownership });
 }
 
 function yieldFromEvents(events: { date: string; amount: number }[], price: number | null): number | null {
@@ -244,8 +257,6 @@ export async function GET(req: NextRequest) {
     if (!benchmark.length) unavailable.push("SPY benchmark history (Yahoo chart endpoint)");
 
     // ── one authoritative portfolio + deployment snapshot ──
-    // Holdings, Active Fund and CIO all delegate to this builder. It verifies
-    // positions after pricing, reads cash last and owns the CIO Deployment Regime.
     let buffer: any = null;
     try {
       buffer = await buildAuthoritativeCashBufferSnapshot();
@@ -301,8 +312,6 @@ export async function GET(req: NextRequest) {
     const targetCashValue = nav > 0 && targetCashPct != null ? nav * targetCashPct / 100 : null;
     const deployableCash = Math.max(0, finite(buffer?.deployableCash) ?? (targetCashValue == null ? 0 : combinedBuffer - targetCashValue));
 
-    // Fear/greed and news remain contextual evidence. They never override the
-    // authoritative Deployment Regime, Cash Floor or sizing budget.
     const [sentiment, newsPulse] = await Promise.all([
       readFearGreed({ spy: benchmark, vix: await dailyCandles("^VIX", 90).catch(() => [] as Candle[]) }).catch((e: any) => {
         unavailable.push(`sentiment index (${e?.message ?? "unavailable"})`);
@@ -313,6 +322,7 @@ export async function GET(req: NextRequest) {
         return null;
       }),
     ]);
+    const marketV36 = buildSentinelMarketScoreV36({ regime, sentiment });
 
     const valuationSnapshots: ThomasValuationSnapshot[] = [];
     const positions: PositionEvidence[] = await mapLimit(gathered, 3, async (g) => {
@@ -323,21 +333,11 @@ export async function GET(req: NextRequest) {
       const closes = g.candles.map((c) => c.close).filter((c) => Number.isFinite(c) && c > 0);
       const beta = benchmark.length && g.candles.length ? computeBeta(g.candles, benchmark) : null;
 
-      // Maya's model needs both series; without them the seat abstains rather
-      // than scoring a name off a partial history. The final admission score is
-      // capped below ADD whenever the exact Holdings execution overlay is not ADD,
-      // so the raw CIO motion can never contradict the execution layer.
       const momentum =
         g.candles.length >= 60 && benchmark.length >= 60
-          ? (() => {
-              return technicalEvidence(g.candles, benchmark)!;
-            })()
+          ? holdingTechnicalEvidence(g.candles, benchmark)
           : null;
 
-      // Thomas now receives the evidence his valuation engine actually supports:
-      // SEC annual/TTM EPS for operating companies plus distribution history for
-      // income ETFs/REITs. Trend remains the third independent anchor. If none
-      // of those is credible the read stays null rather than inventing fair value.
       const cachedValuationGate = governThomasSnapshot(g.cachedValuation, price);
       const refreshedFundamentals = price != null && g.cachedValuation && !cachedValuationGate.valid && !isReserve
         ? await secInputsWithinBudget(g.ticker).catch(() => null)
@@ -434,8 +434,6 @@ export async function GET(req: NextRequest) {
         .filter((row) => String(row?.action ?? "").toUpperCase() === "COMMITTEE")
         .map((row) => {
           const payload = row?.payload ?? {};
-          // The price the paper was written at, kept apart from today's price
-          // so the meeting can see how far the thesis has drifted from it.
           const referencePrice = finite(payload?.price) ?? finite(payload?.currentPrice);
           const target = finite(payload?.target) ?? finite(payload?.targetPrice);
           const submittedAt = row?.created_at ? String(row.created_at) : null;
@@ -459,32 +457,34 @@ export async function GET(req: NextRequest) {
           } as IdeaEvidence;
         })
         .filter((idea) => /^[A-Z.\-]{1,10}$/.test(idea.ticker));
-      // One motion per name: the most recent referral wins.
       const seen = new Set<string>();
       ideas = ideas.filter((idea) => (seen.has(idea.ticker) ? false : (seen.add(idea.ticker), true))).slice(0, 12);
 
-      // A referral says which name; the fund still has to know which sleeve the
-      // money lands in, or the PM cannot object to a buy that widens the drift.
       ideas = await mapLimit(ideas, 4, async (idea) => {
         const [quote, candles, yieldPct] = await Promise.all([
           getLightQuote(idea.ticker).catch(() => null),
           dailyCandles(idea.ticker, 320).catch(() => [] as Candle[]),
           forwardYield(idea.ticker, idea.price),
         ]);
-        // Today's price is what the fund would actually pay; the referral's is
-        // only the number the thesis was written against.
         const price = finite(quote?.price) ?? finite(candles.at(-1)?.close) ?? idea.referencePrice;
         const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
+        const upsidePct = price != null && idea.target != null && price > 0 ? Math.round((idea.target / price - 1) * 1000) / 10 : null;
+        const technical = newIdeaTechnicalEvidence(candles, benchmark, marketV36, {
+          researchConviction: idea.conviction,
+          upsidePct,
+          evidencePct: idea.dataQuality ? 85 : 70,
+        });
         return {
           ...idea,
+          conviction: technical?.sizingConviction ?? idea.conviction,
           price,
-          upsidePct: price != null && idea.target != null && price > 0 ? Math.round((idea.target / price - 1) * 1000) / 10 : null,
+          upsidePct,
           priceDriftPct:
             price != null && idea.referencePrice != null && idea.referencePrice > 0
               ? Math.round((price / idea.referencePrice - 1) * 1000) / 10
               : null,
           sleeve: yieldPct != null || beta != null ? classifySleeve(idea.ticker, yieldPct, beta) : null,
-          technical: technicalEvidence(candles, benchmark),
+          technical,
           recentTrade: tradeContext.get(idea.ticker) ?? null,
         };
       });
@@ -493,12 +493,6 @@ export async function GET(req: NextRequest) {
     }
 
     // ── the research desk sources its own names ──
-    //
-    // A committee that only debates what a person happened to refer will, on
-    // most days, debate nothing. The desk runs its scan before every meeting
-    // and tables what survives the four hard filters, so the agenda always has
-    // new work on it. A human referral still wins on a name both produce: the
-    // person did the deeper research.
     let proposals: DeskProposal[] = [];
     let scanRegime: any = null;
     let scanUniverseSize = 0;
@@ -527,14 +521,9 @@ export async function GET(req: NextRequest) {
     try {
       const held = new Set(gathered.map((g) => g.ticker.toUpperCase()));
       const referred = new Set(ideas.map((i) => i.ticker));
-      // The route has a 60-second ceiling and the scan is the last thing to
-      // run. Give it a deadline of its own so a slow price host costs the
-      // meeting its proposals and not the whole meeting.
       const scan = await Promise.race([
         runDeskScan({
           topN: 4,
-          // A narrower sweep with fewer catalyst calls than the standalone
-          // scanner, so the whole meeting still assembles inside the limit.
           universeLimit: 24,
           catalystLimit: 10,
           exclude: held,
@@ -590,10 +579,15 @@ export async function GET(req: NextRequest) {
           forwardYield(s.ticker, s.price),
         ]);
         const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
+        const technical = newIdeaTechnicalEvidence(candles, benchmark, marketV36, {
+          researchConviction: s.momentumScore,
+          upsidePct: s.expectedReturnPct,
+          evidencePct: s.coveragePct,
+        });
         return {
           ticker: s.ticker,
           rating: "BUY",
-          conviction: s.momentumScore,
+          conviction: technical?.sizingConviction ?? s.momentumScore,
           source: `Research desk swing scan — ${s.setupType}`,
           price: s.price,
           target: s.target,
@@ -602,13 +596,11 @@ export async function GET(req: NextRequest) {
           note: s.notes.thesis.slice(0, 240),
           alreadyHeld: false,
           sleeve: yieldPct != null || beta != null ? classifySleeve(s.ticker, yieldPct, beta) : null,
-          // The desk scanned it moments ago, so there is no shelf life to run
-          // down and no drift away from the price the thesis was written at.
           ageDays: 0,
           referencePrice: s.price,
           priceDriftPct: 0,
           dataQuality: `${s.coveragePct}% of the alpha score measured`,
-          technical: technicalEvidence(candles, benchmark),
+          technical,
           recentTrade: tradeContext.get(s.ticker) ?? null,
         };
       });
@@ -665,10 +657,16 @@ export async function GET(req: NextRequest) {
           forwardYield(proposal.ticker, proposal.price),
         ]);
         const beta = benchmark.length && candles.length ? computeBeta(candles, benchmark) : null;
+        const engineCoverage = Math.min(100, Math.max(50, Math.round((proposal.discoveryEngines.length / 8) * 100)));
+        const technical = newIdeaTechnicalEvidence(candles, benchmark, marketV36, {
+          researchConviction: proposal.score,
+          upsidePct: proposal.expectedReturnPct,
+          evidencePct: engineCoverage,
+        });
         return {
           ticker: proposal.ticker,
           rating: "BUY",
-          conviction: proposal.score,
+          conviction: technical?.sizingConviction ?? proposal.score,
           source: proposal.setupType,
           price: proposal.price,
           target: proposal.target,
@@ -681,7 +679,7 @@ export async function GET(req: NextRequest) {
           referencePrice: proposal.price,
           priceDriftPct: 0,
           dataQuality: `${proposal.discoveryEngines.length}/8 discovery engines qualified; lifecycle ${proposal.lifecycleStage}`,
-          technical: technicalEvidence(candles, benchmark),
+          technical,
           recentTrade: tradeContext.get(proposal.ticker) ?? null,
         };
       });
@@ -691,6 +689,23 @@ export async function GET(req: NextRequest) {
     } catch (e: any) {
       unavailable.push(`Active Momentum Research V32.1 (${e?.message ?? "unavailable"})`);
     }
+
+    const sentinelCandidates = ideas.map((idea) => {
+      const technical: any = idea.technical ?? null;
+      return {
+        ticker: idea.ticker,
+        action: technical?.action ?? technical?.signal ?? null,
+        convictionScore: finite(technical?.convictionScore ?? technical?.total),
+        momentumScore: finite(technical?.momentumScore),
+        marketScore: finite(technical?.marketScore) ?? marketV36.score,
+        ownershipScore: finite(technical?.ownershipScore),
+        entryScore: finite(technical?.entryScore),
+        momentumState: technical?.momentumState ?? null,
+        hardBlocks: Array.isArray(technical?.hardBlocks) ? technical.hardBlocks : [],
+        softBlocks: Array.isArray(technical?.softBlocks) ? technical.softBlocks : [],
+        note: technical?.note ?? null,
+      };
+    });
 
     // ── Priya's record: the fund's own closed decisions ──
     let track: { completed: number; winRatePct: number | null; averageReturnPct: number | null } | null = null;
@@ -733,9 +748,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         ...meeting,
-        // Context evidence remains beside the authoritative deployment regime.
         sentiment,
         newsPulse,
+        sentinelV36: {
+          version: "36.0",
+          market: marketV36,
+          candidates: sentinelCandidates,
+          methodology: "Sentinel Conviction = 25% Market Context + 45% Momentum Acceleration/Quality + 20% Ownership + 10% Entry. New ideas use V36; existing holdings keep the governed Holdings V34 overlay.",
+        },
         proposals,
         scan: {
           status: scanStatus,
@@ -758,13 +778,11 @@ export async function GET(req: NextRequest) {
               ? `No name cleared the combined Investment process after Stage A fast-screened ${coverageSummary} of the approved universe and Stage B deep-researched ${deepResearchSize} ranked finalists. Rejection reasons are retained rather than forcing a weak idea.`
               : `Research coverage is incomplete: Stage A fast-screened only ${coverageSummary} of the approved universe, below the ${minimumScreenCoveragePct}% minimum. Stage B deep-researched ${deepResearchSize} finalists, but Sentinel blocks a NO_BUY conclusion until broad-screen coverage is sufficient.`,
         },
-        // The five stages of the fund's meeting, and whether each has its
-        // evidence. A stage without evidence is named, not quietly skipped.
         stages: [
-          { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.label ?? regime.regime} ${regime.score}/100 · Macro ${regime.macroScore ?? "—"} · Tape ${regime.tapeScore ?? "—"} · Vol/Risk ${regime.volatilityScore ?? "—"}; risk budget ${regime.riskBudgetPct ?? "—"}% and Cash Floor ${regime.cashMinPct}% are authoritative.` : "Investment Team cannot present without the authoritative CIO Deployment Regime." },
-          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0 || fullUniverseScreenReady, detail: ideas.length ? `${ideas.length} name(s) presented. Independent discovery engines source ideas; the Active Momentum lifecycle and Fair Value gates determine whether capital may be allocated. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : fullUniverseScreenReady ? `Full-universe Stage A coverage reached ${screenCoveragePct.toFixed(1)}%; ${deepResearchSize} finalists received Stage B deep research and no name cleared every gate. Sofia may present NO NEW BUY without forcing a candidate.` : `Research remains DATA BLOCKED because Stage A covered only ${screenCoveragePct.toFixed(1)}%, below the ${minimumScreenCoveragePct}% minimum. NO_BUY is not an authorized conclusion.` },
-          { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sizing, funding, cash and before/after portfolio impact are owned here.` },
-          { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `CRO risk gate followed by CIO final resolution. Specialist desk opinions are evidence, not votes. ${meeting.quorum.note}` },
+          { n: 1, name: "Investment Team analysis", owner: "Sofia Reyes", ready: regime != null, detail: regime ? `${regime.label ?? regime.regime} ${regime.score}/100 · Macro ${regime.macroScore ?? "—"} · Tape ${regime.tapeScore ?? "—"} · Vol/Risk ${regime.volatilityScore ?? "—"}; V36 Market ${marketV36.score}/100 · risk budget ${regime.riskBudgetPct ?? "—"}% and Cash Floor ${regime.cashMinPct}% are authoritative.` : "Investment Team cannot present without the authoritative CIO Deployment Regime." },
+          { n: 2, name: "Investment proposal", owner: "Sofia Reyes · Head of Investment", ready: ideas.length > 0 || fullUniverseScreenReady, detail: ideas.length ? `${ideas.length} name(s) presented. New ideas are admitted by Sentinel Investment V36: market permission → momentum acceleration → ownership → entry → true-risk gate. ${proposals.length} qualified proposal(s) are shown in the opportunity list.` : fullUniverseScreenReady ? `Full-universe Stage A coverage reached ${screenCoveragePct.toFixed(1)}%; ${deepResearchSize} finalists received Stage B deep research and no name cleared every gate. Sofia may present NO NEW BUY without forcing a candidate.` : `Research remains DATA BLOCKED because Stage A covered only ${screenCoveragePct.toFixed(1)}%, below the ${minimumScreenCoveragePct}% minimum. NO_BUY is not an authorized conclusion.` },
+          { n: 3, name: "Asset Management plan", owner: "Lena Müller · Head of Asset Management", ready: positions.length > 0, detail: `${positions.length} position(s) reviewed; ${positions.filter((p) => p.price != null).length} priced. Sleeve targets are regime-aware and drift changes sizing/rebalance priority rather than globally vetoing unrelated qualifying momentum entries.` },
+          { n: 4, name: "Executive authority gates", owner: "Miriam Osei → James Hartwell", ready: meeting.quorum.met, detail: `V36 separates soft timing notes from true hard blocks. CRO risk gate followed by CIO final resolution. ${meeting.quorum.note}` },
           { n: 5, name: "Broker reconciliation and minutes", owner: "Fund owner", ready: false, detail: "Record actual broker activity in Holdings first. The checklist then matches ticker, side and approximate size; the owner confirms or rejects each line without creating a duplicate trade." },
         ],
         fund: FUND,
