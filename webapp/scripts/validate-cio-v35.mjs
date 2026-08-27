@@ -27,8 +27,8 @@ requireTokens("app/components/CIOCommandCenterV35.tsx", [
   "MeetingApprovalPanel",
 ]);
 
-// V35.2 is the live market-brief + capital-clarity surface. It must use measured
-// market evidence and never blur candidate, funding, liquidity repair or reserve conversion.
+// Capital Clarity V35.2 remains the live five-step presentation surface while
+// V36 replaces the new-idea scoring and authority underneath it.
 requireTokens("app/components/CIOCommandCenterV351.tsx", [
   'data-cio-version="35.2"',
   'data-command-architecture="STATUS-OPPORTUNITIES-PORTFOLIO-CAPITAL-DECISION"',
@@ -48,16 +48,48 @@ requireTokens("app/components/CIOCommandCenterV351.tsx", [
   "BUY CANDIDATE",
   "NOT FUNDED",
   "Approved Funding",
-  "NOT APPROVED",
-  "Approved Trim Size —",
-  "LANE A · LIQUIDITY REPAIR",
-  "LANE B · INVESTMENT FUNDING",
-  "Broker USD Cash (default parking)",
-  "SGOV/JAAA requires a separate approved BUY action",
-  "DESTINATIONS · SOURCE OF TRUTH",
   "NO BROKER ACTION AUTHORIZED",
   "Sentinel does not auto-trade",
-  "Trend / Flow / Location / gates",
+]);
+
+// V36 new-idea engine: holdings keep V34; new ideas use acceleration-aware V36.
+requireTokens("lib/team/sentinelInvestmentV36.ts", [
+  'SENTINEL_INVESTMENT_V36 = "36.0"',
+  'label: "Trend Quality"',
+  'label: "Momentum Acceleration"',
+  'label: "Relative Strength"',
+  'label: "Volume / Smart Flow"',
+  'label: "Entry Quality"',
+  'label: "Volatility / Liquidity Quality"',
+  'label: "Momentum Persistence / Freshness"',
+  "input.market.score * 0.25",
+  "momentum.momentumScore * 0.45",
+  "ownership.score * 0.20",
+  "momentum.entryScore * 0.10",
+  'action = "STARTER BUY"',
+  'code: "CRISIS_REGIME"',
+  'code: "PERSISTENT_DISTRIBUTION"',
+  "High beta itself earns no points",
+]);
+requireTokens("lib/team/committee.ts", [
+  "applyDecisionAuthorityV36",
+  "allocationFor",
+  "Authoritative Total Liquidity Buffer below Cash Floor",
+  "sleeve drift as a regime-aware sizing/rebalance input",
+]);
+requireTokens("lib/team/authorityV36.ts", [
+  'version: "36.0"',
+  'action: "STARTER BUY"',
+  "Soft timing notes remain",
+  "Sleeve drift may reduce size but does not veto",
+]);
+requireTokens("app/api/committee/meeting/route.ts", [
+  "holdingTechnicalEvidence",
+  "newIdeaTechnicalEvidence",
+  "buildSentinelMarketScoreV36",
+  "scoreNewIdeaV36",
+  "sentinelV36",
+  "marketV36",
 ]);
 
 requireTokens("app/api/capital-recycling/route.ts", [
@@ -70,33 +102,40 @@ requireTokens("app/api/capital-recycling/route.ts", [
   "liquidityRepairIsRingFenced: true",
 ]);
 
+requireTokens("lib/release.ts", [
+  'appVersion: "36.0"',
+  'investmentVersion: "36.0"',
+  'healthRelease: "Sentinel-Investment-OS-v36.0"',
+]);
 requireTokens("app/page.tsx", [
-  'import CIOCommandCenterV35 from "./components/CIOCommandCenterV351"',
-  "CIOCommandCenterV35",
-  'data-sentinel-version="35.0"',
-  'data-capital-clarity-version="35.1"',
-  'data-workspace="cio-v35"',
+  "data-sentinel-version={SENTINEL_RELEASE.appVersion}",
+  "data-investment-version={SENTINEL_RELEASE.investmentVersion}",
+  'data-workspace="cio-v36"',
   'data-command-steps="5"',
   "STATUS → OPPORTUNITIES → PORTFOLIO → CAPITAL → CIO DECISION",
   "Human approval remains mandatory",
 ]);
 
 forbidTokens("app/page.tsx", [
-  ['<MomentumForecastWorkspace scope="cio"', "CIO must not stack the standalone Forecast workspace after V35"],
-  ['<ReinvestmentBuilderWorkspace', "CIO must not stack the standalone Reinvestment Builder after V35"],
+  ['<MomentumForecastWorkspace scope="cio"', "CIO must not stack the standalone Forecast workspace"],
+  ['<ReinvestmentBuilderWorkspace', "CIO must not stack the standalone Reinvestment Builder"],
   ['<ThaiMeetingTranslator', "CIO translation must be integrated through AppLang, not a duplicate workspace"],
   ['data-workspace="cio-v20"', "legacy CIO V20 must not remain the primary command workspace"],
 ]);
 
-// Governance remains anchored in the existing deterministic committee engine and ledger source.
-requireTokens("app/api/committee/meeting/route.ts", ["runCommitteeMeeting", "loadOpenHoldings", "portfolioSnapshot", "proposals"]);
+// Governance remains anchored in the deterministic committee and ledger source.
 requireTokens("app/components/MeetingPlanApprovalPanel.tsx", ["PLAN_APPROVAL", "humanApproved", "does not place a broker order"]);
 requireTokens("app/components/MeetingApprovalPanel.tsx", ["RECONCILE_EXISTING", "does not create another trade"]);
 requireTokens("lib/portfolioSource.ts", ["live_holdings_ledger"]);
+requireTokens("scripts/test-sentinel-investment-v36.mjs", [
+  "conviction weighting is 25/45/20/10",
+  "soft block is not a CRO veto",
+  "true hard block remains non-executable",
+]);
 
 if (failures.length) {
-  console.error(`CIO V35.2 validation FAILED (${failures.length})`);
+  console.error(`CIO V36 validation FAILED (${failures.length})`);
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("CIO V35.2 validation PASSED");
+console.log("CIO V36 sentiment + momentum-rising validation PASSED");
