@@ -5,7 +5,7 @@ import type { AppLang } from "../page";
 import CIOCommandCenterV351 from "./CIOCommandCenterV351";
 
 type Position = { shares: number; avgCost: number };
-type ForecastRead = {
+type HorizonRead = {
   expectedReturnPct?: number | null;
   expectedAlphaPct?: number | null;
   probabilityPositivePct?: number | null;
@@ -13,7 +13,14 @@ type ForecastRead = {
   probabilityLoss5Pct?: number | null;
   rangeP10Pct?: number | null;
   rangeP90Pct?: number | null;
+};
+type ForecastRead = HorizonRead & {
   engineVersion?: string | null;
+  modelAgreementPct?: number | null;
+  confidence?: number | null;
+  confidenceBand?: string | null;
+  benchmark?: string | null;
+  horizons?: Record<string, HorizonRead> | null;
 };
 
 type Props = { lang: AppLang; onNavigate: (id: string) => void };
@@ -60,9 +67,28 @@ function styleAnnotation(node: HTMLElement, positive: boolean | null) {
   node.style.marginTop = "6px";
   node.style.fontSize = "11px";
   node.style.fontWeight = "700";
-  node.style.letterSpacing = ".02em";
-  node.style.lineHeight = "1.35";
+  node.style.letterSpacing = ".01em";
+  node.style.lineHeight = "1.45";
   node.style.color = positive == null ? "#8fa4c8" : positive ? "#55d9ad" : "#ff7088";
+}
+
+function styleForecastDetails(details: HTMLDetailsElement) {
+  details.style.marginTop = "8px";
+  details.style.paddingTop = "7px";
+  details.style.borderTop = "1px solid rgba(143,164,200,.16)";
+  details.style.color = "#8fa4c8";
+  details.style.fontSize = "10px";
+  details.style.lineHeight = "1.5";
+}
+
+function actionTone(forecast: ForecastRead) {
+  const expected = Number(forecast.expectedReturnPct ?? NaN);
+  const pUp = Number(forecast.probabilityPositivePct ?? NaN);
+  const pDown = Number(forecast.probabilityLoss5Pct ?? NaN);
+  if (!Number.isFinite(expected) || !Number.isFinite(pUp)) return "WATCH";
+  if (expected >= 5 && pUp >= 60 && (!Number.isFinite(pDown) || pDown <= 25)) return "ATTRACTIVE";
+  if (expected < 0 || pUp < 45 || (Number.isFinite(pDown) && pDown >= 35)) return "DEFENSIVE";
+  return "WATCH";
 }
 
 export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
@@ -71,6 +97,7 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
   const forecastsRef = useRef<Map<string, ForecastRead>>(new Map());
   const marketKeyRef = useRef("");
   const timerRef = useRef<number | null>(null);
+  const th = String(lang).toLowerCase().startsWith("th");
 
   const decorate = useCallback(() => {
     const root = rootRef.current;
@@ -93,7 +120,7 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
         metric.appendChild(note);
       }
       if (!position || price == null || position.avgCost <= 0) {
-        const next = "PnL — · cost basis unavailable";
+        const next = th ? "NEW POSITION · ยังไม่มี PnL" : "NEW POSITION · PnL unavailable";
         if (note.textContent !== next) note.textContent = next;
         styleAnnotation(note, null);
         continue;
@@ -114,18 +141,48 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
       const forecast = ticker ? forecastsRef.current.get(ticker) : null;
       if (!forecast) continue;
       if (label.textContent !== "FORECAST · 20D") label.textContent = "FORECAST · 20D";
+
       let note = metric.querySelector<HTMLElement>("[data-forecast-meta-v37]");
       if (!note) {
         note = document.createElement("small");
         note.dataset.forecastMetaV37 = "true";
         metric.appendChild(note);
       }
-      const next = `P+ ${probability(forecast.probabilityPositivePct)} · α ${pct(forecast.expectedAlphaPct)} · P(+5) ${probability(forecast.probabilityGain5Pct)} · P(-5) ${probability(forecast.probabilityLoss5Pct)}`;
+      const tone = actionTone(forecast);
+      const next = th
+        ? `โอกาสขึ้น ${probability(forecast.probabilityPositivePct)} · เสี่ยงลง >5% ${probability(forecast.probabilityLoss5Pct)}`
+        : `Up chance ${probability(forecast.probabilityPositivePct)} · Downside >5% ${probability(forecast.probabilityLoss5Pct)}`;
       if (note.textContent !== next) note.textContent = next;
-      styleAnnotation(note, Number(forecast.expectedReturnPct ?? 0) >= 0);
-      note.title = `Forecast V${forecast.engineVersion ?? "37.0"} · P10 ${pct(forecast.rangeP10Pct)} · P90 ${pct(forecast.rangeP90Pct)}`;
+      styleAnnotation(note, tone === "ATTRACTIVE" ? true : tone === "DEFENSIVE" ? false : null);
+
+      let details = metric.querySelector<HTMLDetailsElement>("[data-forecast-detail-v37]");
+      if (!details) {
+        details = document.createElement("details");
+        details.dataset.forecastDetailV37 = "true";
+        const summary = document.createElement("summary");
+        summary.textContent = th ? "รายละเอียด Forecast" : "Forecast details";
+        summary.style.cursor = "pointer";
+        summary.style.fontWeight = "700";
+        summary.style.color = "#8fa4c8";
+        details.appendChild(summary);
+        const body = document.createElement("div");
+        body.dataset.forecastDetailBodyV37 = "true";
+        body.style.marginTop = "6px";
+        details.appendChild(body);
+        metric.appendChild(details);
+      }
+      styleForecastDetails(details);
+      const body = details.querySelector<HTMLElement>("[data-forecast-detail-body-v37]");
+      const h5 = forecast.horizons?.["5D"];
+      const h60 = forecast.horizons?.["60D"];
+      if (body) {
+        body.textContent = th
+          ? `เหนือ ${forecast.benchmark ?? "SPY"} ${pct(forecast.expectedAlphaPct)} · โอกาส +5% ${probability(forecast.probabilityGain5Pct)} · ช่วง P10–P90 ${pct(forecast.rangeP10Pct)} → ${pct(forecast.rangeP90Pct)} · 5D ${pct(h5?.expectedReturnPct)} · 60D ${pct(h60?.expectedReturnPct)} · Model agreement ${probability(forecast.modelAgreementPct)}`
+          : `Alpha vs ${forecast.benchmark ?? "SPY"} ${pct(forecast.expectedAlphaPct)} · Chance +5% ${probability(forecast.probabilityGain5Pct)} · P10–P90 ${pct(forecast.rangeP10Pct)} → ${pct(forecast.rangeP90Pct)} · 5D ${pct(h5?.expectedReturnPct)} · 60D ${pct(h60?.expectedReturnPct)} · Model agreement ${probability(forecast.modelAgreementPct)}`;
+      }
+      details.title = `Forecast V${forecast.engineVersion ?? "37.1"} · ${tone}`;
     }
-  }, []);
+  }, [th]);
 
   const refreshPortfolio = useCallback(async () => {
     try {
@@ -180,5 +237,5 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
     };
   }, [refreshPortfolio, scheduleDecorate]);
 
-  return <div ref={rootRef} data-cio-wrapper="v37-pnl-probabilistic-alpha"><CIOCommandCenterV351 lang={lang} onNavigate={onNavigate} /></div>;
+  return <div ref={rootRef} data-cio-wrapper="v37.1-decision-first"><CIOCommandCenterV351 lang={lang} onNavigate={onNavigate} /></div>;
 }
