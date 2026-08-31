@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 const root = process.argv[2] || ".test-build-inv-v40";
-const policyPath = path.resolve(root, "rankingPolicyV40.js");
-const { buildRankingV40, totalRankingScoreV40 } = await import(pathToFileURL(policyPath).href);
+const require_ = createRequire(import.meta.url);
+const { buildRankingV40, totalRankingScoreV40 } = require_(path.resolve(root, "rankingPolicyV40.js"));
 
 const row = (overrides = {}) => ({
   ticker: "TEST",
