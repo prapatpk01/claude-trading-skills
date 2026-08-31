@@ -55,6 +55,9 @@ jobs:
       - name: INV Research V39 momentum + thesis discovery simulation
         run: npm run test:inv-v39
 
+      - name: INV Research V40 ranking-first simulation
+        run: npm run test:inv-v40
+
       - name: Research OS V23 lifecycle simulation
         run: npm run test:research-v23
 
