@@ -96,6 +96,18 @@ export async function GET(req:NextRequest){
   const result=await runFactorDiscovery(engineMode,universe,40);const asOf=new Date().toISOString();const key=scoreKey(mode);
   const candidates:Candidate[]=(result.candidates??[]).map(normalizeValuation).map((candidate:Candidate)=>applyIndependentEnginePolicy(mode as ResearchEngineMode,candidate) as Candidate);
   const factorQualified=candidates.filter((candidate:Candidate)=>candidate.passed);
+
+  // V39 separates DISCOVERY from PORTFOLIO AUTHORIZATION. A stock can be a
+  // valid momentum research lead even while valuation or a secondary factor
+  // gate is still incomplete. Those stricter gates remain mandatory before a
+  // COMMITTEE_READY status is emitted.
+  const momentumDiscovered=candidates
+   .filter((candidate:Candidate)=>isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)&&Number(candidate?.momentum??0)>=55)
+   .sort((a:Candidate,b:Candidate)=>Number(b?.momentum??0)-Number(a?.momentum??0)||Number(b?.institutional??0)-Number(a?.institutional??0));
+  const matureDiscovered=candidates
+   .filter((candidate:Candidate)=>isMatureFallbackStage(candidate?.lifecycle?.stage)&&Number(candidate?.momentum??0)>=58)
+   .sort((a:Candidate,b:Candidate)=>Number(b?.momentum??0)-Number(a?.momentum??0));
+
   const lifecycleCandidates=factorQualified.filter((candidate:Candidate)=>(isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)||isMatureFallbackStage(candidate?.lifecycle?.stage))&&Number(candidate?.momentum??0)>=62&&candidate.valuationValid);
   const primaryPre=lifecycleCandidates.filter((candidate:Candidate)=>isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)).sort((a:Candidate,b:Candidate)=>(finiteNumber(b[key])??0)-(finiteNumber(a[key])??0)).slice(0,Math.max(top*2,12));
   const maturePre=lifecycleCandidates.filter((candidate:Candidate)=>isMatureFallbackStage(candidate?.lifecycle?.stage)&&!candidate?.lifecycle?.nearFairValue&&Number(candidate.expectedReturnPct??0)>=12).sort((a:Candidate,b:Candidate)=>(finiteNumber(b[key])??0)-(finiteNumber(a[key])??0)).slice(0,Math.max(top,6));
@@ -119,9 +131,11 @@ export async function GET(req:NextRequest){
   const matureSelected=selectedRows.filter((candidate:Candidate)=>candidate.discoveryTier==="MATURE_FALLBACK").map((candidate:Candidate,index:number)=>({...candidate,allocationRank:primarySelected.length+index+1,status:"MATURE_FALLBACK_REVIEW",portfolioWeightPct:0}));
   const picks=mode==="thematic"?[...thematicAllocation(primarySelected),...matureSelected]:[...primarySelected,...matureSelected];
   const selectedTickers=new Set(picks.map((candidate:Candidate)=>candidate.ticker));const evidenceByTicker=new Map(underwritten.map((candidate:Candidate)=>[candidate.ticker,candidate]));
+  const momentumDiscoveryTickers=new Set(momentumDiscovered.map((candidate:Candidate)=>candidate.ticker));
   const rankedCandidates=candidates.map((candidate:Candidate)=>{
    if(selectedTickers.has(candidate.ticker))return{...candidate,...picks.find((pick:Candidate)=>pick.ticker===candidate.ticker)};
    const enriched=evidenceByTicker.get(candidate.ticker)??candidate;
+   if(momentumDiscoveryTickers.has(candidate.ticker)&&!candidate.passed)return{...enriched,status:"MOMENTUM_DISCOVERED",discoveryOnly:true};
    if(!candidate.passed)return{...enriched,status:"REJECTED"};
    if(isMatureFallbackStage(candidate?.lifecycle?.stage))return{...enriched,status:"MATURE_FALLBACK_WAIT"};
    if(!isPrimaryDiscoveryStage(candidate?.lifecycle?.stage))return{...enriched,status:"MOMENTUM_STAGE_REJECTED"};
@@ -130,22 +144,22 @@ export async function GET(req:NextRequest){
    return{...enriched,status:"QUALIFIED_NOT_SELECTED"};
   });
   const rejectedCandidates=rankedCandidates.filter((candidate:Candidate)=>["REJECTED","MOMENTUM_STAGE_REJECTED"].includes(candidate.status));
-  const primaryLifecycle=factorQualified.filter((candidate:Candidate)=>isPrimaryDiscoveryStage(candidate?.lifecycle?.stage)&&Number(candidate?.momentum??0)>=62);
-  const matureFallback=factorQualified.filter((candidate:Candidate)=>isMatureFallbackStage(candidate?.lifecycle?.stage));
+  const primaryLifecycle=momentumDiscovered;
+  const matureFallback=matureDiscovered;
   const valuationEligible=lifecycleCandidates;
   const stageCandidates={universe:rankedCandidates,analyzed:rankedCandidates,qualified:factorQualified,momentum:primaryLifecycle,matureFallback,valuation:valuationEligible,selected:picks,rejected:rejectedCandidates};
   const totalWeight=picks.reduce((sum:number,candidate:Candidate)=>sum+(finiteNumber(candidate.portfolioWeightPct)??0),0);
   const committeeReady=picks.filter((candidate:Candidate)=>candidate.status==="COMMITTEE_READY").length;
-  const pipeline={coverageUniverse:coverageUniverseSize,universe:universe.length,scheduled:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,primaryLifecycleEligible:primaryLifecycle.length,matureFallbackAvailable:matureFallback.length,valuationEligible:valuationEligible.length,selected:picks.length,matureFallbackSelected:lifecycleSelection.matureFallbackSelected,rejected:rejectedCandidates.length,committeeReady};
+  const pipeline={coverageUniverse:coverageUniverseSize,universe:universe.length,scheduled:universe.length,analyzed:candidates.length,factorQualified:factorQualified.length,qualified:factorQualified.length,momentumDiscovered:momentumDiscovered.length,primaryLifecycleEligible:primaryLifecycle.length,matureFallbackAvailable:matureFallback.length,valuationEligible:valuationEligible.length,selected:picks.length,matureFallbackSelected:lifecycleSelection.matureFallbackSelected,rejected:rejectedCandidates.length,committeeReady};
   const performanceContracts=picks.map((candidate:Candidate)=>createPerformanceContract(mode as ResearchEngineMode,candidate,asOf));const warnings=[...new Set([...universeWarnings,...(result.warnings??[])])];
   return NextResponse.json({
-   ...result,version:"28.2-basket-completion",asOf,mode,rankingMode:engineMode,sector,researchPass,researchPassNumber:researchPass+1,maxResearchPasses:MAX_INV_RESEARCH_PASSES,basketExpansionPass:researchPass>0,engine:engineProfile(mode as ResearchEngineMode),theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
+   ...result,version:"39.0-discovery-before-authorization",asOf,mode,rankingMode:engineMode,sector,researchPass,researchPassNumber:researchPass+1,maxResearchPasses:MAX_INV_RESEARCH_PASSES,basketExpansionPass:researchPass>0,engine:engineProfile(mode as ResearchEngineMode),theme:mode==="thematic"?{id:theme,label:themeConfig.label,benchmark:themeConfig.benchmark}:null,
    universeSource:source,approvedMasterUniverseSize,universeTickers:universe,pipeline,stageCandidates,candidates:rankedCandidates,picks,rejectedCandidates,warnings,performanceContracts,
    lifecyclePolicy:{...LIFECYCLE_DISCOVERY_POLICY_V25,primaryAvailable:lifecycleSelection.primaryAvailable,matureFallbackAvailable:lifecycleSelection.matureFallbackAvailable,primarySelected:lifecycleSelection.primarySelected,matureFallbackSelected:lifecycleSelection.matureFallbackSelected,fallbackUsed:lifecycleSelection.fallbackUsed},
-   stats:{...result.stats,coverageUniverse:coverageUniverseSize,scheduled:universe.length,qualified:factorQualified.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
+   stats:{...result.stats,coverageUniverse:coverageUniverseSize,scheduled:universe.length,qualified:factorQualified.length,momentumDiscovered:momentumDiscovered.length,returned:picks.length,valuationEligible:valuationEligible.length,rejected:rejectedCandidates.length},
    portfolio:mode==="thematic"?{construction:"Lifecycle-first thematic sleeve; MATURE fallback receives zero automatic weight and stays research-only",holdings:primarySelected.length,targetHoldings:"5 primary-lifecycle securities when available",totalWeightPct:Math.round(totalWeight*10)/10,maxPositionPct:30,minPositionPct:12,minimumExpectedReturnPct:8,status:primarySelected.length===5?"BUILT":primarySelected.length?"PARTIAL":"NO_PRIMARY_LIFECYCLE_SECURITIES",horizon:"1–3 months"}:null,
-   policy:{researchOnly:true,automaticTrading:false,approvedAutomaticUniverse:["S&P 500","Nasdaq-100","Russell 2000"],primaryLifecycleStages:["ACCUMULATION","EARLY_MARKUP","MOMENTUM_EXPANSION"],matureFallbackOnly:true,activeMomentumGateRequired:true,valuationGateRequired:true,fundUnderwritingRequired:true,sentinelXEvidenceOnly:true,mcdxSyntheticProxy:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true,basketCompletionPasses:MAX_INV_RESEARCH_PASSES},
-   methodology:`${engineProfile(mode as ResearchEngineMode).objective} Automatic discovery remains restricted to the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe. V28.2 can expand INV deep research across up to ${MAX_INV_RESEARCH_PASSES} non-overlapping tranches when a funded basket remains incomplete. Primary lifecycle stages remain first priority and MATURE remains fallback only.`,
+   policy:{researchOnly:true,automaticTrading:false,approvedAutomaticUniverse:["S&P 500","Nasdaq-100","Russell 2000"],primaryLifecycleStages:["ACCUMULATION","EARLY_MARKUP","MOMENTUM_EXPANSION"],matureFallbackOnly:true,discoveryRequiresValuation:false,committeeReadyRequiresValuation:true,activeMomentumGateRequiredForCommittee:true,valuationGateRequiredForCommittee:true,fundUnderwritingRequiredForCommittee:true,sentinelXEvidenceOnly:true,mcdxSyntheticProxy:true,explicitRejectionEvidence:true,independentEngineState:true,performanceTrackingRequired:true,basketCompletionPasses:MAX_INV_RESEARCH_PASSES},
+   methodology:`${engineProfile(mode as ResearchEngineMode).objective} V39 separates discovery from authorization: primary-lifecycle momentum names can remain visible for research even when valuation or a secondary factor gate is incomplete, while COMMITTEE_READY still requires the strict factor, valuation and fund-underwriting gates. Automatic discovery remains restricted to the CIO-approved S&P 500, Nasdaq-100 and Russell 2000 universe.`,
   },{headers:{"Cache-Control":"no-store"}});
  }catch(error:unknown){const message=error instanceof Error?error.message:"Alpha discovery failed";return NextResponse.json({error:message,mode,sector,researchPass},{status:500})}
 }
