@@ -190,7 +190,9 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
     ? await runFactorDiscovery("momentum", momentumDeepTickers, momentumDeepTickers.length)
     : { candidates: [] as ResearchCandidate[], warnings: [] as string[] };
   warnings.push(...(momentumDeepResult.warnings ?? []).map(warning => `Momentum deep research: ${warning}`));
-  const momentumDeepByTicker = new Map((momentumDeepResult.candidates ?? []).map(row => [row.ticker, row]));
+  const momentumDeepByTicker = new Map<string, ResearchCandidate>(
+    (momentumDeepResult.candidates ?? []).map((row): [string, ResearchCandidate] => [row.ticker, row]),
+  );
   const momentumRows = rankDiscoveryRowsV39(momentumSeeds.map(seed => buildMomentumDiscoveryRowV39({
     seed: asMomentumSeed(seed),
     candidate: deepCandidate(momentumDeepByTicker.get(seed.ticker)),
@@ -208,7 +210,7 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
     ? await runFactorDiscovery("multifactor", thesisSeeds, thesisSeeds.length)
     : { candidates: [] as ResearchCandidate[], warnings: [] as string[] };
   warnings.push(...(thesisDeepResult.warnings ?? []).map(warning => `Thesis deep research: ${warning}`));
-  const thesisCandidates = [...(thesisDeepResult.candidates ?? [])]
+  const thesisCandidates: ResearchCandidate[] = [...(thesisDeepResult.candidates ?? [])]
     .sort((a, b) => thesisPreRank(b, market) - thesisPreRank(a, market))
     .slice(0, THESIS_UNDERWRITE_LIMIT);
 
