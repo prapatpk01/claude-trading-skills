@@ -4,6 +4,7 @@ import { lifecycleDiscoveryTier } from "@/lib/research/lifecycleDiscoveryPolicy"
 import { buildMarketLeadershipMap, sectorLeadershipFor } from "@/lib/research/marketLeadership";
 import { loadThreeIndexUniverse, MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT } from "@/lib/research/marketUniverse";
 import { fastScanApprovedUniverse, type FastUniverseRow } from "@/lib/research/universeFastScan";
+import { buildRankingV40, type RankingResultV40 } from "@/lib/research/rankingPolicyV40";
 import {
   INV_RESEARCH_V39,
   buildMomentumDiscoveryRowV39,
@@ -40,6 +41,10 @@ export type DualDiscoveryResultV39 = {
   momentum: DiscoveryRowV39[];
   thesis: DiscoveryRowV39[];
   combined: Array<DiscoveryRowV39 & { lanes: Array<"MOMENTUM" | "THESIS"> }>;
+  ranking: RankingResultV40 & {
+    fastRankedPoolSize: number;
+    deepResearchSize: number;
+  };
   stats: {
     momentumSeeds: number;
     momentumDeepAnalyzed: number;
@@ -54,7 +59,8 @@ export type DualDiscoveryResultV39 = {
 
 const TICKER = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 const RESERVES = new Set(["SGOV", "BIL", "SHV", "USFR", "TFLO", "ICSH", "JPST", "JAAA"]);
-const MOMENTUM_DEEP_LIMIT = 20;
+const RANKING_POOL_LIMIT = 120;
+const MOMENTUM_DEEP_LIMIT = 32;
 const THESIS_DEEP_LIMIT = 24;
 const THESIS_UNDERWRITE_LIMIT = 14;
 
@@ -89,12 +95,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 }
 
 function momentumSeedRows(rows: FastUniverseRow[], limit: number) {
-  const primary = rows.filter(row => ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(row.stage) && row.score >= 52);
-  const mature = rows.filter(row => row.stage === "MATURE" && row.score >= 62 && row.rs3m >= 0);
-  const unconfirmed = rows.filter(row => row.stage === "UNCONFIRMED" && row.score >= 62 && row.rs3m >= 2 && row.aboveEma20 && row.aboveEma50);
-  return [...primary, ...mature, ...unconfirmed]
+  // V40: Stage A is a ranker, not a binary factor gate. Keep hard-broken names out,
+  // prioritize healthy lifecycle states, then fill the pool with the best measured
+  // remaining names. A name is not discarded merely because one secondary input is
+  // incomplete or because it has not reached the strict Committee Ready gate.
+  const usable = rows.filter(row => row.stage !== "BROKEN");
+  const preferred = usable.filter(row => ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(row.stage));
+  const mature = usable.filter(row => row.stage === "MATURE");
+  const unconfirmed = usable.filter(row => row.stage === "UNCONFIRMED");
+  const weakening = usable.filter(row => row.stage === "WEAKENING");
+  const scoreSort = (a: FastUniverseRow, b: FastUniverseRow) => b.score - a.score || b.rs3m - a.rs3m || b.return1m - a.return1m;
+  return [...preferred.sort(scoreSort), ...mature.sort(scoreSort), ...unconfirmed.sort(scoreSort), ...weakening.sort(scoreSort)]
     .filter((row, index, all) => all.findIndex(item => item.ticker === row.ticker) === index)
-    .sort((a, b) => b.score - a.score || b.rs3m - a.rs3m || b.return1m - a.return1m)
     .slice(0, limit);
 }
 
@@ -182,9 +194,9 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
     ...fast.warnings.map(warning => `Momentum Radar: ${warning}`),
     ...market.warnings.map(warning => `Thesis Radar: ${warning}`),
   ];
-  if (!coverageReady) warnings.push(`Full-universe measured coverage is ${fast.coveragePct}%, below the ${MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT}% decision floor. Discovery results remain visible, but committee readiness is data-limited.`);
+  if (!coverageReady) warnings.push(`Full-universe measured coverage is ${fast.coveragePct}%, below the ${MIN_FULL_UNIVERSE_SCREEN_COVERAGE_PCT}% decision floor. Ranking remains visible, but Committee Ready is data-limited.`);
 
-  const momentumSeeds = momentumSeedRows(fast.rows, Math.max(MOMENTUM_DEEP_LIMIT, topN * 2));
+  const momentumSeeds = momentumSeedRows(fast.rows, Math.max(RANKING_POOL_LIMIT, topN * 6));
   const momentumDeepTickers = momentumSeeds.slice(0, MOMENTUM_DEEP_LIMIT).map(row => row.ticker);
   const momentumDeepResult = momentumDeepTickers.length
     ? await runFactorDiscovery("momentum", momentumDeepTickers, momentumDeepTickers.length)
@@ -193,11 +205,12 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
   const momentumDeepByTicker = new Map<string, ResearchCandidate>(
     (momentumDeepResult.candidates ?? []).map((row): [string, ResearchCandidate] => [row.ticker, row]),
   );
-  const momentumRows = rankDiscoveryRowsV39(momentumSeeds.map(seed => buildMomentumDiscoveryRowV39({
+  const momentumPoolRows = momentumSeeds.map(seed => buildMomentumDiscoveryRowV39({
     seed: asMomentumSeed(seed),
     candidate: deepCandidate(momentumDeepByTicker.get(seed.ticker)),
     coverageReady,
-  })), topN);
+  }));
+  const momentumRows = rankDiscoveryRowsV39(momentumPoolRows, topN);
 
   const optionThesis = uniqueTickers(options.thesisTickers ?? []).filter(ticker => approvedSet.has(ticker) && requestedTickers.includes(ticker));
   const focusTickers = market.focusTickers.filter(ticker => requestedTickers.includes(ticker));
@@ -227,14 +240,27 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
     }
   });
 
-  const thesisRows = rankDiscoveryRowsV39(underwritten.map(({ candidate, evidence }) => buildThesisDiscoveryRowV39({
+  const thesisPoolRows = underwritten.map(({ candidate, evidence }) => buildThesisDiscoveryRowV39({
     candidate: deepCandidate(candidate)!,
     sector: sectorRead(candidate, market),
     evidence,
     coverageReady,
-  })), topN);
+  }));
+  const thesisRows = rankDiscoveryRowsV39(thesisPoolRows, topN);
 
   const combined = mergeDiscoveryRowsV39(momentumRows, thesisRows, Math.max(topN, 12));
+  const rankingPool = mergeDiscoveryRowsV39(momentumPoolRows, thesisPoolRows, RANKING_POOL_LIMIT + THESIS_UNDERWRITE_LIMIT);
+  const rankingBase = buildRankingV40(rankingPool, 20);
+  const deepResearchSize = new Set([
+    ...(momentumDeepResult.candidates ?? []).map(row => row.ticker),
+    ...(thesisDeepResult.candidates ?? []).map(row => row.ticker),
+  ]).size;
+  const ranking = {
+    ...rankingBase,
+    fastRankedPoolSize: momentumSeeds.length,
+    deepResearchSize,
+  };
+
   return {
     version: INV_RESEARCH_V39,
     asOf: new Date().toISOString(),
@@ -252,6 +278,7 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
     momentum: momentumRows,
     thesis: thesisRows,
     combined,
+    ranking,
     stats: {
       momentumSeeds: momentumSeeds.length,
       momentumDeepAnalyzed: momentumDeepResult.candidates?.length ?? 0,
@@ -261,6 +288,6 @@ export async function runDualDiscoveryV39(options: DualDiscoveryOptionsV39 = {})
       committeeReady: committeeReadyCount([...momentumRows, ...thesisRows]),
     },
     warnings: Array.from(new Set(warnings)),
-    methodology: "INV Research V39 uses two independent discovery lanes. Momentum Hunt searches the measured approved three-index universe by price/volume momentum, relative strength, EMA trend and lifecycle and does NOT require valuation or the strict factor gate merely to surface a candidate. Thesis Hunt starts from leading/improving sectors, user-selected themes and strong Momentum Radar names, then deep-researches catalyst, fund fit, growth/quality and lifecycle. Valuation and strict underwriting are required only for COMMITTEE_READY, not for discovery visibility. Research remains limited to S&P 500 + Nasdaq-100 + Russell 2000 and never executes trades.",
+    methodology: "INV Research V40 keeps V39 Momentum + Thesis discovery lanes but changes the funnel from binary elimination to ranking-first selection. Stage A measures the approved S&P 500 + Nasdaq-100 + Russell 2000 universe, Stage B ranks a broad best-available pool, Stage C performs bounded deep research, and Stage D keeps strict valuation/fund-underwriting gates for Committee Ready. Coverage is a data-quality control, not a reason to hide ranked ideas. No ranking label authorizes broker execution.",
   };
 }
