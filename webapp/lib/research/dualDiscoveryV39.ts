@@ -95,11 +95,11 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 }
 
 function momentumSeedRows(rows: FastUniverseRow[], limit: number) {
-  // V40: Stage A is a ranker, not a binary factor gate. Keep hard-broken names out,
-  // prioritize healthy lifecycle states, then fill the pool with the best measured
-  // remaining names. A name is not discarded merely because one secondary input is
-  // incomplete or because it has not reached the strict Committee Ready gate.
-  const usable = rows.filter(row => row.stage !== "BROKEN");
+  // V40: Stage A is a ranker, not a binary factor gate. The fast scanner only
+  // emits measured lifecycle states (it has no BROKEN state); hard blocks are
+  // applied later when deep research has enough evidence. Prioritize healthy
+  // lifecycle states, then fill the pool with the best measured remaining names.
+  const usable = rows;
   const preferred = usable.filter(row => ["ACCUMULATION", "EARLY_MARKUP", "MOMENTUM_EXPANSION"].includes(row.stage));
   const mature = usable.filter(row => row.stage === "MATURE");
   const unconfirmed = usable.filter(row => row.stage === "UNCONFIRMED");
