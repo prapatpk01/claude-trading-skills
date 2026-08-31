@@ -4,7 +4,6 @@ import {
   INV_RESEARCH_V38,
   buildThemeSummaryV38,
   reconcileOpportunityBookV38,
-  scoreOpportunityV38,
   selectSectorThesisWinnersV38,
   type OpportunityBookRowV38,
   type OpportunityInputV38,
@@ -132,7 +131,12 @@ function candidateKey(row: any) { return cleanTicker(row?.ticker); }
 function inputFromCandidate(row: any, isProposal: boolean, legacy: LegacyResult): OpportunityInputV38 | null {
   const ticker = candidateKey(row);
   if (!ticker) return null;
-  const fast = legacy.fastScan?.rows?.find((item: any) => cleanTicker(item?.ticker) === ticker) ?? null;
+  // Legacy Research deliberately exposes only the Stage-A summary publicly.
+  // Raw rows may exist on an internal implementation but are never required by
+  // V38; stock RS therefore remains optional and sector RS + measured momentum
+  // carry the relative-strength pillar when raw Stage-A rows are unavailable.
+  const fastRows = (legacy.fastScan as any)?.rows as any[] | undefined;
+  const fast = fastRows?.find((item: any) => cleanTicker(item?.ticker) === ticker) ?? null;
   const sector = String(row?.sector ?? "Unknown");
   const leadership = legacy.marketLeadership?.sectors?.find((item: any) => String(item?.sector ?? "").toUpperCase() === sector.toUpperCase()) ?? null;
   return {
@@ -223,8 +227,9 @@ export async function runInvestmentResearchOS(options: Options = {}): Promise<In
   // Ask the legacy engine for a wider research pool than the final CIO shortlist.
   // V38 then applies the persistent Sector -> Thesis -> Winner funnel.
   const legacy = await runLegacyInvestmentResearchOS({
-    ...options,
+    exclude: options.exclude,
     topN: Math.max(10, topN * 2),
+    universeLimit: options.universeLimit,
   });
 
   const currentInputs: OpportunityInputV38[] = [];
