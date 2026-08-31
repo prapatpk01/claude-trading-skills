@@ -1,4 +1,4 @@
-import type { DiscoveryRowV39 } from "@/lib/research/dualDiscoveryPolicyV39";
+import type { DiscoveryRowV39 } from "./dualDiscoveryPolicyV39";
 
 export const INV_RESEARCH_RANKING_V40 = "40.0" as const;
 
