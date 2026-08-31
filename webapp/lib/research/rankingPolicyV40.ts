@@ -35,6 +35,7 @@ export type RankingResultV40 = {
 
 const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
 const finite = (value: unknown): number | null => {
+  if (value == null || value === "") return null;
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -180,7 +181,7 @@ export function buildRankingV40(rows: DiscoveryRowV39[], finalistLimit = 20): Ra
 
   return {
     version: INV_RESEARCH_RANKING_V40,
-    methodology: "V40 ranks the measured discovery pool instead of requiring every factor to pass as a binary gate. Weights: Momentum 25%, Growth 20%, measured Earnings/Revenue Acceleration proxy 15%, Quality 15%, Relative Strength 10%, Valuation 10%, Catalyst 5%. Coverage measures data quality only. BUY NOW still requires the existing strict Committee Ready gate; ranking cannot authorize capital or execution.",
+    methodology: "V40 ranks the measured discovery pool instead of requiring every factor to pass as a binary gate. Weights: Momentum 25%, Growth 20%, measured Earnings/Revenue Acceleration proxy 15%, Quality 15%, Relative Strength 10%, Valuation 10%, Catalyst 5%. Coverage measures data quality only. Missing deep-research inputs remain neutral/unknown rather than being coerced to zero. BUY NOW still requires the existing strict Committee Ready gate; ranking cannot authorize capital or execution.",
     poolSize: ranked.length,
     finalists,
     bestAvailable,
