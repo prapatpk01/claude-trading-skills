@@ -22,6 +22,39 @@ type ForecastRead = HorizonRead & {
   benchmark?: string | null;
   horizons?: Record<string, HorizonRead> | null;
 };
+type OpportunityBookRow = {
+  ticker?: string;
+  state?: string;
+  reviewState?: string;
+  theme?: string;
+  sector?: string;
+  opportunityScore?: number | null;
+  confidenceScore?: number | null;
+  thesisAgeDays?: number | null;
+  daysRemaining?: number | null;
+  winnerRank?: number | null;
+  winnerCount?: number | null;
+  scoreDelta?: number | null;
+};
+type ThemeSummary = {
+  theme?: string;
+  sector?: string;
+  state?: string;
+  opportunityScore?: number | null;
+  confidenceScore?: number | null;
+  leaders?: string[];
+  ready?: number;
+  watch?: number;
+  horizonMinDays?: number;
+  horizonMaxDays?: number;
+};
+type ResearchBookStatus = {
+  version?: string;
+  cycle?: { asOf?: string; ageHours?: number; fresh?: boolean; nextFullDiscoveryAt?: string } | null;
+  opportunityBook?: OpportunityBookRow[];
+  themes?: ThemeSummary[];
+  policy?: { sectorThemeTargetPct?: number; radarPct?: number; openingWebsiteTriggersFullScan?: boolean; architecture?: string };
+};
 
 type Props = { lang: AppLang; onNavigate: (id: string) => void };
 
@@ -91,13 +124,67 @@ function actionTone(forecast: ForecastRead) {
   return "WATCH";
 }
 
+function researchStateColor(state: string) {
+  if (state === "READY") return "#55d9ad";
+  if (state === "WATCH") return "#ffd166";
+  if (state === "INVALIDATED" || state === "ARCHIVED") return "#ff7088";
+  return "#8fa4c8";
+}
+
+function formatResearchTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const positionsRef = useRef<Map<string, Position>>(new Map());
   const forecastsRef = useRef<Map<string, ForecastRead>>(new Map());
+  const researchBookRef = useRef<ResearchBookStatus | null>(null);
   const marketKeyRef = useRef("");
   const timerRef = useRef<number | null>(null);
   const th = String(lang).toLowerCase().startsWith("th");
+
+  const decorateResearchBook = useCallback(() => {
+    const root = rootRef.current;
+    const status = researchBookRef.current;
+    if (!root || !status) return;
+    const marker = Array.from(root.querySelectorAll("span")).find(node => clean(node.textContent) === "02 · INV");
+    const sectionHead = marker?.parentElement?.parentElement;
+    const content = sectionHead?.parentElement;
+    if (!sectionHead || !content) return;
+    let card = content.querySelector<HTMLElement>("[data-inv-v38-book]");
+    if (!card) {
+      card = document.createElement("section");
+      card.dataset.invV38Book = "true";
+      card.style.margin = "14px 0 18px";
+      card.style.padding = "16px";
+      card.style.borderRadius = "18px";
+      card.style.border = "1px solid rgba(85,217,173,.24)";
+      card.style.background = "rgba(10,25,48,.78)";
+      sectionHead.insertAdjacentElement("afterend", card);
+    }
+    const themes = (status.themes ?? []).slice(0, 4);
+    const book = (status.opportunityBook ?? []).filter(row => !["ARCHIVED", "INVALIDATED"].includes(clean(row.state))).slice(0, 6);
+    const cycle = status.cycle;
+    const cycleText = cycle
+      ? (th ? `ใช้ Research Cycle เดิม · อายุ ${Number(cycle.ageHours ?? 0).toFixed(1)} ชม. · Full scan ถัดไป ${formatResearchTime(cycle.nextFullDiscoveryAt)}` : `Reusing research cycle · ${Number(cycle.ageHours ?? 0).toFixed(1)}h old · next full scan ${formatResearchTime(cycle.nextFullDiscoveryAt)}`)
+      : (th ? "ยังไม่มี Research Cycle ที่บันทึกไว้" : "No persisted research cycle yet");
+    const themeHtml = themes.length
+      ? themes.map(row => `<span style="display:inline-block;margin:4px 6px 0 0;padding:5px 8px;border-radius:999px;background:rgba(78,124,255,.12);font-size:11px;color:#b7c8e8"><b>${row.theme ?? row.sector ?? "Theme"}</b> · ${row.state ?? "ACTIVE"} · ${Math.round(Number(row.opportunityScore ?? 0))}/${Math.round(Number(row.confidenceScore ?? 0))}</span>`).join("")
+      : `<span style="color:#8fa4c8;font-size:12px">${th ? "รอ Thesis ที่ผ่านการวิจัย" : "Waiting for an underwritten thesis"}</span>`;
+    const bookHtml = book.length
+      ? book.map(row => {
+          const state = clean(row.state || "DISCOVERED");
+          const delta = row.scoreDelta == null ? "" : ` · Δ ${Number(row.scoreDelta) >= 0 ? "+" : ""}${Number(row.scoreDelta).toFixed(0)}`;
+          const winner = row.winnerRank ? ` · #${row.winnerRank}/${row.winnerCount ?? "?"} winner` : "";
+          return `<div style="display:grid;grid-template-columns:minmax(58px,.7fr) minmax(72px,.8fr) 1.5fr;gap:8px;padding:7px 0;border-top:1px solid rgba(143,164,200,.10);font-size:11px;line-height:1.35"><b style="color:#eef4ff">${row.ticker ?? "—"}</b><b style="color:${researchStateColor(state)}">${state}</b><span style="color:#8fa4c8">${row.theme ?? row.sector ?? "—"} · O ${Math.round(Number(row.opportunityScore ?? 0))} · C ${Math.round(Number(row.confidenceScore ?? 0))}${delta}${winner} · ${Math.max(0, Math.round(Number(row.daysRemaining ?? 0)))}d left</span></div>`;
+        }).join("")
+      : `<div style="margin-top:8px;color:#8fa4c8;font-size:12px">${th ? "ยังไม่มีหุ้นใน Persistent Opportunity Book" : "Persistent Opportunity Book is empty"}</div>`;
+    card.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><div style="font-size:11px;letter-spacing:.16em;color:#63d6ff;font-weight:800">INV RESEARCH V38 · PERSISTENT THESIS & WINNER BOOK</div><div style="margin-top:5px;font-size:12px;color:#9db1d2">${cycleText}</div></div><div style="font-size:11px;color:#8fa4c8;text-align:right">${th ? "Sector/Theme 80% · Radar 20% · Horizon 14–90D · ลดสถานะเมื่ออ่อน 2 รอบ" : "Sector/Theme 80% · Radar 20% · 14–90D horizon · 2-review downgrade hysteresis"}</div></div><div style="margin-top:8px">${themeHtml}</div><div style="margin-top:8px">${bookHtml}</div>`;
+  }, [th]);
 
   const decorate = useCallback(() => {
     const root = rootRef.current;
@@ -182,7 +269,8 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
       }
       details.title = `Forecast V${forecast.engineVersion ?? "37.1"} · ${tone}`;
     }
-  }, [th]);
+    decorateResearchBook();
+  }, [decorateResearchBook, th]);
 
   const refreshPortfolio = useCallback(async () => {
     try {
@@ -193,6 +281,16 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
       decorate();
     } catch { /* keep CIO usable if the PnL annotation source is temporarily unavailable */ }
   }, [decorate]);
+
+  const refreshResearchBook = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/research/opportunity-book?v38=${Date.now()}`, { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) return;
+      researchBookRef.current = payload as ResearchBookStatus;
+      decorateResearchBook();
+    } catch { /* Research cycle remains usable even when the diagnostic card cannot load. */ }
+  }, [decorateResearchBook]);
 
   const refreshForecasts = useCallback(async () => {
     const root = rootRef.current;
@@ -223,19 +321,20 @@ export default function CIOCommandCenterV37({ lang, onNavigate }: Props) {
 
   useEffect(() => {
     void refreshPortfolio();
+    void refreshResearchBook();
     const root = rootRef.current;
     if (!root) return;
     const observer = new MutationObserver(scheduleDecorate);
     observer.observe(root, { childList: true, subtree: true, characterData: true });
     scheduleDecorate();
-    const refresh = () => { marketKeyRef.current = ""; void refreshPortfolio(); scheduleDecorate(); };
+    const refresh = () => { marketKeyRef.current = ""; void refreshPortfolio(); void refreshResearchBook(); scheduleDecorate(); };
     window.addEventListener("sentinel:portfolio-updated", refresh);
     return () => {
       observer.disconnect();
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
       window.removeEventListener("sentinel:portfolio-updated", refresh);
     };
-  }, [refreshPortfolio, scheduleDecorate]);
+  }, [refreshPortfolio, refreshResearchBook, scheduleDecorate]);
 
-  return <div ref={rootRef} data-cio-wrapper="v37.1-decision-first"><CIOCommandCenterV351 lang={lang} onNavigate={onNavigate} /></div>;
+  return <div ref={rootRef} data-cio-wrapper="v38-persistent-research-v37.1-forecast"><CIOCommandCenterV351 lang={lang} onNavigate={onNavigate} /></div>;
 }

@@ -16,6 +16,7 @@
     "incremental": true,
     "plugins": [{ "name": "next" }],
     "paths": {
+      "@/lib/research/investmentDiscovery": ["./lib/research/investmentDiscoveryV38"],
       "@/*": ["./*"]
     }
   },
