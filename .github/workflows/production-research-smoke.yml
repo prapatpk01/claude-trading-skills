@@ -15,7 +15,7 @@ concurrency:
 jobs:
   railway-research-health:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 24
     steps:
       - name: Wait for Railway and verify Stage A providers
         env:
@@ -76,3 +76,108 @@ jobs:
 
           echo 'FAIL: Railway research-health did not reach a valid >=80% Stage A response within the deployment window.' >&2
           exit 1
+
+      - name: Prove INV V38 persistent cycle and Opportunity Book
+        env:
+          BASE_URL: https://claude-trading-skills-production.up.railway.app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo 'Waiting until the deployed app exposes INV Research V38...'
+          ready=0
+          for attempt in $(seq 1 40); do
+            code=$(curl -sS -L --connect-timeout 10 --max-time 45 -o /tmp/book-pre.json -w '%{http_code}' "$BASE_URL/api/research/opportunity-book" || true)
+            if [[ "$code" == "200" ]] && python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          try:
+              payload=json.loads(Path('/tmp/book-pre.json').read_text())
+          except Exception:
+              sys.exit(1)
+          sys.exit(0 if str(payload.get('version','')).startswith('38.') else 1)
+          PY
+            then
+              ready=1
+              echo "V38 endpoint ready on attempt ${attempt}."
+              break
+            fi
+            echo "V38 not live yet (attempt ${attempt}/40, HTTP ${code})."
+            sleep 15
+          done
+          if [[ "$ready" != "1" ]]; then
+            echo 'FAIL: Railway never exposed INV Research V38 within the deployment window.' >&2
+            cat /tmp/book-pre.json 2>/dev/null || true
+            exit 10
+          fi
+
+          echo 'Request 1 — may create a fresh daily INV cycle if none exists.'
+          code1=$(curl -sS -L --connect-timeout 10 --max-time 210 -o /tmp/meeting1.json -w '%{http_code}' "$BASE_URL/api/committee/meeting")
+          [[ "$code1" == "200" ]] || { echo "FAIL: meeting request 1 HTTP $code1"; cat /tmp/meeting1.json; exit 11; }
+
+          echo 'Request 2 — must reuse the same persisted INV cycle.'
+          code2=$(curl -sS -L --connect-timeout 10 --max-time 210 -o /tmp/meeting2.json -w '%{http_code}' "$BASE_URL/api/committee/meeting")
+          [[ "$code2" == "200" ]] || { echo "FAIL: meeting request 2 HTTP $code2"; cat /tmp/meeting2.json; exit 12; }
+
+          curl -sS -L --connect-timeout 10 --max-time 45 "$BASE_URL/api/research/opportunity-book" -o /tmp/book-post.json
+
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          m1=json.loads(Path('/tmp/meeting1.json').read_text())
+          m2=json.loads(Path('/tmp/meeting2.json').read_text())
+          book=json.loads(Path('/tmp/book-post.json').read_text())
+          r1=m1.get('researchOS') or {}
+          r2=m2.get('researchOS') or {}
+
+          def tickers(rows):
+              return [str(x.get('ticker','')).upper() for x in (rows or []) if x.get('ticker')]
+
+          print('INV V38 request 1:', r1.get('version'), r1.get('cycleMode'), r1.get('cycleAsOf'))
+          print('INV V38 request 2:', r2.get('version'), r2.get('cycleMode'), r2.get('cycleAsOf'))
+          print('Request 1 proposals:', tickers(r1.get('proposals')))
+          print('Request 2 proposals:', tickers(r2.get('proposals')))
+          print('Active themes:', [x.get('theme') for x in (r2.get('activeThemes') or [])[:5]])
+          print('Opportunity Book:', [(x.get('ticker'),x.get('state'),x.get('theme'),x.get('opportunityScore'),x.get('confidenceScore')) for x in (r2.get('opportunityBook') or [])[:10]])
+
+          for idx, research in enumerate((r1,r2), start=1):
+              if not str(research.get('version','')).startswith('38.'):
+                  print(f'FAIL: request {idx} did not use INV Research V38.')
+                  sys.exit(20+idx)
+              funnel=research.get('researchFunnel') or {}
+              if funnel.get('architecture') != 'SECTOR_THESIS_WINNER':
+                  print(f'FAIL: request {idx} missing Sector→Thesis→Winner funnel.')
+                  sys.exit(22+idx)
+              if funnel.get('openingWebsiteTriggersFullScan') is not False:
+                  print(f'FAIL: request {idx} says opening the website may trigger a full scan.')
+                  sys.exit(24+idx)
+              fast=research.get('fastScan') or {}
+              if float(fast.get('coveragePct') or 0) < 80:
+                  print(f'FAIL: request {idx} broad Radar coverage below 80%.')
+                  sys.exit(26+idx)
+
+          if r2.get('cycleMode') != 'REUSED':
+              print('FAIL: second meeting did not reuse the persisted research cycle.')
+              sys.exit(30)
+          if not r1.get('cycleAsOf') or r1.get('cycleAsOf') != r2.get('cycleAsOf'):
+              print('FAIL: consecutive meetings do not share one authoritative research cycle.')
+              sys.exit(31)
+          if tickers(r1.get('proposals')) != tickers(r2.get('proposals')):
+              print('FAIL: proposal shortlist changed between consecutive opens of the same research cycle.')
+              sys.exit(32)
+
+          if not str(book.get('version','')).startswith('38.'):
+              print('FAIL: Opportunity Book endpoint is not V38.')
+              sys.exit(33)
+          cycle=book.get('cycle') or {}
+          if not cycle.get('fresh'):
+              print('FAIL: persisted V38 cycle is not fresh after committee execution.')
+              sys.exit(34)
+          policy=book.get('policy') or {}
+          if policy.get('openingWebsiteTriggersFullScan') is not False:
+              print('FAIL: Opportunity Book policy does not guarantee no full scan on ordinary website open.')
+              sys.exit(35)
+
+          print('PASS: INV V38 is live, Stage A remains a measured Radar, and consecutive CIO opens reuse one persistent Sector→Thesis→Winner research cycle.')
+          PY
