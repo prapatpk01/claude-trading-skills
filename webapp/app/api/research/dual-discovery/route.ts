@@ -36,14 +36,19 @@ export async function GET(req: NextRequest) {
         approvedAutomaticUniverse: ["S&P 500", "Nasdaq-100", "Russell 2000"],
         discoveryRequiresValuation: false,
         committeeReadyRequiresValuation: true,
+        rankingEngine: "40.0",
+        rankingFirst: true,
+        coverageIsDataQualityGate: true,
         lanes: ["MOMENTUM", "THESIS"],
+        actionBands: ["BUY_NOW", "ACCUMULATE", "WATCHLIST", "REJECT"],
       },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error: any) {
     return NextResponse.json({
-      error: error?.message ?? "INV Research V39 dual discovery failed",
+      error: error?.message ?? "INV Research V40 ranking discovery failed",
       version: "39.0",
-      policy: { researchOnly: true, automaticTrading: false },
+      rankingVersion: "40.0",
+      policy: { researchOnly: true, automaticTrading: false, rankingFirst: true },
     }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
