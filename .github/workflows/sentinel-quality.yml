@@ -49,6 +49,9 @@ jobs:
       - name: Sentinel Investment V36 scoring and authority simulation
         run: npm run test:sentinel-v36
 
+      - name: INV Research V38 persistent thesis simulation
+        run: npm run test:inv-v38
+
       - name: Research OS V23 lifecycle simulation
         run: npm run test:research-v23
 
