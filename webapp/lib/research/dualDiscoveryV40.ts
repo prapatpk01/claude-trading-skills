@@ -37,7 +37,7 @@ function forwardScore(row: AnyRow, smartMoneyScore: number) {
   });
 }
 
-function transform(row: AnyRow) {
+function transform(row: AnyRow): AnyRow {
   const smartMoneyScore = smartMoney(row);
   const forwardThesisScore = forwardScore(row, smartMoneyScore);
   const legacyDiscoveryScore = Number(row.score ?? 0);
@@ -84,28 +84,28 @@ function transform(row: AnyRow) {
   };
 }
 
-function rank(rows: AnyRow[], topN: number) {
+function rank(rows: AnyRow[], topN: number): AnyRow[] {
   return [...rows]
-    .map(transform)
-    .sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0) || Number(b.smartMoneyScore ?? 0) - Number(a.smartMoneyScore ?? 0) || String(a.ticker).localeCompare(String(b.ticker)))
+    .map((row): AnyRow => transform(row))
+    .sort((a: AnyRow, b: AnyRow) => Number(b.score ?? 0) - Number(a.score ?? 0) || Number(b.smartMoneyScore ?? 0) - Number(a.smartMoneyScore ?? 0) || String(a.ticker).localeCompare(String(b.ticker)))
     .slice(0, Math.max(1, topN));
 }
 
 export async function runDualDiscoveryV40(options: DualDiscoveryOptionsV40 = {}) {
   const base = await runDualDiscoveryV39(options);
   const topN = Math.max(3, Math.min(20, Math.round(Number(options.topN ?? 10))));
-  const momentum = rank(base.momentum as AnyRow[], topN);
-  const thesis = rank(base.thesis as AnyRow[], topN);
+  const momentum: AnyRow[] = rank(base.momentum as AnyRow[], topN);
+  const thesis: AnyRow[] = rank(base.thesis as AnyRow[], topN);
 
   const byTicker = new Map<string, AnyRow & { lanes: string[] }>();
-  for (const row of [...momentum, ...thesis]) {
+  for (const row of [...momentum, ...thesis] as AnyRow[]) {
     const ticker = String(row.ticker ?? "").toUpperCase();
     const existing = byTicker.get(ticker);
     if (!existing) {
       byTicker.set(ticker, { ...row, lanes: [String(row.lane)] });
       continue;
     }
-    const preferred = Number(row.score ?? 0) > Number(existing.score ?? 0) ? row : existing;
+    const preferred: AnyRow = Number(row.score ?? 0) > Number(existing.score ?? 0) ? row : existing;
     byTicker.set(ticker, {
       ...preferred,
       lanes: Array.from(new Set([...existing.lanes, String(row.lane)])),
