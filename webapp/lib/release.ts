@@ -6,7 +6,7 @@ export const SENTINEL_RELEASE = {
   researchVersion: "40.0",
   technicalVersion: "34.1",
   forecastVersion: "37.1",
-  healthRelease: "Sentinel-Investment-OS-v36.0-strategy-v40.0",
+  healthRelease: "Sentinel-Investment-OS-v36.0",
 } as const;
 
 export const sentinelReleaseLabel = `Sentinel Investment OS V${SENTINEL_RELEASE.appVersion}`;
