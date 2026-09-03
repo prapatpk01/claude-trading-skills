@@ -64,7 +64,8 @@ export type TechnicalBuyGateResultV40 = {
 
 export function technicalBuyGateV40(input: TechnicalBuyGateInputV40): TechnicalBuyGateResultV40 {
   const nowMs = finite(input.nowMs) ?? Date.now();
-  const maxAgeMinutes = Math.max(1, finite(input.maxAgeMinutes) ?? 30);
+  // Daily bars remain current across weekends/market holidays for up to four days.
+  const maxAgeMinutes = Math.max(1, finite(input.maxAgeMinutes) ?? 96 * 60);
   const snapshotMs = input.asOf ? Date.parse(input.asOf) : Number.NaN;
   const ageMinutes = Number.isFinite(snapshotMs) ? Math.max(0, (nowMs - snapshotMs) / 60_000) : null;
   const freshness: TechnicalBuyGateResultV40["freshness"] = ageMinutes == null
