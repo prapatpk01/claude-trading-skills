@@ -3,6 +3,9 @@ import YahooFinance from "yahoo-finance2";
 export type YahooChartSeries = {
   closes: number[];
   volumes: number[];
+  highs: number[];
+  lows: number[];
+  timestamps: number[];
 };
 
 export type YahooFinance2FallbackResult = {
@@ -19,7 +22,7 @@ const MIN_BARS = 55;
 const DEFAULT_CONCURRENCY = 12;
 const DEFAULT_MAX_SYMBOLS = 600;
 const REQUEST_TIMEOUT_MS = 8_000;
-const LOOKBACK_DAYS = 230;
+const LOOKBACK_DAYS = 460;
 
 const yahooFinance = new YahooFinance();
 
@@ -28,26 +31,39 @@ const finite = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+function timestamp(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  const parsed = typeof value === "number" ? value * (value < 10_000_000_000 ? 1000 : 1) : Date.parse(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+};
+
 /**
  * yahoo-finance2 is the Node-side equivalent of the Python yfinance role in
  * Sentinel's production app. Both ultimately read Yahoo Finance endpoints, but
  * this path uses the library's per-symbol chart module instead of Spark.
  *
  * Keeping this parser pure lets CI prove the fallback mapping without making a
- * network call.
+ * network call. OHLC timestamps are retained so buy-alert validation can prove
+ * EMA, ADX and MACD came from one fresh daily snapshot.
  */
 export function parseYahooFinance2Chart(result: any): YahooChartSeries | null {
   const quotes = Array.isArray(result?.quotes) ? result.quotes : [];
   const closes: number[] = [];
   const volumes: number[] = [];
+  const highs: number[] = [];
+  const lows: number[] = [];
+  const timestamps: number[] = [];
   for (const quote of quotes) {
     const close = finite(quote?.close);
     if (close == null || close <= 0) continue;
     closes.push(close);
     const volume = finite(quote?.volume);
     volumes.push(volume != null && volume >= 0 ? volume : 0);
+    highs.push(finite(quote?.high) ?? Number.NaN);
+    lows.push(finite(quote?.low) ?? Number.NaN);
+    timestamps.push(timestamp(quote?.date));
   }
-  return closes.length >= MIN_BARS ? { closes, volumes } : null;
+  return closes.length >= MIN_BARS ? { closes, volumes, highs, lows, timestamps } : null;
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

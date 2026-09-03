@@ -41,6 +41,71 @@ const finite = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+export type TechnicalBuyGateInputV40 = {
+  asOf?: string | null;
+  nowMs?: number;
+  maxAgeMinutes?: number;
+  ema8?: number | null;
+  ema13?: number | null;
+  ema100?: number | null;
+  ema200?: number | null;
+  adx?: number | null;
+  macd?: number | null;
+  macdSignal?: number | null;
+  macdHistogram?: number | null;
+};
+
+export type TechnicalBuyGateResultV40 = {
+  eligible: boolean;
+  freshness: "FRESH" | "STALE" | "MISSING";
+  ageMinutes: number | null;
+  reasons: string[];
+};
+
+export function technicalBuyGateV40(input: TechnicalBuyGateInputV40): TechnicalBuyGateResultV40 {
+  const nowMs = finite(input.nowMs) ?? Date.now();
+  // Daily bars remain current across weekends/market holidays for up to four days.
+  const maxAgeMinutes = Math.max(1, finite(input.maxAgeMinutes) ?? 96 * 60);
+  const snapshotMs = input.asOf ? Date.parse(input.asOf) : Number.NaN;
+  const ageMinutes = Number.isFinite(snapshotMs) ? Math.max(0, (nowMs - snapshotMs) / 60_000) : null;
+  const freshness: TechnicalBuyGateResultV40["freshness"] = ageMinutes == null
+    ? "MISSING"
+    : ageMinutes <= maxAgeMinutes
+      ? "FRESH"
+      : "STALE";
+
+  const values = {
+    ema8: finite(input.ema8),
+    ema13: finite(input.ema13),
+    ema100: finite(input.ema100),
+    ema200: finite(input.ema200),
+    adx: finite(input.adx),
+    macd: finite(input.macd),
+    macdSignal: finite(input.macdSignal),
+    macdHistogram: finite(input.macdHistogram),
+  };
+  const missing = Object.entries(values).filter(([, value]) => value == null).map(([key]) => key);
+  const reasons: string[] = [];
+  if (freshness === "MISSING") reasons.push("technical timestamp missing");
+  if (freshness === "STALE") reasons.push(`technical snapshot stale (${Math.round(ageMinutes ?? 0)}m > ${maxAgeMinutes}m)`);
+  if (missing.length) reasons.push(`technical fields missing: ${missing.join(", ")}`);
+
+  if (!missing.length) {
+    if (!(values.ema8! > values.ema13!)) reasons.push("EMA8 is not above EMA13");
+    if (!(values.ema100! > values.ema200!)) reasons.push("EMA100 is not above EMA200");
+    if (!(values.adx! >= 20)) reasons.push("ADX is below 20");
+    if (!(values.macd! > values.macdSignal!)) reasons.push("MACD is not above signal");
+    if (!(values.macdHistogram! > 0)) reasons.push("MACD histogram is not positive");
+  }
+
+  return {
+    eligible: freshness === "FRESH" && missing.length === 0 && reasons.length === 0,
+    freshness,
+    ageMinutes: ageMinutes == null ? null : Math.round(ageMinutes * 10) / 10,
+    reasons,
+  };
+}
+
 export type SmartMoneyFootprintInputV40 = {
   relativeStrength3m?: number | null;
   return1m?: number | null;
@@ -104,9 +169,6 @@ export function forwardThesisScoreV40(input: ForwardThesisInputV40) {
   const upside = finite(input.expectedReturnPct);
   const asymmetry = upside == null ? 50 : clamp(40 + upside * 2.5);
 
-  // Deliberately forward-looking: smart-money footprint + sector/thesis structure
-  // outweigh a published catalyst. Headlines can improve confidence, but are not
-  // required to earn a high discovery score.
   return Math.round(clamp(
     smartMoney * 0.30 +
     sector * 0.20 +
