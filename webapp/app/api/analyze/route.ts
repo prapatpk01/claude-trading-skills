@@ -22,6 +22,13 @@ async function applyEvidenceGate(result: any) {
     ? result.research.peers.filter((p: any) => p && !p.isSubject && p.ticker)
     : [];
 
+  // Resolve the governed valuation before grading evidence. A valid Thomas
+  // snapshot is measured valuation evidence even when another desk later blocks
+  // execution. Execution authority and the existence of a measured fair value
+  // are deliberately separate facts.
+  const snapshot = await resolveThomasValuationForMarketData(data, { dividends: [] }).catch(() => null);
+  const governed = governThomasSnapshot(snapshot, data.quote?.price ?? null);
+
   const checks = {
     currentPrice: finite(data.quote?.price),
     annualIncome: income.length >= 2 && finite(income[0]?.totalRevenue),
@@ -29,7 +36,7 @@ async function applyEvidenceGate(result: any) {
     balance: balance.length >= 1 && [balance[0]?.cashAndEquivalents, balance[0]?.totalAssets, balance[0]?.totalShareholderEquity].some(finite),
     quarterlyTrend: quarters.length >= 2,
     peerEvidence: externalPeers.length >= 2,
-    valuationEvidence: Boolean(result?.dcf || result?.multiples),
+    valuationEvidence: Boolean(result?.dcf || result?.multiples || (governed.decisionReady && governed.fairValue != null)),
   };
 
   const evidenceCount = Object.values(checks).filter(Boolean).length;
@@ -42,9 +49,6 @@ async function applyEvidenceGate(result: any) {
   if (!checks.cashflow) hardBlocks.push("cash-flow statement history is insufficient");
   if (!checks.balance) hardBlocks.push("balance-sheet evidence is insufficient");
   if (evidenceCount < 4) hardBlocks.push("verified evidence coverage is below the institutional minimum");
-
-  const snapshot = await resolveThomasValuationForMarketData(data, { dividends: [] }).catch(() => null);
-  const governed = governThomasSnapshot(snapshot, data.quote?.price ?? null);
   if (!governed.decisionReady) hardBlocks.push(`governed valuation is not decision-ready: ${governed.reason}`);
 
   result.valuationGovernance = {
@@ -62,6 +66,7 @@ async function applyEvidenceGate(result: any) {
     expiresAt: snapshot?.expiresAt ?? null,
     reason: governed.reason,
   };
+
   if (governed.decisionReady && governed.fairValue != null) {
     const fairValue = governed.fairValue;
     result.targetPrice = fairValue;
@@ -114,12 +119,14 @@ async function applyEvidenceGate(result: any) {
       hardBlocks,
       sizeMultiplier: 0,
     };
-    result.targetPrice = null;
-    result.upsidePct = null;
-    result.expectedReturnPct = null;
+    // Do not erase a measured valuation because another evidence gate blocked
+    // execution. The dashboard may show the governed fair-value range while
+    // still stating clearly that the idea is not authorized for capital.
+    result.executionBlocked = true;
     result.signal = "HOLD";
-    result.signalReasons = ["Evidence gate: research is incomplete and is not investment-ready."];
+    result.signalReasons = ["Evidence gate: research is incomplete and is not investment-ready. Measured valuation evidence is retained for analysis only."];
   } else {
+    result.executionBlocked = false;
     result.committee = {
       ...committee,
       deskScores,
@@ -159,7 +166,7 @@ export async function GET(req: NextRequest) {
     if (result.research) result.research = await sanitizeResearch(result.research);
     const gated = await applyEvidenceGate(result);
     gated.underwriting = buildUnderwritingPack(gated, { engine, horizon });
-    gated.analysisVersion = "12.1-institutional-equity-research";
+    gated.analysisVersion = "12.3-institutional-equity-research";
     return NextResponse.json(gated, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Analysis failed" }, { status: 500 });
