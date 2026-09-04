@@ -1,14 +1,16 @@
+// Filename retained so the existing CI command does not need to change.
+// Coverage is Sentinel X v6.4 + MCDX Sentinel v4.0 + Unified Technical V40.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const buildDir = process.argv[2];
 const overlayPath = path.join(process.cwd(), buildDir, "portfolioTechnicalOverlay.js");
-const sentinelPath = path.join(process.cwd(), buildDir, "research", "sentinelX562.js");
-const mcdxPath = path.join(process.cwd(), buildDir, "research", "mcdxV33.js");
+const sentinelPath = path.join(process.cwd(), buildDir, "research", "sentinelX64.js");
+const mcdxPath = path.join(process.cwd(), buildDir, "research", "mcdxV40.js");
 const { computePortfolioTechnicalOverlay } = await import(pathToFileURL(overlayPath).href);
-const { computeSentinelX562 } = await import(pathToFileURL(sentinelPath).href);
-const { computeMcdxV33 } = await import(pathToFileURL(mcdxPath).href);
+const { computeSentinelX64 } = await import(pathToFileURL(sentinelPath).href);
+const { computeMcdxV40 } = await import(pathToFileURL(mcdxPath).href);
 
 function candles(count, drift, volumeBias = 1) {
   let price = 80;
@@ -30,39 +32,51 @@ function candles(count, drift, volumeBias = 1) {
 const bullRows = candles(340, .28, 1.35);
 const bearRows = candles(340, -.18, .78);
 
-const bullSentinel = computeSentinelX562(bullRows);
-assert.ok(bullSentinel);
-assert.equal(bullSentinel.version, "5.6.2");
-assert.ok(bullSentinel.score >= 0 && bullSentinel.score <= 100);
-assert.ok(bullSentinel.momentumStrength >= 0 && bullSentinel.momentumStrength <= 100);
-assert.ok(["ABOVE_SMA", "BELOW_SMA", "AT_SMA"].includes(bullSentinel.rsiState));
+const rawMcdx = computeMcdxV40(bullRows, { mcdxLength: 50, vfiLength: 80 });
+assert.ok(rawMcdx);
+assert.equal(rawMcdx.version, "4.0");
+assert.equal(rawMcdx.methodology, "HYBRID_PRICE_VOLUME_PROXY");
+assert.ok(rawMcdx.flowPower >= -100 && rawMcdx.flowPower <= 100);
+assert.ok(rawMcdx.smartFlow >= 0 && rawMcdx.smartFlow <= 100);
+assert.ok(Number.isFinite(rawMcdx.flowDelta));
+assert.ok(Number.isFinite(rawMcdx.flowAccel));
+assert.match(rawMcdx.reason, /proxy, not verified institutional order flow/i);
 
-const mcdx = computeMcdxV33(bullRows);
-assert.ok(mcdx);
-assert.equal(mcdx.version, "3.3");
-assert.equal(mcdx.methodology, "PRICE_VOLUME_PROXY");
-assert.ok(["BULL_SPONSORED", "BEAR_SPONSORED", "NONE"].includes(mcdx.sponsor));
-assert.ok(["BUY_PRESSURE", "SELL_PRESSURE", "MIXED"].includes(mcdx.flowSignal));
-assert.match(mcdx.reason, /PRICE_VOLUME_PROXY only/);
+const rawSentinel = computeSentinelX64(bullRows, { companionFlowPower: rawMcdx.flowPower, useCompanion: true });
+assert.ok(rawSentinel);
+assert.equal(rawSentinel.version, "6.4");
+assert.equal(rawSentinel.companion.active, true);
+assert.equal(rawSentinel.companion.volumeBoosterDisabled, true, "MCDX owns participation so Sentinel must not double-count its relative-volume booster");
+assert.ok(rawSentinel.degreesOfPower >= -100 && rawSentinel.degreesOfPower <= 100);
+assert.ok(rawSentinel.qualityScore >= 0 && rawSentinel.qualityScore <= 10);
+assert.ok(["BULLISH", "BEARISH", "NEUTRAL"].includes(rawSentinel.forecast.direction));
+assert.ok(rawSentinel.forecast.confidence >= 5 && rawSentinel.forecast.confidence <= 95);
 
 for (const rows of [bullRows, bearRows]) {
   const overlay = computePortfolioTechnicalOverlay(rows);
-  assert.ok(overlay, "V34 overlay remains available for complete market history");
-  assert.equal(overlay.sentinel.version, "5.6.2");
-  assert.equal(overlay.mcdx.version, "3.3");
-  assert.equal(overlay.policy.version, "34.0");
-  assert.equal(overlay.policy.unifiedDecision, true);
-  assert.equal(overlay.policy.mcdxMethodology, "PRICE_VOLUME_PROXY");
+  assert.ok(overlay, "V40 overlay remains available for complete market history");
+  assert.equal(overlay.sentinel.version, "6.4");
+  assert.equal(overlay.mcdx.version, "4.0");
+  assert.equal(overlay.policy.version, "40.0");
+  assert.equal(overlay.decision.version, "40.0");
+  assert.equal(overlay.policy.timeframe, "WEEKLY DECISION · DAILY EXECUTION");
+  assert.equal(overlay.policy.companionArchitecture, true);
+  assert.equal(overlay.policy.sentinelOwnsDirection, true);
+  assert.equal(overlay.policy.mcdxOwnsConviction, true);
+  assert.equal(overlay.policy.volumeDoubleCountPrevented, true);
+  assert.equal(overlay.policy.pulseDiagnosticsOnly, true);
   assert.equal(overlay.policy.requiresFundamentalExitGate, true);
-  assert.equal(overlay.decision.version, "34.0");
-  assert.ok(["ADD", "HOLD", "PROFIT WATCH", "TRIM REVIEW", "EXIT REVIEW"].includes(overlay.action));
+  assert.equal(overlay.policy.syntheticFlowProxy, true);
   assert.equal(overlay.action, overlay.decision.action);
-  assert.ok(["GOOD ROOM", "NORMAL ROOM", "EXTENDED", "TARGET ZONE", "UNKNOWN"].includes(overlay.decision.location));
+  assert.ok(["ADD", "HOLD", "PROFIT WATCH", "TRIM REVIEW", "EXIT REVIEW"].includes(overlay.action));
   assert.notEqual(overlay.action, "EXIT");
-  assert.ok(Number.isFinite(overlay.sentinel.direction));
-  assert.ok(Number.isFinite(overlay.sentinel.momentumStrength));
-  assert.ok(Number.isFinite(overlay.mcdx.longScore));
+  assert.notEqual(overlay.action, "SELL");
+  assert.ok(Number.isFinite(overlay.sentinel.degreesOfPower));
+  assert.ok(Number.isFinite(overlay.mcdx.flowPower));
+  assert.equal(overlay.sentinel.companion.active, true);
+  assert.equal(overlay.sentinel.companion.volumeBoosterDisabled, true);
+  assert.ok(["CONFIRM", "NEUTRAL", "OPPOSITE", "VETO", "OFF"].includes(overlay.decision.companionStatus));
 }
 
-assert.equal(computePortfolioTechnicalOverlay(candles(120, .2)), null, "V34 never invents a complete decision from insufficient history");
-console.log("Technical Overlay V33/V34 regression passed");
+assert.equal(computePortfolioTechnicalOverlay(candles(120, .2)), null, "V40 never invents a complete fund decision from insufficient history");
+console.log("Technical Overlay V40 regression passed");
