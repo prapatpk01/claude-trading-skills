@@ -8,6 +8,7 @@ on:
       - "webapp/app/components/StockAnalysisChartsV12*"
       - "webapp/lib/stockUnderwriting.ts"
       - "webapp/scripts/smoke-stock-analyst-live.mjs"
+      - "webapp/scripts/test-stock-analyst-semantics.mjs"
       - ".github/workflows/stock-analyst-live-smoke.yml"
   workflow_dispatch:
 
@@ -32,6 +33,8 @@ jobs:
           cache-dependency-path: webapp/package-lock.json
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+      - name: Missing-value and valuation semantics
+        run: node scripts/test-stock-analyst-semantics.mjs
       - name: Typecheck
         run: npm run typecheck
       - name: Production build
