@@ -1,57 +1,95 @@
+// Filename retained for existing CI wiring; this now validates Unified Technical V40.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const buildDir = process.argv[2];
-const policyPath = path.join(process.cwd(), buildDir, "research", "unifiedTechnicalDecisionV34.js");
-const { buildUnifiedTechnicalDecisionV34 } = await import(pathToFileURL(policyPath).href);
+const policyPath = path.join(process.cwd(), buildDir, "research", "unifiedTechnicalDecisionV40.js");
+const { buildUnifiedTechnicalDecisionV40 } = await import(pathToFileURL(policyPath).href);
 
-const baseSentinel = {
-  trend: "BULL",
-  coreState: "STRONG BULL",
-  momentumStrength: 58,
-  structure: "BULL",
-  structurePattern: "BULLISH",
+const sentinel = (side, overrides = {}) => ({
+  trend: side,
+  trendLabel: side === "BULL" ? "STRONG BULL" : side === "BEAR" ? "STRONG BEAR" : "NEUTRAL",
+  structureBias: side,
+  structure: side === "BULL" ? "HH/HL" : side === "BEAR" ? "LH/LL" : "MIXED",
+  setup: side === "BULL" ? "PB" : side === "BEAR" ? "REV" : "NONE",
+  setupState: side === "NEUTRAL" ? "WAIT" : "READY",
+  trigger: side === "BULL" ? "BOS_UP" : side === "BEAR" ? "BOS_DOWN" : "NONE",
+  degreesOfPower: side === "BULL" ? 70 : side === "BEAR" ? -70 : 0,
+  qualityScore: 8,
   regime: "TREND",
-  trigger: "NONE",
-  rsiState: "ABOVE_SMA",
-  fastImpulse: 18,
-  hma16State: "BULL",
-};
-const bullFlow = { state: "NEUTRAL", sponsor: "BULL_SPONSORED", flowSignal: "BUY_PRESSURE", contextScore: 75, smartFlow: 69 };
-
-const nearTargetStrongBull = buildUnifiedTechnicalDecisionV34({ roomAtr: .53, sentinel: baseSentinel, mcdx: bullFlow });
-assert.equal(nearTargetStrongBull.location, "EXTENDED");
-assert.equal(nearTargetStrongBull.action, "PROFIT WATCH", "strong bull + sponsored buy flow near target must not become an automatic trim");
-assert.equal(nearTargetStrongBull.policy.roomAloneNeverForcesTrim, true);
-
-const roomButNoFlow = buildUnifiedTechnicalDecisionV34({
-  roomAtr: 2.2,
-  sentinel: { ...baseSentinel, momentumStrength: 29, structurePattern: "HH/HL", trigger: "RSI_SMA_BULL_SHIFT" },
-  mcdx: { state: "NEUTRAL", sponsor: "NONE", flowSignal: "MIXED", contextScore: 46, smartFlow: 55 },
+  longScore: side === "BULL" ? 8.4 : 3,
+  shortScore: side === "BEAR" ? 8.4 : 3,
+  forecast: { direction: side === "BULL" ? "BULLISH" : side === "BEAR" ? "BEARISH" : "NEUTRAL", valid: side !== "NEUTRAL", confidence: 78 },
+  ...overrides,
 });
-assert.equal(roomButNoFlow.location, "GOOD ROOM");
-assert.equal(roomButNoFlow.action, "HOLD", "bullish trigger with good room still waits when flow does not confirm");
 
-const weakBearAtTargetWithSellPressure = buildUnifiedTechnicalDecisionV34({
-  roomAtr: .09,
-  sentinel: { ...baseSentinel, trend: "BEAR", coreState: "BEAR", momentumStrength: 2, structure: "NEUTRAL", structurePattern: "BULLISH", regime: "RANGE", trigger: "NONE", rsiState: "BELOW_SMA", fastImpulse: -8, hma16State: "BEAR" },
-  mcdx: { state: "NEUTRAL", sponsor: "NONE", flowSignal: "SELL_PRESSURE", contextScore: 65, smartFlow: 33 },
+const flow = (power, delta = power >= 0 ? 5 : -5, overrides = {}) => ({
+  flowPower: power,
+  flowDelta: delta,
+  flowState: power >= 45 ? "STRONG_ACCUMULATION" : power <= -45 ? "STRONG_DISTRIBUTION" : "NEUTRAL",
+  liquidity: { bearAbsorption: false, bullAbsorption: false },
+  ...overrides,
 });
-assert.equal(weakBearAtTargetWithSellPressure.location, "TARGET ZONE");
-assert.equal(weakBearAtTargetWithSellPressure.action, "TRIM REVIEW", "target-zone pressure plus confirmed sell pressure should escalate to review, not auto-sell");
-assert.equal(weakBearAtTargetWithSellPressure.reduceReview, true);
 
-const cleanAdd = buildUnifiedTechnicalDecisionV34({ roomAtr: 1.8, sentinel: { ...baseSentinel, momentumStrength: 62, trigger: "BOS_UP" }, mcdx: { state: "ACCUMULATION", sponsor: "BULL_SPONSORED", flowSignal: "BUY_PRESSURE", contextScore: 70, smartFlow: 74 } });
+const cleanAdd = buildUnifiedTechnicalDecisionV40({
+  roomAtr: 1.8,
+  weeklySentinel: sentinel("BULL"),
+  dailySentinel: sentinel("BULL"),
+  weeklyMcdx: flow(52, 6),
+  dailyMcdx: flow(39, 5),
+});
+assert.equal(cleanAdd.direction, "BULL");
+assert.equal(cleanAdd.companionStatus, "CONFIRM");
 assert.equal(cleanAdd.action, "ADD");
 assert.equal(cleanAdd.addEligible, true);
+assert.equal(cleanAdd.policy.sentinelOwnsDirection, true);
+assert.equal(cleanAdd.policy.mcdxOwnsConviction, true);
+assert.equal(cleanAdd.policy.mcdxNeverCreatesDirection, true);
+assert.equal(cleanAdd.policy.volumeDoubleCountPrevented, true);
 
-const exitReview = buildUnifiedTechnicalDecisionV34({
+const vetoLong = buildUnifiedTechnicalDecisionV40({
+  roomAtr: 1.8,
+  weeklySentinel: sentinel("BULL"),
+  dailySentinel: sentinel("BULL"),
+  weeklyMcdx: flow(-58, -6),
+  dailyMcdx: flow(-62, -8),
+});
+assert.equal(vetoLong.direction, "BULL", "MCDX opposite flow cannot reverse Sentinel price direction");
+assert.equal(vetoLong.companionStatus, "VETO");
+assert.equal(vetoLong.action, "HOLD", "strong opposite flow blocks new ADD conviction but is not an automatic sell");
+
+const mcdxCannotCreateBull = buildUnifiedTechnicalDecisionV40({
+  roomAtr: 2.0,
+  weeklySentinel: sentinel("BEAR"),
+  dailySentinel: sentinel("BEAR"),
+  weeklyMcdx: flow(70, 8),
+  dailyMcdx: flow(65, 6),
+});
+assert.equal(mcdxCannotCreateBull.direction, "BEAR");
+assert.notEqual(mcdxCannotCreateBull.action, "ADD", "bullish MCDX never overrides bearish Sentinel into ADD");
+
+const exitReview = buildUnifiedTechnicalDecisionV40({
   roomAtr: .8,
-  sentinel: { ...baseSentinel, trend: "BEAR", coreState: "STRONG BEAR", momentumStrength: 72, structure: "BEAR", structurePattern: "LH/LL", regime: "TREND", trigger: "BOS_DOWN", rsiState: "BELOW_SMA", fastImpulse: -42, hma16State: "BEAR" },
-  mcdx: { state: "DISTRIBUTION", sponsor: "BEAR_SPONSORED", flowSignal: "SELL_PRESSURE", contextScore: 72, smartFlow: 30 },
+  weeklySentinel: sentinel("BEAR", { qualityScore: 9 }),
+  dailySentinel: sentinel("BEAR", { qualityScore: 8 }),
+  weeklyMcdx: flow(-64, -9, { flowState: "STRONG_DISTRIBUTION" }),
+  dailyMcdx: flow(-58, -8, { flowState: "DISTRIBUTION", liquidity: { bearAbsorption: true, bullAbsorption: false } }),
 });
 assert.equal(exitReview.action, "EXIT REVIEW");
+assert.equal(exitReview.reduceReview, true);
 assert.equal(exitReview.policy.exitRequiresFundamentalGate, true);
+assert.equal(exitReview.policy.automaticTrading, false);
 
-console.log("Unified Technical Decision V34 regression passed");
+const nearTargetStrongBull = buildUnifiedTechnicalDecisionV40({
+  roomAtr: .53,
+  weeklySentinel: sentinel("BULL"),
+  dailySentinel: sentinel("BULL"),
+  weeklyMcdx: flow(42, 3),
+  dailyMcdx: flow(30, 2),
+});
+assert.equal(nearTargetStrongBull.location, "EXTENDED");
+assert.equal(nearTargetStrongBull.action, "PROFIT WATCH", "location alone does not become a trim");
+assert.equal(nearTargetStrongBull.policy.roomAloneNeverForcesTrim, true);
+
+console.log("Unified Technical Decision V40 regression passed");
