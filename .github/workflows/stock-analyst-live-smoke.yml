@@ -43,9 +43,9 @@ jobs:
         run: |
           npm start > /tmp/stock-analyst-server.log 2>&1 &
           echo $! > /tmp/stock-analyst-server.pid
-          for i in $(seq 1 45); do
-            if curl --fail --silent http://127.0.0.1:3000/api/system/health >/dev/null; then exit 0; fi
-            sleep 2
+          for i in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:3000/ >/dev/null; then exit 0; fi
+            sleep 1
           done
           cat /tmp/stock-analyst-server.log
           exit 1
