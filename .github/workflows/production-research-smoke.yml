@@ -77,7 +77,7 @@ jobs:
           echo 'FAIL: Railway research-health did not reach a valid >=80% Stage A response within the deployment window.' >&2
           exit 1
 
-      - name: Prove INV V39 Momentum and Thesis discovery
+      - name: Prove INV V40 discovery and buy-alert guardrails
         env:
           BASE_URL: https://claude-trading-skills-production.up.railway.app
         shell: bash
@@ -87,30 +87,30 @@ jobs:
           ready=0
 
           for attempt in $(seq 1 8); do
-            echo "V39 production attempt ${attempt}/8"
-            code=$(curl -sS -L --connect-timeout 10 --max-time 210 -o /tmp/v39.json -w '%{http_code}' "$URL" || true)
+            echo "V40 production attempt ${attempt}/8"
+            code=$(curl -sS -L --connect-timeout 10 --max-time 210 -o /tmp/v40.json -w '%{http_code}' "$URL" || true)
             echo "HTTP ${code}"
             if [[ "$code" == "200" ]] && python - <<'PY'
           import json, sys
           from pathlib import Path
           try:
-              payload=json.loads(Path('/tmp/v39.json').read_text())
+              payload=json.loads(Path('/tmp/v40.json').read_text())
           except Exception as exc:
               print('Not JSON:', exc)
               sys.exit(1)
-          sys.exit(0 if str(payload.get('version','')).startswith('39.') else 1)
+          sys.exit(0 if str(payload.get('version','')).startswith('40.') else 1)
           PY
             then
               ready=1
               break
             fi
-            cat /tmp/v39.json 2>/dev/null | head -c 2500 || true
+            cat /tmp/v40.json 2>/dev/null | head -c 2500 || true
             echo
             sleep 15
           done
 
           if [[ "$ready" != "1" ]]; then
-            echo 'FAIL: Railway never returned INV Research V39 dual discovery.' >&2
+            echo 'FAIL: Railway never returned INV Research V40 dual discovery.' >&2
             exit 10
           fi
 
@@ -118,13 +118,14 @@ jobs:
           import json, sys
           from pathlib import Path
 
-          p=json.loads(Path('/tmp/v39.json').read_text())
+          p=json.loads(Path('/tmp/v40.json').read_text())
           momentum=p.get('momentum') or []
           thesis=p.get('thesis') or []
           combined=p.get('combined') or []
           universe=p.get('universe') or {}
           policy=p.get('policy') or {}
           stats=p.get('stats') or {}
+          candidates=momentum + thesis
 
           print('INV version:', p.get('version'))
           print('Status:', p.get('status'))
@@ -135,12 +136,87 @@ jobs:
           print('Thesis:', [(x.get('ticker'),x.get('state'),x.get('score'),x.get('theme')) for x in thesis[:10]])
           print('Combined:', [(x.get('ticker'),x.get('lanes'),x.get('state'),x.get('score')) for x in combined[:10]])
 
-          if not str(p.get('version','')).startswith('39.'):
-              print('FAIL: endpoint is not INV Research V39.')
+          if not str(p.get('version','')).startswith('40.'):
+              print('FAIL: endpoint is not INV Research V40.')
               sys.exit(20)
+          if p.get('status') != 'READY':
+              print('FAIL: INV Research V40 is not READY.')
+              sys.exit(29)
+          if str(policy.get('strategyVersion') or '') != str(p.get('version') or ''):
+              print('FAIL: policy strategyVersion does not match the response version.')
+              sys.exit(30)
+
+          approved = set(policy.get('approvedAutomaticUniverse') or [])
+          required_universe = {'S&P 500', 'Nasdaq-100', 'Russell 2000'}
+          if approved != required_universe:
+              print('FAIL: approved automatic universe changed unexpectedly:', sorted(approved))
+              sys.exit(31)
+          if int(universe.get('scanned') or 0) <= 0 or int(universe.get('requested') or 0) <= 0:
+              print('FAIL: V40 returned no measured universe coverage.')
+              sys.exit(32)
           if float(universe.get('coveragePct') or 0) < 80:
-              print('FAIL: full-universe Momentum Radar coverage below 80%.')
+              print('FAIL: full-universe discovery coverage below 80%.')
               sys.exit(21)
+
+          if policy.get('researchOnly') is not True:
+              print('FAIL: researchOnly safeguard is missing.')
+              sys.exit(33)
+          if policy.get('humanApprovalRequired') is not True:
+              print('FAIL: human approval safeguard is missing.')
+              sys.exit(34)
+
+          required_technical = {
+              'asOf', 'maxAgeMinutes', 'ema8', 'ema13', 'ema100',
+              'ema200', 'adx', 'macd', 'macdSignal', 'macdHistogram'
+          }
+          for candidate in candidates:
+              ticker = candidate.get('ticker') or 'UNKNOWN'
+              validation = candidate.get('technicalValidation') or {}
+              eligible = validation.get('eligible') is True
+              buy_ready = candidate.get('buyAlertEligible') is True
+              alert_ready = candidate.get('alertState') == 'BUY_TRIGGER_READY'
+
+              if not isinstance(candidate.get('buyAlertEligible'), bool):
+                  print(f'FAIL: {ticker} buyAlertEligible is not boolean.')
+                  sys.exit(35)
+              if buy_ready != eligible or buy_ready != alert_ready:
+                  print(f'FAIL: {ticker} buy-alert state disagrees with technical eligibility.')
+                  sys.exit(36)
+
+              if not buy_ready:
+                  continue
+
+              technical = candidate.get('technical') or {}
+              missing = sorted(required_technical - set(technical))
+              if missing:
+                  print(f'FAIL: {ticker} buy-ready signal is missing technical fields: {missing}')
+                  sys.exit(37)
+              if candidate.get('technicalTimeframe') != '1d':
+                  print(f'FAIL: {ticker} buy-ready signal is not aligned to daily timeframe.')
+                  sys.exit(38)
+              if validation.get('freshness') != 'FRESH' or validation.get('reasons'):
+                  print(f'FAIL: {ticker} buy-ready signal is stale or has failed technical gates.')
+                  sys.exit(39)
+
+              ema8 = float(technical['ema8'])
+              ema13 = float(technical['ema13'])
+              ema100 = float(technical['ema100'])
+              ema200 = float(technical['ema200'])
+              adx = float(technical['adx'])
+              macd = float(technical['macd'])
+              macd_signal = float(technical['macdSignal'])
+              macd_histogram = float(technical['macdHistogram'])
+              if not (
+                  ema8 > ema13 and
+                  ema100 > ema200 and
+                  adx >= 20 and
+                  macd > macd_signal and
+                  macd_histogram > 0
+              ):
+                  print(f'FAIL: {ticker} buy-ready signal bypassed an EMA/ADX/MACD gate.')
+                  sys.exit(40)
+
+          print(f'Validated {len(candidates)} V40 candidates; buy-ready signals are fresh and pass every technical gate.')
           if int(stats.get('momentumSeeds') or 0) <= 0 or not momentum:
               print('FAIL: Momentum Hunt returned no discoverable candidates.')
               sys.exit(22)
@@ -170,5 +246,5 @@ jobs:
           if not visible_non_committee:
               print('WARN: all returned candidates happen to be committee-ready today; policy still proves discovery does not require valuation.')
 
-          print('PASS: Production INV V39 finds stocks through Momentum Hunt and Thesis Hunt while retaining strict Committee Ready authorization.')
+          print('PASS: Production INV V40 preserves discovery coverage, strict technical buy-alert gates, and human-only authorization.')
           PY
