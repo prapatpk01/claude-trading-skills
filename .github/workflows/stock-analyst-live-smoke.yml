@@ -1,0 +1,56 @@
+name: Stock Analyst Live Smoke
+
+on:
+  pull_request:
+    paths:
+      - "webapp/app/api/analyze/**"
+      - "webapp/app/components/StockAnalysisDashboardV12*"
+      - "webapp/app/components/StockAnalysisChartsV12*"
+      - "webapp/lib/stockUnderwriting.ts"
+      - "webapp/scripts/smoke-stock-analyst-live.mjs"
+      - "webapp/scripts/test-stock-analyst-semantics.mjs"
+      - ".github/workflows/stock-analyst-live-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  four-stock-live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: webapp
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+      STOCK_ANALYST_TICKERS: NVDA,AVGO,AMD,TSM
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Missing-value and valuation semantics
+        run: node scripts/test-stock-analyst-semantics.mjs
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+      - name: Start local production server
+        run: |
+          npm start > /tmp/stock-analyst-server.log 2>&1 &
+          echo $! > /tmp/stock-analyst-server.pid
+          for i in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:3000/ >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/stock-analyst-server.log
+          exit 1
+      - name: Analyze NVDA AVGO AMD TSM
+        run: node scripts/smoke-stock-analyst-live.mjs http://127.0.0.1:3000
+      - name: Server diagnostics on failure
+        if: failure()
+        run: cat /tmp/stock-analyst-server.log || true
