@@ -1,1 +1,0 @@
-The Portfolio Action Queue now treats Sentinel X directional targets as the primary technical forecast and keeps Momentum Forecast as a secondary probabilistic horizon model. MCDX remains conviction-only.
