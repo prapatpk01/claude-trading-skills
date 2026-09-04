@@ -4,7 +4,9 @@ export const SENTINEL_RELEASE = {
   strategyVersion: "40.0",
   capitalClarityVersion: "35.1",
   researchVersion: "40.0",
-  technicalVersion: "34.1",
+  technicalVersion: "40.0",
+  sentinelXVersion: "6.4",
+  mcdxVersion: "4.0",
   forecastVersion: "37.1",
   healthRelease: "Sentinel-Investment-OS-v36.0",
 } as const;
